@@ -1,0 +1,149 @@
+# Dist-MoE illustrated guide
+
+An educational page for Dist-MoE’s speed-of-light distributed expert kernels,
+with visual direction from [ezyang’s DeepSeek-V3 studies](https://deepseek-v3.ezyang.com/studies/03-roofline.html).
+
+## Preview and deploy
+
+From the workspace root:
+
+```sh
+python3 -m http.server 8765 --bind 127.0.0.1 --directory site
+```
+
+Open the [article](http://127.0.0.1:8765/) or the [browser slide deck](http://127.0.0.1:8765/?view=slides). The page also works when opening `index.html`
+directly; clipboard permissions depend on the browser.
+
+Deploy these files and the artwork folder together to a static host:
+
+- `index.html`
+- `styles.css`
+- `models.js`
+- `diagrams.js`
+- `examples.js`
+- `app.js`
+- `presentation.js`
+- `presentation.css`
+- `assets/` (the bundled official PyTorch logo variants)
+
+There is no build step or third-party browser dependency. Fonts, SVG diagrams,
+syntax highlighting, numerical examples, and animation run locally. The page
+uses modern browser APIs including native dialogs. Publishing is a separate step.
+
+## Browser presentation
+
+The **Present** link switches the article into a 25-slide presentation. The
+deck uses a 16:9 canvas with stable diagram framing and the same live controls.
+A generic MoE setup precedes GPU placement. Static slides use the article’s
+Key ideas; stepped slides summarize the current phase from the shared figure
+caption. Slide 13 shows packing and release; slide 14 uses a distinct
+rank-capacity comparison and the selected backward path. The article offers both through
+Figure 04A’s view tabs, using the same model and controls.
+
+Figure 07 first compares stage–microbatch and whole-microbatch lifetimes and
+peak counts. Its second tab shows the simple schedule timeline, with one row
+per physical Dist-MoE slot and colored owner intervals showing release and
+reuse. Slot capacity calculations are expandable details.
+Slide 21 uses four checkpoints (start, stage completion, peak overlap, finish);
+slide 22 uses three (acquire, release, reassign). Every slide uses the same
+Step counter, numbered within its visible sequence. The controls drawer holds
+parameters and modes; step navigation stays in the presentation controls.
+
+- **Left / Right**: move through diagram steps, then through slides.
+- **Shift + Left / Right**: change slides directly.
+- **Home / End**: first or last slide.
+- **C**: figure controls. **N**: speaker notes. **T**: theme.
+- **F**: full screen, with the slide filling the screen.
+- **Presenter**: open notes in a separate window for a second display.
+- **Article**: return to the article with the current settings preserved.
+- **V** or **Full diagram / Focused view**: toggle the complete diagram and its
+  fixed focused frame. Full figures do not offer a redundant focus toggle.
+- **Zoom**: enlarge the slide for closer inspection.
+
+### One content source
+
+`index.html` contains the article's text, equations, figure controls, author
+credit, and copyright. The deck moves the actual live figures into its slide
+canvas and derives slide copy and notes from the same content. It does not
+maintain a second article or duplicate the SVG renderers.
+
+`models.js`, `diagrams.js`, `examples.js`, and `app.js` supply the same
+calculations, graphics, code examples, and interaction logic to both views.
+Changes to these shared sources appear after refreshing either view. Figure
+settings also carry between views when using Present and Article.
+
+`presentation.js` defines the slide sequence, source selectors, camera windows,
+and navigation. `presentation.css` defines the slide layout. If you move
+diagram elements, review their presentation close-ups as part of the change.
+
+## Teaching sequence
+
+The introduction shows the complete hardware path of a remote row. Seven
+chapters explain routing identities, expert values/quantization, memory/VMM,
+multi-layer packing, dynamic recompute, lifetimes/offsets, tile and warp-group handoffs, pipeline slot reuse, and the API.
+Each figure has a distinct teaching role; the full precision reference lives in
+the quantization primer before memory planning.
+
+Figures include:
+
+- a nine-step forward path through peer HBM, NVLink, local HBM, SMEM,
+  FP32 TMEM, SwiGLU, and symmetric combine;
+- four views of the documented token assignments and return-slot indices;
+- finite MXFP8 quantization, qdata bytes, E8M0 scales, and outlier underflow;
+- NVFP4 packing/global-scale structure and intermediate-precision tables;
+- a combined allocation view with device/host/device virtual-memory backing;
+- tensor-by-tensor costs, model dimensions, and scratch-factor controls;
+- a minimum-to-maximum-useful slot slider, fractional capacity-factor input,
+  and exact-byte policy matching the public API;
+- a four-layer BF16 stack with rank-specific received rows, saved-state packing,
+  remaining-input reserves, dynamic recompute, and LIFO cursor rewinds;
+- BF16/MXFP8 lifetimes with an explicit last-reader legend and worked offsets;
+- distinct A/B/C shapes, labeled moving dots, K slices, and predicated tails;
+- Staged/Mega producer–consumer readiness in the same chapter as GPU tiles;
+- a 32-action liveness comparison with separate resource rows and peak counts,
+  followed by physical-slot ownership, address resolution, and reuse;
+- syntax-highlighted, numbered, copyable code and a generated memory config.
+
+The default allocation example uses a slot capacity factor of 0.35, device
+scratch factor 1.5, and total scratch factor 2. For BF16 this gives 25.85 GiB
+of saved slots, 6.94 GiB of device scratch, and 2.31 GiB of host overflow.
+The figure scales these regions from their calculated bytes.
+
+The page credits Sanket Purandare as the blog author and includes the Meta
+copyright notice. The header uses official PyTorch artwork: a horizontal logo
+on desktop and its icon on smaller screens.
+
+Dark is the default. Light mode persists after an explicit toggle. Use Previous,
+Next step, phase tabs, or a slider to choose each state. Views cross-fade without
+changing-text highlights. Colored dots illustrate only the selected handoff,
+with stationary payload labels beside each active edge, a payload key below
+the controls, and no automatic phase advancement. Reduced-motion
+settings suppress fades and dot movement. Checkpoint redraws preserve the selected
+focused/full framing for both the live diagram and its fade snapshot. Each
+slide reserves the maximum text/readout space across its builds and supported
+modes so a shorter summary cannot enlarge the diagram. Camera windows stay
+fixed within a slide; zoom and full/focused changes are user-controlled.
+Expansion preserves the live figure
+and its controls.
+
+## Accuracy and maintenance
+
+Read [SOURCES.md](SOURCES.md) before changing an explanation or formula.
+The numerical planner model covers ordinary BF16 and MXFP8 training, including
+Staged/Mega row-scratch differences, per-expert row padding, and D > F gradient
+scratch. It is not the full Python API or an inference planner.
+
+The planner arithmetic was checked against the actual public `ModelConfig` and
+`BlockscaledStorageConfig` classes and API slot-selection code across 288 cases in 48 shape/scratch
+combinations. Worked offsets,
+FP8 format encoding, and schedule coloring received additional checks. The
+four-layer model also matches 498 capacity/rank fixtures from the actual BF16
+forward and backward planner arithmetic, including saved offsets and rewinds. Browser
+QA exercises every diagram phase and mode, text bounds, expansion, syntax
+highlighting, dark/light modes, and desktop/phone framing. No GPU kernel behavior
+is changed or benchmarked by this website.
+
+Do not reinterpret animation pace as measured latency. NVFP4’s figure shows
+its packing and global-scale structure; it does not emulate its full numerical
+quantizer. CUDA VMM granularity and allocator padding require the actual package
+planner with a device argument.

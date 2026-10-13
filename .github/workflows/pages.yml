@@ -1,0 +1,89 @@
+name: Illustrated guide and review preview
+
+on:
+  push:
+    branches: [main, docs/visual-explainer]
+    paths:
+      - "site/**"
+      - ".github/scripts/assemble_pages.py"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the deployment source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out main for the production site
+        if: github.ref_name != github.event.repository.default_branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .pages-production
+          persist-credentials: false
+
+      - name: Check whether the review branch still exists
+        if: github.ref_name == github.event.repository.default_branch
+        id: preview
+        env:
+          PAGES_REPOSITORY: ${{ github.repository }}
+        run: |
+          git ls-remote --heads "https://github.com/${PAGES_REPOSITORY}.git" \
+            refs/heads/docs/visual-explainer > "$RUNNER_TEMP/pages-preview-ref"
+          if test -s "$RUNNER_TEMP/pages-preview-ref"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the optional review preview
+        if: steps.preview.outputs.exists == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: docs/visual-explainer
+          path: .pages-preview
+          persist-credentials: false
+
+      - name: Assemble the main site and preview
+        env:
+          PAGES_IS_MAIN: ${{ github.ref_name == github.event.repository.default_branch }}
+        run: |
+          if test "$PAGES_IS_MAIN" = "true"; then
+            python .github/scripts/assemble_pages.py \
+              --production site --preview .pages-preview/site --output _pages
+          else
+            python .github/scripts/assemble_pages.py \
+              --production .pages-production/site --preview site --output _pages
+          fi
+
+      - name: Upload the static Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: _pages
+
+  deploy:
+    needs: assemble
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Read the repository Pages configuration
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - name: Publish the main site and review preview
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

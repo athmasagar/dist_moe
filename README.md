@@ -21,6 +21,7 @@ graph-stable PyTorch operations needed to execute routed experts.
 - [Use graph and checkpoint features](#use-graph-and-checkpoint-features)
 - [Use advanced features](#use-advanced-features)
 - [Public API](#public-api)
+- [Visual guide and presentation](#visual-guide-and-presentation)
 - [Read the detailed guides](#read-the-detailed-guides)
 - [Acknowledgements](#acknowledgements)
 
@@ -708,6 +709,17 @@ device capacity may use host backing. See [VMM host-backed scratch](docs/vmm.md)
 
 The API docstrings are authoritative for individual arguments and validation
 errors. The guides below explain how those APIs compose.
+
+<a id="visual-guide-and-presentation"></a>
+## Visual guide and presentation
+
+The [illustrated guide](https://meta-pytorch.github.io/dist_moe/) explains token
+routing, memory planning, recomputation, GPU tile movement, and slot reuse.
+The [browser presentation](https://meta-pytorch.github.io/dist_moe/?view=slides)
+uses the same interactive figures and source.
+
+For local use, see [site/README.md](site/README.md). Review-branch previews and
+GitHub Pages setup are described in [site/DEPLOYMENT.md](site/DEPLOYMENT.md).
 
 <a id="read-the-detailed-guides"></a>
 ## Read the detailed guides
