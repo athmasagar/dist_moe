@@ -15,7 +15,8 @@ body.presentation-mode{overflow:hidden;height:100vh}
 .deck-canvas{position:absolute;transform-origin:top left;width:1920px;height:1080px;padding:24px 78px 26px;background:var(--paper);display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--line)}
 .deck-slide-header{height:60px;flex:none;display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;color:var(--faint);font-size:20px}
 .deck-slide-header .wordmark{font-size:24px;pointer-events:none;text-decoration:none}.deck-slide-header .header-sub{display:none}.deck-slide-header .pytorch-logo.horizontal{width:160px;height:44px}
-#deck-title{font-size:50px;line-height:1.15;letter-spacing:-.6px;margin:0 0 15px;font-weight:620;max-width:none;flex:none}
+.deck-slide-header .pytorch-logo.horizontal{display:block}.deck-slide-header .pytorch-logo.compact,.deck-slide-header .pytorch-logo.light-variant{display:none}.light .deck-slide-header .pytorch-logo.dark-variant{display:none}.light .deck-slide-header .pytorch-logo.light-variant{display:block}
+.deck-title{font-size:50px;line-height:1.15;letter-spacing:-.6px;margin:0 0 15px;font-weight:620;max-width:none;flex:none}
 .deck-setup{flex:none;color:var(--muted);font:21px/1.45 ui-monospace,Menlo,monospace;margin-bottom:10px}
 .deck-setup:empty{display:none}
 .deck-visual{flex:1;min-height:0;position:relative;display:flex;align-items:stretch;justify-content:center;gap:25px}
@@ -34,7 +35,7 @@ body.presentation-mode{overflow:hidden;height:100vh}
 .deck-summary:empty{display:none}
 .deck-slide-footer{flex:none;display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--line);padding:13px 0 0;margin:9px 0 0;font-size:18px;color:var(--faint);min-height:40px}
 .deck-slide-footer a{color:var(--faint);text-decoration:none}
-.deck-slide-footer #deck-page{font:18px ui-monospace,Menlo,monospace;min-width:80px;text-align:right}
+.deck-slide-footer .deck-page{font:18px ui-monospace,Menlo,monospace;min-width:80px;text-align:right}
 .deck-navigation{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:7px 16px;border-top:1px solid var(--line);background:var(--card);z-index:3}
 .deck-navigation #deck-next{color:var(--blue);border-color:var(--blue);background:var(--blue-soft)}
 #deck-step{font:13px ui-monospace,Menlo,monospace;color:var(--muted);min-width:104px}
@@ -58,7 +59,7 @@ body.presentation-mode{overflow:hidden;height:100vh}
 .deck-drawer .code-block pre{max-height:420px}.deck-drawer .code-line{font-size:11px}
 .deck-toast{position:absolute;left:50%;bottom:65px;transform:translateX(-50%);background:var(--raised);padding:12px 20px;border:1px solid var(--line);border-radius:6px;font-size:14px;z-index:5}
 .deck-cover{display:flex;flex-direction:column;justify-content:center;align-self:stretch;width:100%;padding:0 60px 45px}
-.deck-canvas[data-kind=cover]>#deck-title,.deck-canvas[data-kind=cover]>.deck-setup{display:none}
+.deck-canvas[data-kind=cover]>.deck-title,.deck-canvas[data-kind=cover]>.deck-setup{display:none}
 .deck-cover h1{font-size:110px;line-height:1.05;letter-spacing:-2px;margin:0 0 26px}
 .deck-cover p.deck{font-size:54px;line-height:1.35;letter-spacing:-.5px;max-width:1550px;margin:0 0 34px}
 .deck-cover p.intro{font-size:30px;line-height:1.5;max-width:1500px;margin:0 0 30px}
@@ -69,7 +70,7 @@ body.presentation-mode{overflow:hidden;height:100vh}
 .deck-math .equation .small-label{font-size:21px}
 .deck-math .equation p{font-size:38px;line-height:1.7;max-width:none;white-space:normal}
 .deck-math .equation small{font-size:26px;line-height:1.6;margin-top:20px}
-.deck-visual>.orientation-panel{border:0;background:transparent;max-width:none;width:100%;margin:0;padding:0;gap:90px;align-items:center}
+.deck-visual>.orientation-panel{border:0;background:transparent;max-width:none;width:100%;margin:0;padding:0;gap:90px;align-items:center;grid-template-columns:1fr 1fr}
 .deck-visual>.orientation-panel h4{font-size:32px;margin:0 0 18px;font-weight:600}
 .deck-visual>.orientation-panel p{font-size:26px;line-height:1.5;margin:17px 0;max-width:none}
 .deck-visual>.orientation-panel svg{width:100%;height:auto;max-height:560px}
@@ -83,7 +84,7 @@ body.presentation-mode{overflow:hidden;height:100vh}
 .deck-visual .address-card small{font-size:20px;line-height:1.45}
 .deck-visual .address-card small+small{display:none}
 .deck-visual .lifetime-legend.deck-part{display:flex;flex:none;font-size:21px;gap:20px 40px;margin:0}
-.deck-visual .lifetime-legend i{width:17px;height:12px}.deck-visual .consumer-diamond{font-size:23px}
+.deck-visual .lifetime-legend i{width:17px;height:12px}.deck-visual .consumer-diamond{width:19px;height:19px}
 .deck-visual .table-scroll.deck-part{padding:0;flex:1;overflow:hidden}
 .deck-table-slide .deck-visual table{font-size:23px;line-height:1.35;min-width:0}
 .deck-table-slide .deck-visual th{font-size:21px}
@@ -124,6 +125,6 @@ html:fullscreen .deck-drawer{top:0;bottom:0}
 .deck-table-slide .deck-visual th,.deck-table-slide .deck-visual td{padding-top:8px;padding-bottom:8px}
 
 /* Reserve the longest supported build, so a shorter caption cannot enlarge a figure. */
-#presentation .deck-reserved{height:var(--deck-reserved-height);min-height:var(--deck-reserved-height);max-height:var(--deck-reserved-height)}
-#presentation .deck-visual>figure>.deck-reserved{flex:0 0 var(--deck-reserved-height)}
+:is(#presentation,.deck-print) .deck-reserved{height:var(--deck-reserved-height);min-height:var(--deck-reserved-height);max-height:var(--deck-reserved-height)}
+:is(#presentation,.deck-print) .deck-visual>figure>.deck-reserved{flex:0 0 var(--deck-reserved-height)}
 .deck-calibrating{visibility:hidden}.deck-calibrating .deck-summary,.deck-calibrating .deck-scope{max-height:none}

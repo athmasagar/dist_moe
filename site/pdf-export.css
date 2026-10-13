@@ -1,0 +1,27 @@
+/* Print the shared 1920 × 1080 slide at its original scale; fit the screen preview. */
+.deck-print-mode body>.site-header,.deck-print-mode body>.rail,.deck-print-mode body>.skip,.deck-print-mode #content,.deck-print-mode #figure-dialog{display:none}
+.deck-print-mode #presentation{visibility:hidden}
+.deck-print-mode body{overflow:auto;height:auto}
+.deck-print-status{max-width:760px;margin:100px auto;padding:30px;font-size:18px;line-height:1.6}
+.deck-print-status h1{font-size:32px;letter-spacing:-.5px}
+.deck-print-toolbar{position:sticky;top:0;z-index:40;background:var(--card);border-bottom:1px solid var(--line);padding:16px 24px;display:flex;gap:12px 24px;align-items:center;flex-wrap:wrap;font-size:15px;line-height:1.5}
+.deck-print-toolbar button{color:var(--ink);font:inherit;border:1px solid var(--blue);background:var(--blue-soft);border-radius:5px;padding:9px 16px;white-space:nowrap}
+.deck-print-toolbar p{margin:0;max-width:none;color:var(--muted)}
+.deck-print-toolbar strong{color:var(--ink)}
+.deck-print{max-width:none;margin:0;padding:24px 0;font-size:14px;line-height:1.5;overflow:visible}
+.deck-print-sheet{position:relative;width:1280px;height:720px;padding:0;margin:0 auto 24px;background:var(--paper);box-shadow:0 0 0 1px var(--line);break-inside:avoid;break-after:page;page:dist-moe-slides}
+.deck-print-sheet:last-child{margin-bottom:0;break-after:auto}
+.deck-print-sheet>.deck-canvas{position:absolute;left:0!important;top:0!important;transform:scale(.6666666667)!important;transform-origin:top left;border:0}
+.deck-print .deck-slide-footer{flex-wrap:nowrap}
+.deck-print .deck-page{white-space:nowrap}
+.deck-print *, .deck-print-mode{print-color-adjust:exact;-webkit-print-color-adjust:exact}
+.deck-print *{animation:none!important;transition:none!important}
+@media(max-width:750px){.deck-tools{justify-content:flex-start;overflow-x:auto;scrollbar-width:none}.deck-toolbar .deck-tools button{flex:none}}
+@page dist-moe-slides{size:20in 11.25in;margin:0}
+@media print{
+  html.deck-print-mode,html.deck-print-mode body{margin:0;padding:0;overflow:visible;height:auto;scroll-padding:0}
+  .deck-print-toolbar,.deck-print-status{display:none}
+  .deck-print{margin:0;padding:0}
+  .deck-print-sheet{margin:0;box-shadow:none;width:1920px;height:1080px}
+  .deck-print-sheet>.deck-canvas{transform:none!important}
+}

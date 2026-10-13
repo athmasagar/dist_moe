@@ -24,6 +24,8 @@ Deploy these files and the artwork folder together to a static host:
 - `app.js`
 - `presentation.js`
 - `presentation.css`
+- `pdf-export.js`
+- `pdf-export.css`
 - `assets/` (the bundled official PyTorch logo variants)
 
 There is no build step or third-party browser dependency. Fonts, SVG diagrams,
@@ -59,6 +61,19 @@ parameters and modes; step navigation stays in the presentation controls.
 - **V** or **Full diagram / Focused view**: toggle the complete diagram and its
   fixed focused frame. Full figures do not offer a redundant focus toggle.
 - **Zoom**: enlarge the slide for closer inspection.
+- **Export PDF** (or **Cmd / Ctrl + P** in the deck): open a printable deck with
+  one 16:9 page for every selected presentation step. Choose **Save as PDF**,
+  enable **Background graphics**, and disable browser **Headers and footers**.
+
+### PDF with every step
+
+PDF export follows the same curated steps as the presentation, including the
+short pipeline sequences. Each page carries its slide, step, and PDF page number,
+the current step's summary, and its fixed diagram framing. The default staged
+deck produces 65 pages; the mega launch policy produces 61. Static slides appear
+once. Format, memory, tile, and other figure settings carry into the print tab.
+The print tab keeps SVG graphics and text; it does not rasterize the slides.
+Use its **Save as PDF** button again if the first print dialog is canceled.
 
 ### One content source
 

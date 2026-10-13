@@ -50,7 +50,8 @@
 
   let shell, canvas, active = false, index = 0, mounted = [], observer;
   let controlsOpen = false, notesOpen = false, fullView = false, zoomed = false;
-  let updateQueued = false, savedFocus, slideFade, slideFadeTimer, speakerWindow, calibrating = false;
+  let updateQueued = false, savedFocus, slideFade, slideFadeTimer, speakerWindow, calibrating = false, exporting = false;
+  const printMode = new URLSearchParams(location.search).get('view') === 'print';
   const savedCamera = new WeakMap();
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
 
@@ -126,6 +127,7 @@
         <button id="deck-article" title="Return to the article">Article</button>
         <label class="deck-picker"><span class="sr-only">Slide</span><select id="deck-slide-select" aria-label="Choose a slide"></select></label>
         <div class="deck-tools">
+          <button id="deck-export" title="Export every presentation step as a PDF page">Export PDF</button>
           <button id="deck-controls" aria-expanded="false" aria-controls="deck-controls-panel">Controls</button>
           <button id="deck-notes" aria-expanded="false" aria-controls="deck-notes-panel">Notes</button>
           <button id="deck-presenter" title="Open speaker notes in a separate window">Presenter</button>
@@ -138,12 +140,12 @@
       <div class="deck-viewport" id="deck-viewport">
         <section class="deck-canvas" id="deck-canvas" aria-label="Current slide">
           <header class="deck-slide-header"><div id="deck-brand"></div><span id="deck-section"></span></header>
-          <h1 id="deck-title"></h1>
+          <h1 id="deck-title" class="deck-title"></h1>
           <div class="deck-setup" id="deck-setup"></div>
           <div class="deck-visual" id="deck-visual"></div>
           <p class="deck-summary" id="deck-summary" aria-live="polite"></p>
           <p class="deck-scope" id="deck-scope"></p>
-          <footer class="deck-slide-footer"><span id="deck-copyright"></span><a id="deck-reference" href="#content">Article section</a><span id="deck-page"></span></footer>
+          <footer class="deck-slide-footer"><span id="deck-copyright"></span><a id="deck-reference" href="#content">Article section</a><span id="deck-page" class="deck-page"></span></footer>
         </section>
       </div>
       <nav class="deck-navigation" aria-label="Slide and diagram navigation">
@@ -175,6 +177,11 @@
     $('deck-fullscreen').addEventListener('click', fullScreen);
     $('deck-theme').addEventListener('click',()=>{$('theme-toggle').click();updatePresenter();});
     $('deck-presenter').addEventListener('click',presenter);
+    $('deck-export').addEventListener('click',exportPDF);
+  }
+  /** Open the complete stepped print view from the presentation controls. */
+  function exportPDF() {
+    if (!window.DeckPDF?.open()) toast('Allow pop-ups for this page, then select Export PDF again.');
   }
   function toggleView(){const scene=scenes[index];if(!scene.camera)return;figures[scene.figure]?.querySelectorAll('svg[id]').forEach(app.finishTransition);fullView=!fullView;update();}
   function drawer(which, open) {
@@ -387,10 +394,10 @@
     const observed=scene.figure?figures[scene.figure]:scene.kind==='code'?original.code:null;
     if(observed){observer=new MutationObserver(queueUpdate);observer.observe(observed,{childList:true,characterData:true,subtree:true});}
     if (url) setURL(true);
-    if (!reduced.matches) { slideFade=canvas.animate([{ opacity: .35 }, { opacity: 1 }], { duration: 220, easing: 'ease-out' }); slideFadeTimer=setTimeout(()=>slideFade?.cancel(),260); }
+    if (!exporting && !reduced.matches) { slideFade=canvas.animate([{ opacity: .35 }, { opacity: 1 }], { duration: 220, easing: 'ease-out' }); slideFadeTimer=setTimeout(()=>slideFade?.cancel(),260); }
   }
   function queueUpdate() {
-    if (updateQueued || !active) return;
+    if (updateQueued || !active || exporting) return;
     updateQueued = true;
     queueMicrotask(() => { updateQueued = false; if (active) update(); });
   }
@@ -442,9 +449,16 @@
     let excerpt;
     if (scene.excerpt === 'config') {
       const dims = lines.find(line => /^T, D, F, K, E_local/.test(line));
-      excerpt = [...(dims ? [dims, ''] : []), ...codeBlock(lines, 'dist_moe.Config(')];
+      const config = codeBlock(lines, 'dist_moe.Config(');
+      const reference = config.map(line => line.match(/\bblock_scaled\s*=\s*([A-Za-z_]\w*)\s*,/)).find(Boolean)?.[1];
+      const definition = reference && lines.find(line => line.split('=')[0].trim() === reference && line.includes('dist_moe.BlockScaledConfig('));
+      const policy = definition ? codeBlock(lines, definition.trim()) : [];
+      excerpt = [...(dims ? [dims, ''] : []), ...policy, ...(policy.length ? [''] : []), ...config];
     } else {
-      excerpt = [...codeBlock(lines, 'dist_moe.create_context('), '', ...codeBlock(lines, 'dist_moe.routed_experts(')];
+      const first = lines.findIndex(line => line.includes('dist_moe.prepare_block_scaled_weight('));
+      const end = lines.findIndex((line, i) => i > first && line.trim() === 'try:');
+      const preparation = first >= 0 && end > first ? lines.slice(Math.max(0, first - 2), end) : [];
+      excerpt = [...codeBlock(lines, 'dist_moe.create_context('), '', ...preparation, ...(preparation.length ? [''] : []), ...codeBlock(lines, 'dist_moe.routed_experts(')];
       if (!excerpt.some(line => line.includes('routed_experts'))) excerpt = lines.filter(line => line.includes('dist_moe.plan_memory') || line.includes('print(plan'));
     }
     const cut=excerpt.length>22?Math.ceil(excerpt.length/2):excerpt.length;
@@ -544,6 +558,32 @@
     else { url.searchParams.delete('view'); url.hash = scenes[index].chapter; }
     history[push ? 'pushState' : 'replaceState']({}, '', url);
   }
+  /** Capture the curated builds with the same layout, captions, and renderers. */
+  function printFrames() {
+    if (!printMode || !active) throw new Error('Open the dedicated PDF print view first.');
+    const frames = [];
+    exporting = true;
+    try {
+      app.withoutAnimation(() => {
+        scenes.forEach((scene, slide) => {
+          show(slide, false, false);
+          const phases = slideSteps(scene), controller = app.controllers[scene.controller];
+          phases.forEach((phase, step) => {
+            controller?.set(phase);
+            update();
+            frames.push({ node: window.DeckPDF.freeze(canvas), scene: scene.id, slide, step, steps: phases.length, phase });
+          });
+        });
+      });
+      return frames;
+    } finally {
+      restore();
+      active = false;
+      shell.remove(); shell = null; canvas = null;
+      document.body.classList.remove('presentation-mode');
+      exporting = false;
+    }
+  }
   function enter(push = false) {
     if (active) return;
     savedFocus = document.activeElement;
@@ -556,8 +596,7 @@
     const requested = location.hash.replace('#slide-', '');
     const i = scenes.findIndex(scene => scene.id === requested);
     show(i >= 0 ? i : 0, false, false);
-    setURL(true, push);
-    $('deck-next').focus();
+    if (!printMode) { setURL(true, push); $('deck-next').focus(); }
   }
   function exit() {
     if (!active) return;
@@ -573,6 +612,7 @@
   }
   $('present-link').addEventListener('click', e => { e.preventDefault(); enter(true); });
   document.addEventListener('keydown', e => {
+    if (active && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') { e.preventDefault(); exportPDF(); return; }
     if (!active || e.altKey || e.metaKey || e.ctrlKey) return;
     if (e.key === 'Escape') { drawer('controls', false); drawer('notes', false); if (zoomed) { zoomed = false; resize(); } return; }
     if (e.target.closest?.('input,select,textarea,[contenteditable="true"]')) return;
@@ -595,6 +635,6 @@
       else { const i = scenes.findIndex(s => location.hash === '#slide-' + s.id); if (i >= 0) show(i, false, false); }
     } else if (active) exit();
   });
-  window.Presentation = { enter, exit, show, step, resize, scenes, get active() { return active; }, get index() { return index; } };
-  if (new URLSearchParams(location.search).get('view') === 'slides') enter();
+  window.Presentation = { enter, exit, show, step, resize, printFrames, scenes, get active() { return active; }, get index() { return index; } };
+  if (printMode || new URLSearchParams(location.search).get('view') === 'slides') enter();
 })();

@@ -7,8 +7,9 @@
   <meta name="author" content="Sanket Purandare">
   <meta name="copyright" content="Meta Platforms, Inc. and affiliates.">
   <title>Dist-MoE · Speed-of-light distributed expert kernels</title>
-  <link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="presentation.css">
-  <script src="models.js" defer></script><script src="diagrams.js" defer></script><script src="examples.js" defer></script><script src="app.js" defer></script><script src="presentation.js" defer></script>
+  <script>if(new URLSearchParams(location.search).get('view')==='print'){document.documentElement.classList.add('deck-print-mode');document.querySelector('meta[name="viewport"]').content='width=1440';}</script>
+  <link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="presentation.css"><link rel="stylesheet" href="pdf-export.css">
+  <script src="models.js" defer></script><script src="diagrams.js" defer></script><script src="examples.js" defer></script><script src="app.js" defer></script><script src="presentation.js" defer></script><script src="pdf-export.js" defer></script>
 </head>
 <body>
 <a class="skip" href="#content">Skip to the article</a>
@@ -154,7 +155,7 @@
       <div class="figure-controls"><div class="segmented" id="recompute-precision" aria-label="Retention precision"><button data-precision="bf16" aria-pressed="true">BF16</button><button data-precision="mxfp8" aria-pressed="false">MXFP8 Staged</button></div><div class="segmented" id="recompute-select" aria-label="Retention decision"><button data-mode="save" aria-pressed="true">Save eligible state</button><button data-mode="recompute" aria-pressed="false">Recompute</button></div><label>Physical slot <select id="offset-slot"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select></label></div>
       <div class="config-summary">Worked shape: T = 2 · D = F = 256 · K = 2 · 2 experts/rank · 3 slots · one layer per slot; budget follows the selected retention mode</div>
       <div class="phase-tabs" id="retention-display" aria-label="Activation state view"><button data-view="lifetime" aria-pressed="true">Forward → backward lifetimes</button><button data-view="address" aria-pressed="false">Residency and address map</button></div>
-      <div class="lifetime-legend" id="lifetime-legend"><span><i class="green"></i>Retained slot ownership</span><span><i class="amber"></i>Temporary scratch</span><span><i class="blue"></i>Symmetric combine</span><span><b class="consumer-diamond">◆</b> Last consumer of the value</span></div>
+      <div class="lifetime-legend" id="lifetime-legend"><span><i class="green"></i>Retained slot ownership</span><span><i class="amber"></i>Temporary scratch</span><span><i class="blue"></i>Symmetric combine</span><span><svg class="consumer-diamond" viewBox="0 0 12 12" width="13" height="13" aria-hidden="true"><path d="M6 0L12 6L6 12L0 6Z" fill="currentColor"/></svg> Last consumer of the value</span></div>
       <p class="inside-note" id="lifetime-key">A diamond marks the last operation that reads a forward value. Its slot can stay reserved until the matching backward releases it. </p>
       <div class="diagram-scroll"><svg id="recompute-svg" viewBox="0 0 1040 400" role="img" aria-label="Selected activation slot, scratch views, and forward to backward lifetimes"></svg></div>
       <details class="calculation-details"><summary>Inspect exact byte offsets and consumers</summary><div class="table-scroll"><table id="offset-table"></table></div></details>

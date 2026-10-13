@@ -42,7 +42,7 @@ svg text{transition:fill .55s ease}.phase-caption span,.metric-grid strong,.addr
 .lifetime-legend{display:flex;gap:12px 22px;flex-wrap:wrap;font-size:13px;line-height:1.5;color:var(--muted);margin:0 20px 13px}
 .lifetime-legend span{display:inline-flex;align-items:center;gap:7px}
 .lifetime-legend i{width:12px;height:9px;border-radius:2px}.amber{background:var(--amber)}
-.consumer-diamond{color:var(--purple);font-size:17px;font-weight:400}
+.consumer-diamond{color:var(--purple);width:13px;height:13px;flex:none}
 .kernel-subsection{padding-top:8px;scroll-margin-top:24px}
 @media(max-width:850px){.slot-budget-panel{margin:0 14px 20px;padding:14px}.slot-input-row{grid-template-columns:1fr;gap:12px}.slot-effective{gap:2px}.slot-effective output{font-size:14px;min-height:30px}.slot-input-row label{font-size:11px}.slot-input-row input{font-size:15px}.slot-budget-heading h4{font-size:15px}.slot-budget-panel p{font-size:12px}.slot-bound-labels{justify-content:flex-start}.slot-bound-labels button{font-size:11px}.inside-note{margin:0 14px 16px;font-size:12px}.calculation-details{margin:0 14px 16px}.flow-payloads{margin:9px 14px 0;font-size:12px}.payload-chip{font-size:12px}.lifetime-legend{margin:0 14px 12px;font-size:12px;gap:8px 15px}}
 

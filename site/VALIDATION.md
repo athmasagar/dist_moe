@@ -115,6 +115,32 @@
 - Confirmed presentation sizing is removed from canonical article nodes on
   exit. Source settings and diagrams remain shared between both views.
 
+## PDF export with every presentation step
+
+- Compared all 65 default print pages with live deck navigation: 650 matching
+  fields covering scene order, selected steps, phase numbers, titles, summaries,
+  setup, scope, visible SVG text, and viewBoxes.
+- Passed the complete print-layout audit, including page dimensions, text
+  bounds, stable framing, page counters, unique IDs, and per-page SVG definitions.
+- Verified the 61-page Mega sequence, NVFP4/MXFP8 settings, light theme, packing
+  budget/rank, whole-microbatch policy, fractional slot factors, exact slot bytes,
+  and generated code. No text clipping was reported in those cases.
+- Checked Export PDF, Cmd+P, popup-block recovery, print-dialog dispatch/reopening,
+  malformed-settings feedback, and preservation of the live slide, camera,
+  controls, and URL. Checked toolbar access at 390 and 760 px.
+- Generated the complete 65-page sample from the same print frames, reopened
+  it with a strict PDF reader, and rendered all pages with Poppler. Reviewed the
+  rendered pages; graphics and text remain vector content. A font-dependent
+  diamond was replaced with a vector icon. The final render reports no errors.
+- Included the source policy declaration and weight preparation in the MXFP8
+  presentation code excerpts. Kept the canonical two-column quantization axis
+  layout and PyTorch wordmark in smaller presentation viewports.
+
+These export checks used macOS WebKit. Chrome startup was blocked by process
+permissions in the execution environment, and automated native print-dialog
+verification did not complete. The sample PDF was assembled from WebKit PDF
+captures of the shared print frames; browser Save as PDF remains a manual check.
+
 These checks verify the educational page and its stated model. They do not
 execute or benchmark GPU kernels, emulate every precision specialization, or
 resolve physical CUDA mapping granularity on a GPU.
