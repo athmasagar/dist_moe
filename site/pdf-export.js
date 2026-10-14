@@ -56,7 +56,7 @@
       if (node.type === 'checkbox') node.checked = !!savedInput.checked;
     }
     document.documentElement.classList.toggle('light', !!saved.light);
-    app.controllers.fusion.count = app.state.fusion === 'mega' ? 7 : 9;
+    app.controllers.fusion.count = app.fusionCount();
     app.withoutAnimation(() => {
       for (const controller of Object.values(app.controllers)) { controller.stop(); controller.phase = 0; controller.render(); }
       if (!app.renderMemory()) throw new Error('Check the memory-plan inputs before exporting.');

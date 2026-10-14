@@ -34,20 +34,32 @@ uses modern browser APIs including native dialogs. Publishing is a separate step
 
 ## Browser presentation
 
-The **Present** link switches the article into a 25-slide presentation. The
+The **Present** link switches the article into a 21-slide presentation. The
 deck uses a 16:9 canvas with stable diagram framing and the same live controls.
 A generic MoE setup precedes GPU placement. Static slides use the article’s
 Key ideas; stepped slides summarize the current phase from the shared figure
-caption. Slide 13 shows packing and release; slide 14 uses a distinct
-rank-capacity comparison and the selected backward path. The article offers both through
-Figure 04A’s view tabs, using the same model and controls.
+caption. Slide 11 compares three capacity policies: activation factor 1.5 with
+scratch factor 4, activation factor 0.5 with scratch factor 16, and a fixed
+32 GiB activation cap with scratch factor 16. Device and total scratch factors
+match in these examples; VMM remains available through the shared controls.
+
+Slide 13 pairs forward equations and backward dependencies with value lifetimes.
+Slide 14 uses the complete Figure 04A through all nine calls: L0–L2 keep eligible
+state, L3 retains only its replay input, and matching backwards release the saved
+offsets. The 28 KiB default budget gives that source-derived decision pattern.
+The tighter 24 KiB preset retains the earlier collective worst-rank example.
+
+Slide 15 keeps the complete tile hierarchy through all six handoffs. Slide 16
+keeps the producer/consumer graph and chunk-state table together. Mega is the
+default, with Staged selectable; both include the completed-chunks state.
+Offsets are explained inside the packing example rather than on a separate slide.
 
 Figure 07 first compares stage–microbatch and whole-microbatch lifetimes and
 peak counts. Its second tab shows the simple schedule timeline, with one row
 per physical Dist-MoE slot and colored owner intervals showing release and
 reuse. Slot capacity calculations are expandable details.
-Slide 21 uses four checkpoints (start, stage completion, peak overlap, finish);
-slide 22 uses three (acquire, release, reassign). Every slide uses the same
+Slide 17 uses four selected steps (start, stage completion, peak overlap, finish);
+slide 18 uses three (acquire, release, reassign). Every slide uses the same
 Step counter, numbered within its visible sequence. The controls drawer holds
 parameters and modes; step navigation stays in the presentation controls.
 
@@ -69,9 +81,10 @@ parameters and modes; step navigation stays in the presentation controls.
 
 PDF export follows the same curated steps as the presentation, including the
 short pipeline sequences. Each page carries its slide, step, and PDF page number,
-the current step's summary, and its fixed diagram framing. The default staged
-deck produces 65 pages; the mega launch policy produces 61. Static slides appear
-once. Format, memory, tile, and other figure settings carry into the print tab.
+the current step's summary, and its fixed diagram framing. The default Mega
+deck produces 57 pages; selecting Staged produces 59. Static slides appear
+once. Shape, format, packing, tile, and other figure settings carry into the print
+tab. The capacity-policy slide intentionally walks all three shared presets.
 The print tab keeps SVG graphics and text; it does not rasterize the slides.
 Use its **Save as PDF** button again if the first print dialog is canceled.
 

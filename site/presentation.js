@@ -31,16 +31,12 @@
     { id: 'quantization', figure: 'precision-figure', chapter: 'precision', parts: ['precision-svg', 'quant-detail'] },
     { id: 'quantization-axis', kind: 'orientation', chapter: 'precision' },
     { id: 'precision', figure: 'precision-figure', chapter: 'precision', parts: ['intermediate-table'], title: 'precision-reference', table: true },
-    { id: 'allocation', figure: 'memory-figure', chapter: 'memory', parts: ['consumption-svg', 'memory-stats'], setup: '#memory-config', title: 'allocation' },
+    { id: 'allocation', figure: 'memory-figure', chapter: 'memory', parts: ['memory-policy-summary','consumption-svg', 'memory-stats'], setup: '#memory-shape', title: 'allocation', builds: ['#memory-examples [data-memory-example="saved"]','#memory-examples [data-memory-example="scratch"]','#memory-examples [data-memory-example="fixed"]'] },
     { id: 'memory-costs', figure: 'memory-figure', chapter: 'memory', parts: ['memory-svg'], setup: '#memory-config', title: 'costs' },
-    { id: 'layer-packing', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [0, 8], phases: [0,1,4,5,8], camera: [0,0,1040,450], pane: true, parts: ['packing-svg'], display: 'packing', title: 'key-idea', setup: '#packing-config' },
-    { id: 'dynamic-recompute', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [3, 6], phases: [3,4,6], parts: ['lookahead-svg'], display: 'decision', title: 'key-idea', setup: '#packing-config' },
-    { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['recompute-svg', 'lifetime-legend'], prepare: 'lifetime', setup: '.config-summary' },
-    { id: 'offsets', figure: 'recompute-figure', chapter: 'recompute', parts: ['recompute-svg', 'offset-equation'], prepare: 'address', setup: '.config-summary' },
-    { id: 'gather-tiles', figure: 'kernel-figure', controller: 'kernel', chapter: 'kernels', range: [0, 2], camera: [0, 0, 1040, 565], pane: true, setup: '#tile-address' },
-    { id: 'tensor-cores', figure: 'kernel-figure', controller: 'kernel', chapter: 'kernels', range: [3, 5], camera: [215, 0, 825, 565], pane: true, setup: '#tile-address' },
-    { id: 'warp-groups', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], camera: [0, 0, 1040, 338], pane: true },
-    { id: 'chunk-readiness', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], camera: [0, 343, 1040, 197], pane: true, title: 'chunks' },
+    { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['recompute-svg', 'lifetime-legend'], prepare: 'lifetime', title: 'key-idea', setup: '.config-summary', bounds: [0,0,1440,610] },
+    { id: 'layer-packing', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [0, 8], parts: ['packing-svg'], display: 'packing', title: 'key-idea', setup: '#packing-brief' },
+    { id: 'gpu-tile', figure: 'kernel-figure', controller: 'kernel', chapter: 'kernels', range: [0, 5], title: 'key-idea', setup: '#tile-address' },
+    { id: 'mega-pipeline', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], title: 'key-idea', setup: '#fusion-config' },
     { id: 'pipeline-prefix', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [0, 31], actions: ['0F0','2B0','0F4','0B7'], slotDisplay: 'liveness', parts: ['liveness-svg'], setup: '#slots-config' },
     { id: 'slot-reuse', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [2, 6], actions: ['2F0','2B0','0F3'], slotDisplay: 'reuse', camera: [0, 0, 1146, 406], pane: true, parts: ['slots-svg','slot-selection'] },
     { id: 'configuration', kind: 'code', chapter: 'start', excerpt: 'config' },
@@ -48,7 +44,11 @@
     { id: 'reading', kind: 'resources', chapter: 'start' }
   ];
 
-  let shell, canvas, active = false, index = 0, mounted = [], observer;
+  const sceneAliases = {'dynamic-recompute':'layer-packing',offsets:'layer-packing','gather-tiles':'gpu-tile','tensor-cores':'gpu-tile','warp-groups':'mega-pipeline','chunk-readiness':'mega-pipeline'};
+  /** Preserve links to examples that now share one complete slide. */
+  function sceneIndex(id) { return scenes.findIndex(scene=>scene.id===(sceneAliases[id]||id)); }
+
+  let shell, canvas, active = false, index = 0, build = 0, mounted = [], observer;
   let controlsOpen = false, notesOpen = false, fullView = false, zoomed = false;
   let updateQueued = false, savedFocus, slideFade, slideFadeTimer, speakerWindow, calibrating = false, exporting = false;
   const printMode = new URLSearchParams(location.search).get('view') === 'print';
@@ -77,7 +77,8 @@
       node.querySelectorAll?.('svg[id]').forEach(svg => {
         app.finishTransition(svg);
         const old = savedCamera.get(svg);
-        if (old) svg.setAttribute('viewBox', old);
+        if (svg.id==='recompute-svg') svg.setAttribute('viewBox',app.state.retentionDisplay==='lifetime'?'0 0 1440 610':'0 0 1040 400');
+        else if (old) svg.setAttribute('viewBox', old);
         svg.querySelectorAll('.deck-camera-clipped').forEach(n => n.classList.remove('deck-camera-clipped'));
         svg.classList.remove('deck-map');
         svg.style.removeProperty('--deck-svg-width');svg.style.removeProperty('--deck-svg-height');
@@ -240,6 +241,7 @@
     return scene.range ? [scene.range[0], scene.range[1] ?? c.count - 1] : [0, 0];
   }
   function slideSteps(scene) {
+    if(scene.builds)return scene.builds.map((_,index)=>index);
     const c=app.controllers[scene.controller];
     if(!c)return [0];
     const sparse=checkpoints(scene);if(sparse)return sparse;
@@ -248,6 +250,7 @@
   }
   function step(direction, slideOnly = false) {
     const scene = scenes[index], c = app.controllers[scene.controller];
+    if(scene.builds&&!slideOnly){const target=build+direction;if(target>=0&&target<scene.builds.length){setBuild(scene,target);update();return;}}
     if (c && !slideOnly) {
       const points=checkpoints(scene);
       if(points){const target=direction>0?points.find(p=>p>c.phase):[...points].reverse().find(p=>p<c.phase);if(target!=null){c.set(target);update();return;}}
@@ -255,6 +258,11 @@
     }
     const next = index + direction;
     if (next >= 0 && next < scenes.length) show(next, direction < 0);
+  }
+  /** Apply a presentation build through the same controls used by the article. */
+  function setBuild(scene, position) {
+    build=position;
+    source(scene.builds[position]).click();
   }
   function part(figure, id) {
     const element = figure.querySelector('#' + id);
@@ -277,12 +285,13 @@
     const roots=[figure,$('deck-controls-content')].filter(Boolean);
     const inputs=[...new Set(roots.flatMap(n=>[...n.querySelectorAll('input,select')]))].map(n=>({n,value:n.value,checked:n.checked}));
     const buttons=[...new Set(roots.flatMap(n=>[...n.querySelectorAll('[aria-pressed]')]))].map(n=>({n,value:n.getAttribute('aria-pressed')}));
-    const savedState={...app.state},phase=c?.phase,count=c?.count;
+    const savedState={...app.state},phase=c?.phase,count=c?.count,savedBuild=build;
     const collect=()=>{update();for(const n of nodes)if(n.getClientRects().length)heights.set(n,Math.max(heights.get(n)||0,n.scrollHeight,n.offsetHeight));};
-    const pass=()=>{if(c){for(const p of slideSteps(scene)){c.phase=p;c.render();collect();}}else collect();};
+    const pass=()=>{if(scene.builds){for(const p of slideSteps(scene)){setBuild(scene,p);collect();}}else if(c){for(const p of slideSteps(scene)){c.phase=p;c.render();collect();}}else collect();};
     const setValue=(id,value)=>{if($(id))$(id).value=String(value);};
     const restoreSource=()=>{
       Object.assign(app.state,savedState);
+      build=savedBuild;
       inputs.forEach(({n,value,checked})=>{n.value=value;if(n.type==='checkbox')n.checked=checked;});
       buttons.forEach(({n,value})=>n.setAttribute('aria-pressed',value));
       if(c){c.phase=phase;c.count=count;c.render();}
@@ -306,7 +315,7 @@
             if(scene.prepare==='address')for(const button of $('offset-table').querySelectorAll('[data-offset]')){app.state.offset=button.dataset.offset;app.renderRetention();pass();}
           }
         }else if(scene.controller==='fusion'){
-          for(const pipeline of ['staged','mega'])for(const chunk of [0,1,2]){app.state.fusion=pipeline;app.state.fusionChunk=chunk;c.count=pipeline==='mega'?7:9;pass();}
+          for(const pipeline of ['staged','mega'])for(const chunk of [0,1,2]){app.state.fusion=pipeline;app.state.fusionChunk=chunk;c.count=app.fusionCount(pipeline);pass();}
         }else if(scene.controller==='slots'&&scene.slotDisplay==='reuse'){
           for(const policy of ['stage','microbatch']){app.state.slotPolicy=policy;pass();}
         }else if(scene.controller==='kernel'){
@@ -339,6 +348,7 @@
     restore();
     index = Math.max(0, Math.min(scenes.length - 1, i));
     const scene = scenes[index];
+    build=0;
     fullView = false;
     ['deck-title','deck-setup','deck-summary','deck-scope'].forEach(id=>clearReservation($(id)));
     $('deck-visual').replaceChildren(); $('deck-controls-content').replaceChildren();
@@ -358,6 +368,7 @@
         if (node.querySelector('button[data-phase]')) return false;
         if (scene.slotDisplay==='liveness' && node.id==='slot-policy-controls') return false;
         if (scene.id==='allocation' && node.id==='calculation-tabs') return false;
+        if (node.id==='memory-examples') return false;
         if (scene.prepare==='lifetime' && node.querySelector('#offset-table')) return false;
         return true;
       });
@@ -366,6 +377,8 @@
       if(scene.slotDisplay)document.querySelector(`#slots-display [data-view="${scene.slotDisplay}"]`).click();
       if(scene.display)document.querySelector(`#packing-display [data-view="${scene.display}"]`).click();
       if (scene.prepare) document.querySelector(`#retention-display [data-view="${scene.prepare}"]`).click();
+      if(scene.preset)source(scene.preset).click();
+      if(scene.builds)setBuild(scene,lastStep?scene.builds.length-1:0);
       if (c) c.set(lastStep ? range(scene)[1] : range(scene)[0]);
       figure.querySelectorAll('svg[id]').forEach(app.finishTransition);
 
@@ -412,7 +425,7 @@
     const camera = cameraFor(scene);
     for (const svg of visible) {
       const saved = savedCamera.get(svg);
-      const originalBounds=(saved || svg.getAttribute('viewBox')).split(/\s+/).map(Number);
+      const originalBounds=scene.bounds||(saved || svg.getAttribute('viewBox')).split(/\s+/).map(Number);
       let bounds=originalBounds;
       if(camera){const [x,y,w,h]=camera,[ox,oy,ow,oh]=originalBounds,padx=scene.pane?0:Math.max(85,w*.18),pady=scene.pane?0:Math.max(45,h*.18),left=Math.max(ox,x-padx-2),top=Math.max(oy,y-pady-2);bounds=[left,top,Math.min(ox+ow,x+w+padx+2)-left,Math.min(oy+oh,y+h+pady+2)-top];}
       svg.setAttribute('viewBox', bounds.join(' '));
@@ -487,6 +500,7 @@
     let sentences;
     try{sentences=[...new Intl.Segmenter('en',{granularity:'sentence'}).segment(text)].map(s=>s.segment.trim());}catch{sentences=[text];}
     if(scene.controller==='slots')return sentences.filter(s=>/continuation/.test(s)).join(' ');
+    if(scene.id==='lifetimes')return source('#dependency-math-note').textContent.match(/These are ideal dependency equations:.*$/)?.[0]||'';
     if(scene.figure==='precision-figure'){
       const chosen=sentences.filter(s=>app.state.format==='nvfp4'?/NVFP4/.test(s):/finite MXFP8/.test(s)).join(' ');
       const weight=[...f.querySelectorAll('#intermediate-table tbody tr')].find(tr=>tr.firstElementChild.textContent==='W13 / W2 weights');
@@ -506,7 +520,7 @@
     $('deck-page').textContent = `${index + 1} / ${scenes.length}`;
     $('deck-reference').href = '#' + scene.chapter;
     const c = app.controllers[scene.controller];
-    const steps=slideSteps(scene),at=c?steps.indexOf(c.phase):0;
+    const steps=slideSteps(scene),at=scene.builds?build:c?steps.indexOf(c.phase):0;
     const position=at>=0?at:Math.max(0,steps.findIndex(p=>p>=c.phase));
     $('deck-step').textContent=`Step ${position+1} / ${steps.length}${scene.controller==='slots'?' · '+Moe.schedule[c.phase]:''}`;
     $('deck-back').disabled = index === 0;
@@ -519,9 +533,10 @@
       $('deck-setup').textContent = node?.textContent || '';
     }
     const caption=captionNode(scene),summary=source(`[data-slide-summary="${scene.id}"]`);
-    const dynamic=caption&&(scene.controller||scene.figure==='recompute-figure');
+    const dynamic=caption&&(scene.controller||scene.builds||scene.figure==='recompute-figure'&&scene.id!=='lifetimes');
     const topic=scene.controller==='packing'?caption?.querySelector(scene.id==='layer-packing'?'.packing-step-summary':'.decision-step-summary'):null;
-    const takeaway=topic?cleanClone(topic):dynamic?firstSentenceFragment(caption,scene.controller==='slots'?3:2):summary?cleanClone(summary):null;
+    let takeaway=topic?cleanClone(topic):dynamic?firstSentenceFragment(caption,scene.controller==='slots'?3:2):summary?cleanClone(summary):null;
+    if(scene.id==='layer-packing'&&topic){takeaway=document.createDocumentFragment();takeaway.append(firstSentenceFragment(caption.querySelector('.decision-step-summary'),1),document.createTextNode(' '),firstSentenceFragment(topic,1));}
     $('deck-summary').replaceChildren(...(takeaway?[...takeaway.childNodes]:[]));
     $('deck-scope').textContent=scopeFor(scene);
     if (scene.kind === 'code') updateCode(scene);
@@ -569,6 +584,7 @@
           show(slide, false, false);
           const phases = slideSteps(scene), controller = app.controllers[scene.controller];
           phases.forEach((phase, step) => {
+            if(scene.builds)setBuild(scene,phase);
             controller?.set(phase);
             update();
             frames.push({ node: window.DeckPDF.freeze(canvas), scene: scene.id, slide, step, steps: phases.length, phase });
@@ -594,7 +610,7 @@
     document.body.classList.add('presentation-mode');
     createShell();
     const requested = location.hash.replace('#slide-', '');
-    const i = scenes.findIndex(scene => scene.id === requested);
+    const i = sceneIndex(requested);
     show(i >= 0 ? i : 0, false, false);
     if (!printMode) { setURL(true, push); $('deck-next').focus(); }
   }
@@ -632,7 +648,7 @@
   window.addEventListener('popstate', () => {
     if (new URLSearchParams(location.search).get('view') === 'slides') {
       if (!active) enter();
-      else { const i = scenes.findIndex(s => location.hash === '#slide-' + s.id); if (i >= 0) show(i, false, false); }
+      else { const i = sceneIndex(location.hash.replace('#slide-','')); if (i >= 0) show(i, false, false); }
     } else if (active) exit();
   });
   window.Presentation = { enter, exit, show, step, resize, printFrames, scenes, get active() { return active; }, get index() { return index; } };

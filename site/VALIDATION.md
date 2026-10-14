@@ -136,6 +136,31 @@
   presentation code excerpts. Kept the canonical two-column quantization axis
   layout and PyTorch wordmark in smaller presentation viewports.
 
+## Coherent examples and restored context
+
+- Consolidated the deck to 21 slides. The full packing, tile hierarchy, and
+  producer/consumer graph stay visible through their steps. Separate recompute,
+  pointer-map, tensor-core crop, and chunk-table slides were removed.
+- The capacity slide has three shared-control builds: factor 1.5 / scratch 4,
+  factor 0.5 / scratch 16, and exact 32 GiB / scratch 16. For the default BF16
+  shape these give 107.5, 36.5, and 32 GiB per slot, respectively.
+- Checked the 28 KiB example against the actual-source planner fixtures on both
+  ranks: 56 comparisons of decisions, saved cursors, totals, and offsets passed.
+  L2's 27,136-byte test fits; L3's 35,840-byte test does not.
+- Checked the expert-route backward equations against independent finite
+  differences for input, W13, W2, and score gradients. Maximum error was below
+  1.3e-10 in the double-precision numerical example.
+- Passed the complete 57-step sequence at 1600, 1280, and 390 px. The full
+  layout audit checks text bounds and every displayed SVG label. Checked 43
+  navigation, mode, full-frame, and article-restoration assertions per viewport.
+- Verified that the lifetime slide does not inherit the address view's crop,
+  manual packing budgets and Staged/Mega selection survive navigation, and
+  old slide links resolve to their consolidated examples.
+- The PDF sequence now has 57 default Mega pages, or 59 with Staged selected.
+  The capacity slide walks all three examples. The print-layout audit passed
+  2,893 checks, including source order, page dimensions, label bounds, unique
+  SVG references, and constant framing.
+
 These export checks used macOS WebKit. Chrome startup was blocked by process
 permissions in the execution environment, and automated native print-dialog
 verification did not complete. The sample PDF was assembled from WebKit PDF

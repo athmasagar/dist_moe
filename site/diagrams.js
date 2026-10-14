@@ -4,7 +4,7 @@ window.Views = (() => {
   const num=n=>n.toLocaleString('en-US'), hex=n=>'0x'+Math.round(n).toString(16).toUpperCase(), bytes=n=>n>=2**30?(n/2**30).toFixed(2)+' GiB':n>=2**20?(n/2**20).toFixed(2)+' MiB':n>=1024?(n/1024).toFixed(2)+' KiB':n+' B';
   const mathHTML=s=>esc(s).replace(/\bB_([MKN])\b/g,'<span class="math-inline">B<sub>$1</sub></span>');
   function mathSVG(s){
-    const escaped=esc(s);let html='',cursor=0,lowered=false;
+    const escaped=esc(s).replace(/\^T/g,'<tspan baseline-shift="super" font-size="78%">T</tspan>');let html='',cursor=0,lowered=false;
     for(const match of escaped.matchAll(/\bB_([MKN])\b/g)){
       html+=`<tspan${lowered?' dy="-3"':''}>${escaped.slice(cursor,match.index)}B</tspan>`;
       html+=`<tspan class="tile-subscript" font-size="78%" dy="3">${match[1]}</tspan>`;
@@ -194,13 +194,33 @@ window.Views = (() => {
     unique.forEach(item=>{let title=item.name;if(layout.precision==='mxfp8'&&title.startsWith('x row'))title=title.includes('scales')?'x/h2 row scales':'x/h2 row qdata';s+=r(xx,230,w,49,item.name===selected?'blue-fill':'amber-fill')+t(xx+9,250,title,'small')+t(xx+9,270,hex(item.offset),'mono muted');xx+=w+9;});
     s+=r(16,324,1008,54,layout.mode==='save'?'green-fill':'orange-fill')+t(29,346,layout.mode==='save'?(layout.precision==='bf16'?'Backward reads saved x_gathered/h1/h3; SwiGLU rebuilds temporary h2.':'Backward reads saved column bundles and h1/h3; forward GEMMs need no replay.'):'Backward republishes saved x and reconstructs expert intermediates in scratch.','small bold')+t(29,367,'Each tensor’s consumer and exact offset are listed below. Region cards are schematic; the offset table gives the precise byte extents.','small muted');return finish(s);
   }
-  function lifetimes(layout){start('lifetimes');const bf=layout.precision==='bf16',save=layout.mode==='save';let rows;
-    if(save&&bf)rows=[['x_gathered',[[0,8,'green']],6,'W13 WGRAD'],['h1',[[0,8,'green']],5,'SwiGLU derivative'],['h3',[[2,8,'green']],3,'Score gradient'],['h2 · scratch',[[1,3,'amber'],[3,5,'amber']],4,'W2 WGRAD']];
-    else if(save)rows=[['x column bundle',[[0,8,'green']],6,'W13 WGRAD'],['h1',[[0,8,'green']],5,'SwiGLU derivative'],['h2 column bundle',[[1,8,'green']],4,'W2 WGRAD'],['h3',[[2,8,'green']],3,'Score gradient'],['x/h2 row scratch',[[0,1,'amber'],[1,3,'amber']],2,'FPROP consumes rows']];
-    else rows=[['Saved source x',[[0,8,'green']],3,'Replay source'],[bf?'x_gathered':'x column bundle',[[0,3,'amber'],[3,7,'amber']],6,'W13 WGRAD'],['h1',[[0,3,'amber'],[3,6,'amber']],5,'SwiGLU derivative'],[bf?'h2':'h2 column bundle',[[1,3,'amber'],[3,5,'amber']],4,'W2 WGRAD'],['h3 · combine HBM',[[2,3,'blue'],[3,4,'blue']],3,'Score gradient']];
-    const x0=208,unit=99;let s='';const headers=[['W13','forward'],['SwiGLU','forward'],['W2','forward'],['Setup /','rebuild'],['W2','grad_h2'],['SwiGLU','grad_h1'],['W13','grad_x'],['Release','slot']];headers.forEach((h,i)=>{s+=t(x0+i*unit+unit/2,21,h[0],'small bold','middle')+t(x0+i*unit+unit/2,40,h[1],'tiny muted','middle');});s+=l(x0+3*unit-4,51,x0+3*unit-4,344,'line','stroke-dasharray="3 3"');
-    rows.forEach((row,i)=>{const y=66+i*52;s+=t(16,y+17,row[0],'small bold')+t(16,y+36,row[3],'tiny muted')+l(x0,y+40,1005,y+40);for(const [a,b,color]of row[1])s+=r(x0+a*unit,y+5,(b-a)*unit-8,25,`${color}-fill`);const xx=x0+(row[2]+.5)*unit;s+=`<path d="M${xx},${y} l6,8 -6,8 -6,-8Z" fill="${C('purple')}"/>`;});
-    s+=t(16,355,'Bars show storage ownership or temporary values; diamonds mark the final reader of a forward value.','small muted');s+=t(16,380,save&&bf?'SwiGLU recreates h2 in backward; large saved intermediates need no forward GEMM replay.':save?'Saved column bundles feed WGRAD; serialized x/h2 row operands can alias scratch.':'Only source x is retained. Backward reconstruction creates the temporary operands again.','small');return finish(s);
+  function lifetimes(layout){
+    start('lifetimes');const bf=layout.precision==='bf16',save=layout.mode==='save';let rows;
+    const math={
+      xg:['xg = gather routed x','grad_xg = W13^T grad_h1','grad_W13 += grad_h1 xg^T'],
+      h1:['h1 = W13 xg = [g; u]','grad_h1 = [dg; du]','Backward needs the gate/up values'],
+      h2:['h2 = SiLU(g) * u','grad_h2 = W2^T grad_h3','grad_W2 += grad_h3 h2^T'],
+      h3:['h3 = W2 h2','grad_h3 = score * grad_y','grad_score = grad_y^T h3'],
+      x:['x = caller input','Replay gathers x into expert rows','grad_x = sum routed grad_xg'],
+      row:['Qrow(xg), Qrow(h2)','W13 and W2 forward operands','Row bytes can be reused after MMA']
+    };
+    if(save&&bf)rows=[['x_gathered',[[0,8,'green']],6,'xg'],['h1',[[0,8,'green']],5,'h1'],['h2 · scratch',[[1,3,'amber'],[3,5,'amber']],4,'h2'],['h3',[[2,8,'green']],3,'h3']];
+    else if(save)rows=[['x column bundle',[[0,8,'green']],6,'xg'],['h1',[[0,8,'green']],5,'h1'],['h2 column bundle',[[1,8,'green']],4,'h2'],['h3',[[2,8,'green']],3,'h3'],['x/h2 row scratch',[[0,1,'amber'],[1,3,'amber']],2,'row']];
+    else rows=[['Saved source x',[[0,8,'green']],3,'x'],[bf?'x_gathered':'x column bundle',[[0,3,'amber'],[3,7,'amber']],6,'xg'],['h1',[[0,3,'amber'],[3,6,'amber']],5,'h1'],[bf?'h2':'h2 column bundle',[[1,3,'amber'],[3,5,'amber']],4,'h2'],['h3 · combine HBM',[[2,3,'blue'],[3,4,'blue']],3,'h3']];
+    const x0=560,unit=107.5;let s=t(16,20,'FORWARD PRODUCER / BACKWARD DEPENDENCE','small bold');
+    const headers=[['W13','forward'],['SwiGLU','forward'],['W2','forward'],['Setup /','rebuild'],['W2','grad_h2'],['SwiGLU','grad_h1'],['W13','grad_xg'],['Release','slot']];
+    headers.forEach((h,i)=>{s+=t(x0+i*unit+unit/2,20,h[0],'dependency-heading','middle')+t(x0+i*unit+unit/2,41,h[1],'dependency-subhead','middle');});
+    s+=l(x0+3*unit-4,51,x0+3*unit-4,501,'line','stroke-dasharray="3 3"');
+    rows.forEach((row,i)=>{
+      const y=65+i*86;s+=t(16,y+15,row[0],'dependency-name');
+      math[row[3]].forEach((equation,j)=>s+=t(16,y+37+j*20,equation,'equation-text'+(j===0?' blue-text':' muted')));
+      s+=l(x0,y+67,1420,y+67);
+      for(const[a,b,color]of row[1])s+=r(x0+a*unit,y+13,(b-a)*unit-8,29,`${color}-fill`);
+      const xx=x0+(row[2]+.5)*unit;s+=`<path d="M${xx},${y+7} l6,8 -6,8 -6,-8Z" fill="${C('purple')}"/>`;
+    });
+    s+=r(16,509,1408,69,'purple-fill')+t(29,531,"dg = grad_h2 * u * SiLU'(g);  du = grad_h2 * SiLU(g)",'equation-text')+t(29,558,"SiLU'(g) = sigmoid(g) * (1 + g * (1 - sigmoid(g)))",'equation-text');
+    s+=t(16,600,'xg = x_gathered · column-vector math for one route · WGRAD sums expert rows · owner grad_x sums routes','small muted');
+    return finish(s);
   }
   function kernel(p,bm,bn,tail,kSlice){start('kernel');const bk=64,valid=tail?Math.floor(bm*.703125):bm,scale=140/256,aw=bk*scale,ah=bm*scale,bw=bn*scale,bh=bk*scale,cw=bn*scale,ch=bm*scale;let s='';
     s+=r(16,10,189,247,'blue-fill')+t(30,35,'PEER SYMMETRIC HBM','small bold')+t(30,58,'Complete source rows','small');s+=grid(40,84,140,ah,16,16,'blue',valid/bm)+t(30,243,`${valid}/${bm} valid rows`,'small');

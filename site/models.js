@@ -58,7 +58,7 @@ window.Moe = (() => {
   }
   // Four ordinary BF16 layers, exactly matching the device look-ahead branch.
   // Each layer routes 8 assignments across two ranks; no physical row padding.
-  function packing(slotBytes=24576,rank=1) {
+  function packing(slotBytes=28672,rank=1) {
     const c={T:2,D:256,F:256,K:2,E:4,EP:2,precision:'bf16',pipeline:'staged'};
     const counts=[[4,4],[6,2],[3,5],[5,3]],depth=counts.length,input=align(c.T*c.D*2);
     const minimum=depth*input,maximum=Math.max(...[0,1].map(r=>counts.reduce((n,rows)=>n+sum(savedParts(c,rows[r])),0)));
