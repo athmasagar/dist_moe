@@ -257,3 +257,21 @@ resolve physical CUDA mapping granularity on a GPU.
   KaTeX glyph bounds are checked inside their definition and slide; invisible
   strut overflow is not used as a proxy for visible clipping. The printable
   deck passes 3,815 checks, and the metrics PDF page was rendered and inspected.
+
+## Memory results: explicit purpose per step
+
+- The memory slide now gives each step its own title: kernel scratch policy,
+  routing-dependent activation occupancy, then layer packing with one replay.
+  Setups and summaries explicitly announce the MXFP8-to-BF16 change and the
+  transition from measured single-layer cases to an eight-layer projection.
+- The packing table shows retained bytes, slot extents, and backward behavior.
+  Its diagram shows 7 × 480 + 28 = 3,388 MiB saved within a 3,644 MiB slot,
+  alongside 5,568 MiB of sequential shared scratch. The separate-context
+  reservation comparison was removed from this view to keep the explanation
+  focused on the actual retention decision.
+- The complete 71-step sequence passes 3,176/3,173/3,173 layout checks at
+  1600/1280/390 px. Result interaction checks pass 2,098 checks per viewport,
+  including fixed framing across steps and restoration of shared article
+  figures. All three memory steps were visually inspected. The printable
+  sequence passes 3,815 checks; the 71-page PDF was regenerated, checked for
+  titles and counters, and its updated packing page rendered for inspection.

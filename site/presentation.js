@@ -113,6 +113,7 @@
     if (scene.kind === 'code') return scene.excerpt === 'config' ? 'dist_moe.Config' : (current&&app.state.code==='memory'?'dist_moe.plan_memory':'dist_moe.routed_experts');
     const figure = figures[scene.figure];
     if(current && scene.controller==='efficiency')return source(`[data-slide-summary="results-${app.state.resultMode}"]`).previousElementSibling.textContent;
+    if(current && scene.controller==='result-memory')return app.getStepCaption(scene.controller,app.controllers[scene.controller].phase)[0];
     if (scene.title === 'precision-reference') return figure.querySelector('.inside-heading').textContent;
     if (scene.title === 'allocation') return figure.querySelector('.inside-heading').textContent;
     if (scene.title === 'costs') return figure.querySelectorAll('.inside-heading')[1].textContent;
