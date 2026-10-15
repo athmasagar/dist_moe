@@ -24,7 +24,9 @@ def main() -> None:
         "logicalForwardPayloadBytesRank0", "forwardFlopsPerLogicalPayloadByteRank0",
     ]
     with (directory / "standalone-results.csv").open("w", newline="") as output:
-        writer = csv.DictWriter(output, fieldnames=columns, extrasaction="ignore")
+        writer = csv.DictWriter(
+            output, fieldnames=columns, extrasaction="ignore", lineterminator="\n"
+        )
         writer.writeheader()
         writer.writerows(data["cases"])
 
