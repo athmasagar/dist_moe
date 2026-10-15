@@ -83,7 +83,7 @@ def _wait_counter_at_least(ptr: cute.Pointer, expected: cutlass.Uint32) -> None:
             # backoff here is a measured regression: sleep-before-check with
             # 64->2048 ns growth cost +3-8% on Mega blockscaled small-token
             # decode across EP16-64, and even check-first growth after a
-            # 1.6 us grace window still measured +2.7% (t5 NVFP4 decode 89.7
+            # 1.6 us grace window still measured +2.7% (square NVFP4 decode 89.7
             # and 86.4 us respectively vs 84.1 us for this form, which is
             # trunk parity) -- decode's per-tile handoff waits are long
             # enough to engage any backoff but too latency-critical to
@@ -97,6 +97,28 @@ def _wait_counter_at_least(ptr: cute.Pointer, expected: cutlass.Uint32) -> None:
                 if not ready:
                     _dispatch_quant_nanosleep(50)
         cute.arch.sync_warp()
+
+
+@cute.jit
+def _wait_lane_counters_at_least(
+    ptr: cute.Pointer, active: cutlass.Boolean, expected: cutlass.Uint32
+) -> None:
+    """Warp-uniform acquire-spin until every active lane's counter behind
+    ``ptr`` reaches ``expected``.
+
+    Each lane probes its own counter, so a wait on up to 32 counters costs one
+    round trip instead of one serial acquire per counter. ``ptr`` must be
+    readable on inactive lanes too.
+    """
+    done = cute.arch.load(ptr, cutlass.Uint32, sem="acquire", scope="gpu")
+    pending = cute.arch.vote_ballot_sync(active & (done < expected)) != 0
+    while pending:
+        _dispatch_quant_nanosleep(50)
+        done = cute.arch.load(ptr, cutlass.Uint32, sem="acquire", scope="gpu")
+        pending = cute.arch.vote_ballot_sync(active & (done < expected)) != 0
+    # Other lanes performed some of the acquires; this orders them before the
+    # dependent loads issued by any single lane.
+    cute.arch.sync_warp()
 
 
 def _make_u32x4_vector_type():
@@ -228,7 +250,7 @@ def _store_dispatch_qwords(
     q_vals: cute.Tensor,
     row: cutlass.Int32,
     q_word_col: cutlass.Int32,
-    row_in_tile: cutlass.Int32,
+    row_lane_in_tile: cutlass.Int32,
     col_quant: cutlass.Constexpr[bool] = False,
 ) -> None:
     if cutlass.const_expr(params.is_fp4):
@@ -236,7 +258,7 @@ def _store_dispatch_qwords(
             mQWords,
             q_vals,
             row,
-            row_in_tile,
+            row_lane_in_tile,
             q_word_col,
             params.DISPATCH_QUANT_ELEMS_PER_LANE,
             params.DISPATCH_QUANT_COL_LANES,
@@ -293,6 +315,8 @@ def _dispatch_copy_blockscaled_work_tile(  # noqa: C901
     qdata_row_bytes = q_word_cols * cutlass.Int32(4)
     qword_vecs_per_work_tile: cutlass.Constexpr[int] = q_words_per_work_tile // 4
     qword_vec_count: cutlass.Constexpr[int] = sf_vec_size * qword_vecs_per_work_tile
+    # Static q-word row stride: an Int32 row would wrap row * q_word_cols past 2**31.
+    mRowQWords = cute.domain_offset((cutlass.Int64(row_start), 0), mRowQWords)
     for linear_qword_vec_base in cutlass.range(
         group_lane,
         cutlass.Int32(qword_vec_count),
@@ -339,10 +363,7 @@ def _dispatch_copy_blockscaled_work_tile(  # noqa: C901
                 )
                 + qword_col
             )
-            output_idx = cute.crd2idx(
-                (row_start + local_row, qword_col),
-                mRowQWords.layout,
-            )
+            output_idx = cute.crd2idx((local_row, qword_col), mRowQWords.layout)
             output_ptrs.append(mRowQWords.iterator + output_idx)
             local_rows.append(local_row)
             qword_cols.append(qword_col)
@@ -379,7 +400,7 @@ def _dispatch_copy_blockscaled_work_tile(  # noqa: C901
                     local_row = local_rows[prefetch_idx]
                     for value_idx in cutlass.range_constexpr(4):
                         mRowQWords[
-                            row_start + local_row,
+                            local_row,
                             qword_col + cutlass.Int32(value_idx),
                         ] = cutlass.Uint32(0)
 
@@ -519,6 +540,7 @@ def _dispatch_quantize_tile(  # noqa: C901
     )
     col_start = col_tile_elem_offset + col_lane_elem_offset
     col_q_word = col_start // cutlass.Int32(params.DISPATCH_QUANT_QDATA_ELEMS_PER_WORD)
+
     row_vals_packed = cute.make_rmem_tensor(
         (
             params.DISPATCH_QUANT_ROW_REPS,
@@ -663,9 +685,15 @@ def _dispatch_quantize_tile(  # noqa: C901
                     )
                     cute.arch.store(col_scale_ptr, col_scale_u8, cop="cs")
 
+    if cutlass.const_expr(not params.is_fp4):
+        # Static q-word row stride: an Int32 row would wrap row * K / 4 past 2**31.
+        mRowQWords = cute.domain_offset((cutlass.Int64(row_start), 0), mRowQWords)
+        mColQWords = cute.domain_offset((cutlass.Int64(row_start), 0), mColQWords)
+        row_start = cutlass.Int32(0)
     for rep in cutlass.range_constexpr(params.DISPATCH_QUANT_ROW_REPS):
         row_rep_offset = cutlass.Int32(rep * params.DISPATCH_QUANT_ROW_LANES)
         row = row_start + row_lane + row_rep_offset
+        row_lane_in_tile = row_lane + row_rep_offset
         if cutlass.const_expr(row_quant):
             row_q_vals = cute.make_rmem_tensor(
                 params.DISPATCH_QUANT_ELEMS_PER_LANE, cutlass.Float32
@@ -685,7 +713,7 @@ def _dispatch_quantize_tile(  # noqa: C901
                 row_q_vals,
                 row,
                 col_q_word,
-                row_lane + row_rep_offset,
+                row_lane_in_tile,
                 False,
             )
         if cutlass.const_expr(col_quant):
@@ -709,7 +737,7 @@ def _dispatch_quantize_tile(  # noqa: C901
                 col_q_vals,
                 row,
                 col_q_word,
-                row_lane + row_rep_offset,
+                row_lane_in_tile,
                 True,
             )
 
@@ -1030,6 +1058,108 @@ def _mega_activation_wgrad_tile_wait(
         )
 
 
+# Each gather row sub-tile splits its K range into this many work items so
+# peer-bound gathers spread across CTAs. Measured at 16- and 32-row
+# sub-tiles: 2 items leave the 16-row gather under-spread, and 8 lose to the
+# per-item claim/fence/signal overhead.
+_GATHER_K_SEGMENTS: int = 4
+# One item claims every K segment of its row sub-tile once the sub-tiles
+# fill this many waves of gather WGs. At one wave, T1024 lost 2-7% on
+# EP16-EP64 to the coarser spread.
+_GATHER_CLAIM_ALL_MIN_WAVES: int = 8
+# The split only pays while the GEMM out-computes its gather, i.e. for wide
+# enough outputs per gathered row. Measured on GB300 bf16: the split cost
+# 3-7% at N=1792 (16-19% on a skew-hot rank) and 4% at N=2048, and saved
+# 2% at N=2560 and 0.4-1.2% at N=3072-4096.
+_GATHER_K_SPLIT_MIN_OUT_FEATURES: int = 2560
+
+
+def _gather_k_segments(out_features: int) -> int:
+    """K segments per gather row sub-tile of a GEMM that produces
+    `out_features` outputs per gathered row."""
+    if out_features < _GATHER_K_SPLIT_MIN_OUT_FEATURES:
+        return 1
+    return _GATHER_K_SEGMENTS
+
+
+def _gather_chunk_prefetch(
+    rows_per_warp: int, k_segments: int, loads_per_lane: int = 32
+) -> int:
+    """K chunks a row gather loads per round with `rows_per_warp` rows per
+    warp and `k_segments` K segments per row sub-tile; narrow sub-tiles
+    batch chunks up to `loads_per_lane` loads in flight per lane."""
+    row_prefetch = min(rows_per_warp, 8)
+    if row_prefetch < 8:
+        return loads_per_lane // row_prefetch
+    # A second in-flight K-chunk only pays while the gather bounds the GEMM.
+    # K-split (wide-output) GEMMs out-compute their gather, and the deeper
+    # batch steals from the overlapped MMA instead: measured on GB300 bf16
+    # N=3584 (skew-hot rank, 28672 rows per expert), tensor-active fell from
+    # 95% to 88% during the gather and the GEMM ran 4.5% longer.
+    return 1 if k_segments > 1 else 2
+
+
+def _gather_k_segment_columns(
+    K,
+    AG_BLOCK_SIZE_M: int,
+    AG_BLOCK_SIZE_K: int,
+    K_SEGMENTS: int,
+    NUM_GATHER_WARPS: int,
+):
+    """Columns per K segment of a row gather. Segments are whole load
+    rounds, so the last one may be short or empty."""
+    round_cols = (
+        _gather_chunk_prefetch(AG_BLOCK_SIZE_M // NUM_GATHER_WARPS, K_SEGMENTS)
+        * AG_BLOCK_SIZE_K
+    )
+    num_rounds = (K + round_cols - 1) // round_cols
+    return (num_rounds + K_SEGMENTS - 1) // K_SEGMENTS * round_cols
+
+
+@cute.jit
+def _gather_k_segment_tma_wait(
+    kernel,
+    tile_m_idx: cutlass.Int32,
+    tile_m_start_per_group: cutlass.Int32,
+    a_buff_counter_addr_i64: cutlass.Int64,
+    kk: cutlass.Int32,
+    num_k_tiles: cutlass.Int32,
+    K: cutlass.Int32,
+    NUM_SUB_PER_GEMM_M: cutlass.Constexpr[int],
+) -> cutlass.Int32:
+    """`_tma_k_segment_wait` of a kernel whose gather WG runs
+    `_dispatch_gather_producer_body`: spins (warp-wide) until the K segments
+    the M-tile's gather has signalled cover k-tile `kk`, and returns how many
+    leading k-tiles they cover."""
+    K_SEGMENTS = kernel.GATHER_K_SEGMENTS
+    NUM_GATHER_WARPS = kernel.GATHER_WG_THREADS // 32
+    seg_cols = _gather_k_segment_columns(
+        K, kernel.AG_BLOCK_SIZE_M, kernel.AG_BLOCK_SIZE_K, K_SEGMENTS, NUM_GATHER_WARPS
+    )
+    ptr = cute.make_ptr(
+        cutlass.Uint32,
+        a_buff_counter_addr_i64
+        + cutlass.Int64(tile_m_start_per_group + tile_m_idx) * cutlass.Int64(4),
+        cute.AddressSpace.gmem,
+    )
+    cute.arch.sync_warp()
+    ready_k = cutlass.Int32(0)
+    while ready_k <= kk:
+        v = cute.arch.load(ptr, cutlass.Uint32, sem="acquire", scope="gpu")
+        # Segment items may finish out of order; only a ready prefix counts.
+        ready_segs = cutlass.Int32(0)
+        for s in cutlass.range_constexpr(K_SEGMENTS):
+            seg_count = (v >> cutlass.Uint32(8 * s)) & cutlass.Uint32(0xFF)
+            if ready_segs == cutlass.Int32(s) and seg_count >= cutlass.Uint32(
+                NUM_SUB_PER_GEMM_M * NUM_GATHER_WARPS
+            ):
+                ready_segs = cutlass.Int32(s + 1)
+        ready_k = ready_segs * seg_cols // cutlass.Int32(kernel.BLOCK_SIZE_K)
+        if ready_segs == cutlass.Int32(K_SEGMENTS):
+            ready_k = num_k_tiles
+    return cute.arch.shuffle_sync(ready_k, cutlass.Int32(0))
+
+
 @cute.jit
 def _dispatch_gather_producer_body(  # noqa: C901
     gather_counter_addr_i64: cutlass.Int64,
@@ -1051,16 +1181,53 @@ def _dispatch_gather_producer_body(  # noqa: C901
     has_padding_sentinels: cutlass.Constexpr[bool],
     _BAR_GATHER_WG_INTERNAL: cutlass.Constexpr[int],
     _DIST_GATHER_WG_THREADS: cutlass.Constexpr[int],
+    SEGMENT_SIGNALS: cutlass.Constexpr[bool] = True,
+    LOADS_PER_LANE: cutlass.Constexpr[int] = 32,
+    gather_columns: cutlass.Constexpr[bool] = False,
+    K_SEGMENTS: cutlass.Constexpr[int] = 1,
+    M_INTERLEAVE: cutlass.Constexpr[int] = 0,
 ) -> None:
     """Gather producer body (GATHER WG, 128 threads): pulls A from
     peer GPUs via per-row pointer indirection, signals per-M-tile
-    completion to the TMA producer."""
+    completion to the TMA producer.
+
+    `K_SEGMENTS > 1` splits each row sub-tile's K range into that many
+    segments and counts them per segment: byte `s` of the M-tile counter
+    collects one increment per gather warp and row sub-tile once segment
+    `s` has landed, so the consumer can start on a segment as soon as its
+    byte reaches `BLOCK_SIZE_M // AG_BLOCK_SIZE_M * NUM_GATHER_WARPS`. A
+    work item covers every segment of its sub-tile, signalling each as it
+    finishes, once the sub-tiles holding rows fill
+    `_GATHER_CLAIM_ALL_MIN_WAVES` waves of gather WGs; smaller gathers
+    claim one segment per item to spread across more WGs.
+    Without `SEGMENT_SIGNALS` (consumers that wait for whole tiles) every
+    item covers one segment and signals once, at its end."""
+    assert not (gather_columns and K_SEGMENTS > 1), "column gather has no K split"
     tidx, _, _ = cute.arch.thread_idx()
     lane = tidx % cutlass.Int32(128)
     gemm_m_idx = cutlass.Int32(0)
     sub_offset = cutlass.Int32(0)
 
     NUM_SUB_PER_GEMM_M: cutlass.Constexpr[int] = BLOCK_SIZE_M // AG_BLOCK_SIZE_M
+    NUM_GATHER_WARPS: cutlass.Constexpr[int] = _DIST_GATHER_WG_THREADS // 32
+    claim_segments = cutlass.Int32(1)
+    claim_step = cutlass.Uint32(1)
+    if cutlass.const_expr(K_SEGMENTS > 1):
+        assert K_SEGMENTS <= 4 and NUM_SUB_PER_GEMM_M * NUM_GATHER_WARPS < 256, (
+            "segment counts must fit one byte of the M-tile counter each"
+        )
+    if cutlass.const_expr(K_SEGMENTS > 1 and SEGMENT_SIGNALS):
+        num_row_subtiles = cutlass.Int32(0)
+        for g in cutlass.range(G, unroll=1):
+            num_row_subtiles += (
+                cutlass.Int32(split_sizes[g]) + cutlass.Int32(AG_BLOCK_SIZE_M - 1)
+            ) // cutlass.Int32(AG_BLOCK_SIZE_M)
+        grid_dim = cute.arch.grid_dim()
+        if num_row_subtiles >= cutlass.Int32(
+            _GATHER_CLAIM_ALL_MIN_WAVES * grid_dim[0] * grid_dim[1] * grid_dim[2]
+        ):
+            claim_segments = cutlass.Int32(K_SEGMENTS)
+        claim_step = cutlass.Uint32(claim_segments)
 
     # Initial fetch: lane 0 atomic-fetch-add on the global counter,
     # broadcast via SMEM scratch + WG barrier.
@@ -1069,7 +1236,7 @@ def _dispatch_gather_producer_body(  # noqa: C901
             cute.make_ptr(
                 cutlass.Uint32, gather_counter_addr_i64, cute.AddressSpace.gmem
             ),
-            cutlass.Uint32(1),
+            claim_step,
             sem="release",
             scope="gpu",
         )
@@ -1088,18 +1255,19 @@ def _dispatch_gather_producer_body(  # noqa: C901
     visitor = GroupedProblemVisitor.create(
         split_sizes,
         cutlass.Int32(0),
-        cutlass.Int32(1),
+        K if gather_columns else cutlass.Int32(1),
         K,
         G,
         _FPROP,
         BLOCK_SIZE_M,
-        1,
+        AG_BLOCK_SIZE_K if gather_columns else 1,
         AG_BLOCK_SIZE_K,
-        False,
+        gather_columns,
         1,
         local_rank,
         WORLD_SIZE,
-        M_SUBTILES=NUM_SUB_PER_GEMM_M,
+        M_SUBTILES=NUM_SUB_PER_GEMM_M * K_SEGMENTS,
+        M_INTERLEAVE=M_INTERLEAVE,
     )
     work = visitor.get_work(tile_idx)
 
@@ -1110,13 +1278,24 @@ def _dispatch_gather_producer_body(  # noqa: C901
 
         if work.is_valid_tile:
             gemm_m_idx = work.tile_m_idx
-            sub_offset = work.subtile_idx
+            sub_offset = work.subtile_idx // cutlass.Int32(K_SEGMENTS)
+            k_seg = work.subtile_idx % cutlass.Int32(K_SEGMENTS)
+            feature_tile_idx = work.tile_n_idx
+            if cutlass.const_expr(gather_columns):
+                row_tiles = (m_size + AG_BLOCK_SIZE_M - 1) // AG_BLOCK_SIZE_M
+                group_tile_idx = tile_idx - visitor.tile_start
+                feature_tile_idx = group_tile_idx // row_tiles
+                gemm_m_idx = group_tile_idx % row_tiles
 
             base_m = gemm_m_idx * cutlass.Int32(
                 BLOCK_SIZE_M
             ) + sub_offset * cutlass.Int32(AG_BLOCK_SIZE_M)
 
             num_k_chunks = (K + AG_BLOCK_SIZE_K - 1) // AG_BLOCK_SIZE_K
+            seg_signals = cutlass.Uint32(0)
+            seg_counter_addr = a_buff_counter_addr_i64 + cutlass.Int64(
+                tile_m_start_per_group + gemm_m_idx
+            ) * cutlass.Int64(4)
 
             # Rows beyond m_size are masked off; we still signal at
             # the end so the consumer observes NUM_SUB_PER_GEMM_M
@@ -1128,7 +1307,6 @@ def _dispatch_gather_producer_body(  # noqa: C901
                 # col-vec across all rows (one peer ptr per row, reused
                 # across k_chunks).
                 ELEMS_PER_VEC: cutlass.Constexpr[int] = 4
-                NUM_GATHER_WARPS: cutlass.Constexpr[int] = _DIST_GATHER_WG_THREADS // 32
                 ROWS_PER_WARP: cutlass.Constexpr[int] = (
                     AG_BLOCK_SIZE_M // NUM_GATHER_WARPS
                 )
@@ -1146,7 +1324,7 @@ def _dispatch_gather_producer_body(  # noqa: C901
                 # Hoist per-row peer-ptr loads out of the k_chunk loop
                 # (invariant). Loads are unconditional so all entries
                 # of `peer_bases` share the same cute SSA type; the
-                # actual LDG/STG is gated by `row_in_bounds[r]`.
+                # STG is gated by `row_in_bounds[r]`.
                 #
                 # CORRECTNESS: clamp `safe_row` to [0, m_size-1] before
                 # using it as a `gather_a_ptrs` index. Without the
@@ -1195,9 +1373,13 @@ def _dispatch_gather_producer_body(  # noqa: C901
                 row_bundle_in_bounds = (
                     base_m + row_bundle_start + cutlass.Int32(ROWS_PER_WARP)
                 ) <= m_size
+                # A warp whose rows all lie past m_size copies nothing but
+                # still runs the K loop: its segment signals are counted.
+                row_bundle_any = (base_m + row_bundle_start) < m_size
                 # Per-lane 8-bf16-element vector covers cols
                 # [col_b16, col_b16 + 8). Predicate on K so the partial
-                # last k_chunk masks out-of-bounds lanes. Upstream
+                # last k_chunk masks OOB lanes (matches TLX's `mask_ak`
+                # in `_gather_tile_inner`). Upstream
                 # `_validate_cute_vector_width` already guarantees
                 # K % 8 == 0, so per-vector granularity is sufficient.
                 ELEMS_PER_VEC_BF16: cutlass.Constexpr[int] = 8
@@ -1208,27 +1390,49 @@ def _dispatch_gather_producer_body(  # noqa: C901
                 # (~1.9 us per 256-element chunk: fc13 gather cost measured
                 # 7.5 us per 1024 rows of K). Batch loads across k_chunks as
                 # well, targeting 32 loads in flight. Wide sub-tiles
-                # (ROW_PREFETCH == 8, the prefill shapes) keep
-                # CHUNK_PREFETCH == 1 so their codegen and register budget
-                # are unchanged.
+                # (ROW_PREFETCH == 8, the prefill shapes) batch two
+                # k_chunks (16 loads in flight per lane) unless K-split.
                 CHUNK_PREFETCH: cutlass.Constexpr[int] = (
-                    1 if ROW_PREFETCH >= 8 else 32 // ROW_PREFETCH
+                    1
+                    if gather_columns
+                    else _gather_chunk_prefetch(
+                        ROWS_PER_WARP, K_SEGMENTS, LOADS_PER_LANE
+                    )
                 )
-                num_k_outer = (
+                # K segments are whole CHUNK_PREFETCH batches, so every
+                # batch but the tensor's last stays on the batched path.
+                num_k_batches = (
                     num_k_chunks + cutlass.Int32(CHUNK_PREFETCH - 1)
                 ) // cutlass.Int32(CHUNK_PREFETCH)
+                seg_batches = (
+                    num_k_batches + cutlass.Int32(K_SEGMENTS - 1)
+                ) // cutlass.Int32(K_SEGMENTS)
+                item_batches = seg_batches * claim_segments
+                num_k_outer = cutlass.max(
+                    cutlass.min(item_batches, num_k_batches - k_seg * seg_batches),
+                    cutlass.Int32(0),
+                )
+                if cutlass.const_expr(gather_columns):
+                    num_k_outer = cutlass.Int32(1)
                 for k_outer in cutlass.range(num_k_outer, unroll=1):
-                    k_chunk0 = k_outer * cutlass.Int32(CHUNK_PREFETCH)
+                    k_chunk0 = (k_seg * seg_batches + k_outer) * cutlass.Int32(
+                        CHUNK_PREFETCH
+                    )
+                    if cutlass.const_expr(gather_columns):
+                        k_chunk0 = feature_tile_idx
                     batch_col_end = (
                         col_b32 * cutlass.Int32(2)
                         + (k_chunk0 + cutlass.Int32(CHUNK_PREFETCH - 1))
                         * cutlass.Int32(AG_BLOCK_SIZE_K)
                         + cutlass.Int32(ELEMS_PER_VEC_BF16)
                     )
+                    # Partial bundles batch too: the per-chunk path below
+                    # pays one NVLink round trip per K chunk, which bounds
+                    # decode-sized groups.
                     if (
                         cutlass.const_expr(CHUNK_PREFETCH > 1)
                         and (batch_col_end <= K)
-                        and row_bundle_in_bounds
+                        and row_bundle_any
                     ):
                         chunk_vecs: list = []
                         for cc in cutlass.range_constexpr(CHUNK_PREFETCH):
@@ -1259,16 +1463,17 @@ def _dispatch_gather_producer_body(  # noqa: C901
                                 * cutlass.Int32(AG_BLOCK_SIZE_K)
                             ) * cutlass.Int64(elem_size_bytes_a)
                             for r in cutlass.range_constexpr(ROWS_PER_WARP):
-                                dst_addr = dst_row_bases[r] + cc_offset_bytes
-                                cute.arch.store(
-                                    cute.make_ptr(
-                                        cutlass.Uint32,
-                                        dst_addr,
-                                        cute.AddressSpace.gmem,
-                                    ),
-                                    chunk_vecs[cc][r],
-                                    cop="cg",
-                                )
+                                if row_in_bounds[r]:
+                                    dst_addr = dst_row_bases[r] + cc_offset_bytes
+                                    cute.arch.store(
+                                        cute.make_ptr(
+                                            cutlass.Uint32,
+                                            dst_addr,
+                                            cute.AddressSpace.gmem,
+                                        ),
+                                        chunk_vecs[cc][r],
+                                        cop="cg",
+                                    )
                     else:
                         for cc in cutlass.range_constexpr(CHUNK_PREFETCH):
                             k_chunk = k_chunk0 + cutlass.Int32(cc)
@@ -1312,29 +1517,76 @@ def _dispatch_gather_producer_body(  # noqa: C901
                                             vecs[rr],
                                             cop="cg",
                                         )
-                            elif col_in_bounds:
-                                for r in cutlass.range_constexpr(ROWS_PER_WARP):
-                                    if row_in_bounds[r]:
+                            elif col_in_bounds and row_bundle_any:
+                                # Rows past m_size reload the clamped
+                                # `safe_row` so the bundle's loads still
+                                # issue together. A load-store pair per
+                                # row costs one NVLink round trip per row
+                                # and K chunk: a group's partial tail item
+                                # ran ~4x a full one and, claimed last,
+                                # set the gather's span.
+                                for r_base in cutlass.range_constexpr(
+                                    0, ROWS_PER_WARP, ROW_PREFETCH
+                                ):
+                                    vecs: list = []
+                                    for rr in cutlass.range_constexpr(ROW_PREFETCH):
+                                        r: cutlass.Constexpr[int] = r_base + rr
                                         src_addr = peer_bases[r] + col_offset_bytes
-                                        vec = cute.arch.load(
-                                            cute.make_ptr(
-                                                cutlass.Uint32,
-                                                src_addr,
-                                                cute.AddressSpace.gmem,
-                                            ),
-                                            _make_u32x4_vector_type(),
-                                            cop="cg",
+                                        vecs.append(
+                                            cute.arch.load(
+                                                cute.make_ptr(
+                                                    cutlass.Uint32,
+                                                    src_addr,
+                                                    cute.AddressSpace.gmem,
+                                                ),
+                                                _make_u32x4_vector_type(),
+                                                cop="cg",
+                                            )
                                         )
-                                        dst_addr = dst_row_bases[r] + col_offset_bytes
-                                        cute.arch.store(
-                                            cute.make_ptr(
-                                                cutlass.Uint32,
-                                                dst_addr,
-                                                cute.AddressSpace.gmem,
-                                            ),
-                                            vec,
-                                            cop="cg",
-                                        )
+                                    for rr in cutlass.range_constexpr(ROW_PREFETCH):
+                                        r: cutlass.Constexpr[int] = r_base + rr
+                                        if row_in_bounds[r]:
+                                            dst_addr = (
+                                                dst_row_bases[r] + col_offset_bytes
+                                            )
+                                            cute.arch.store(
+                                                cute.make_ptr(
+                                                    cutlass.Uint32,
+                                                    dst_addr,
+                                                    cute.AddressSpace.gmem,
+                                                ),
+                                                vecs[rr],
+                                                cop="cg",
+                                            )
+                    if cutlass.const_expr(K_SEGMENTS > 1 and SEGMENT_SIGNALS):
+                        # Per-warp segment signal; the item-end signal
+                        # covers the item's last segment.
+                        if (k_outer + cutlass.Int32(1)) % seg_batches == cutlass.Int32(
+                            0
+                        ) and k_outer + cutlass.Int32(1) < num_k_outer:
+                            cute.arch.fence_proxy("async.global")
+                            cute.arch.fence_acq_rel_gpu()
+                            cute.arch.sync_warp()
+                            seg_signal = cutlass.Uint32(1) << cutlass.Uint32(
+                                (
+                                    k_seg
+                                    + (k_outer + cutlass.Int32(1)) // seg_batches
+                                    - 1
+                                )
+                                * 8
+                            )
+                            if lane_in_warp == cutlass.Int32(0):
+                                cute.arch.atomic_add(
+                                    cute.make_ptr(
+                                        cutlass.Uint32,
+                                        seg_counter_addr,
+                                        cute.AddressSpace.gmem,
+                                    ),
+                                    seg_signal,
+                                    sem="release",
+                                    scope="gpu",
+                                )
+                            seg_signals = seg_signals + seg_signal
 
             # Sub-tile work for (group g, gemm_m_idx, sub_offset) is
             # complete: atomic-add 1 to the per-M-tile counter slot.
@@ -1343,19 +1595,38 @@ def _dispatch_gather_producer_body(  # noqa: C901
             # gather/TMA pipeline that the old global wait collapsed.
             # The barrier below also ensures all threads' stores to
             # `a_local` are visible before the signal.
+            cute.arch.fence_proxy("async.global")
+            cute.arch.fence_acq_rel_gpu()
             cute.arch.barrier(
                 barrier_id=_BAR_GATHER_WG_INTERNAL,
                 number_of_threads=_DIST_GATHER_WG_THREADS,
             )
             if lane == cutlass.Int32(0):
-                counter_slot_addr = a_buff_counter_addr_i64 + cutlass.Int64(
-                    tile_m_start_per_group + gemm_m_idx
-                ) * cutlass.Int64(4)
+                counter_slot_addr = seg_counter_addr
+                if cutlass.const_expr(gather_columns):
+                    counter_slot_addr = a_buff_counter_addr_i64 + cutlass.Int64(
+                        work.group_idx * num_k_chunks + feature_tile_idx
+                    ) * cutlass.Int64(4)
+                done_signal = cutlass.Uint32(1)
+                if cutlass.const_expr(K_SEGMENTS > 1):
+                    # Every warp sent the same per-segment signals.
+                    done_signal = cutlass.Uint32(NUM_GATHER_WARPS) << cutlass.Uint32(
+                        k_seg * 8
+                    )
+                    if cutlass.const_expr(SEGMENT_SIGNALS):
+                        if claim_segments > cutlass.Int32(1):
+                            done_signal = cutlass.Uint32(
+                                NUM_GATHER_WARPS
+                                * (((1 << (8 * K_SEGMENTS)) - 1) // 255)
+                            )
+                        done_signal = (
+                            done_signal - cutlass.Uint32(NUM_GATHER_WARPS) * seg_signals
+                        )
                 cute.arch.atomic_add(
                     cute.make_ptr(
                         cutlass.Uint32, counter_slot_addr, cute.AddressSpace.gmem
                     ),
-                    cutlass.Uint32(1),
+                    done_signal,
                     sem="release",
                     scope="gpu",
                 )
@@ -1365,7 +1636,7 @@ def _dispatch_gather_producer_body(  # noqa: C901
                         gather_counter_addr_i64,
                         cute.AddressSpace.gmem,
                     ),
-                    cutlass.Uint32(1),
+                    claim_step,
                     sem="release",
                     scope="gpu",
                 )

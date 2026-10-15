@@ -4,7 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Fused deterministic dw finalize for the CuTe DSL RMSNorm backward."""
+"""Deterministic fused column reduction and weight-gradient downcast."""
 
 import math
 from typing import Type
@@ -14,13 +14,12 @@ import cutlass
 import cutlass.cute as cute
 from cutlass import const_expr, Float32, Int32
 
-from .. import _dsl_compat as _cute_extern  # noqa: F401
 from .._jit_cache import jit_cache
 from .._quack_compile_utils import make_fake_stream, make_fake_tensor as fake_tensor
 
 
 class FusedDwReduce:
-    """Column-reduce FP32 dw partials and deterministically downcast in one kernel.
+    """Column-reduce FP32 weight-gradient partials and downcast once.
 
     Parallelism: each lane owns a ``cols_per_lane``-column strip and the block's
     ``NUM_WARPS`` warps split the partial rows into contiguous chunks (a
@@ -72,7 +71,7 @@ class FusedDwReduce:
     def __call__(
         self,
         mDwPartial: cute.Tensor,  # (P, N) fp32
-        mDw: cute.Tensor,  # (N,) out_dtype
+        mDw: cute.Tensor,
         stream: cuda.CUstream,
     ):
         num_strips = self.N // self.cols_per_lane

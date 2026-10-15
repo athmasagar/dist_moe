@@ -438,13 +438,13 @@ class DistMoeConfigTest(unittest.TestCase):
                 dist_moe.VmmConfig(total_scratch_capacity_factor=value)
 
     def test_blockscaled_routing_multiple_matches_scale_page_layout(self) -> None:
-        """Use the kernel token tile when its scale rows are not the default."""
+        """Keep async routing capacity separate from paged GEMM scale alignment."""
         staged = blockscaled_impl._BlockscaledConfig(
             format=_KernelBlockScaledFormat.MXFP8_E4M3,
         )
         cases = (
-            (staged, {"BLOCK_SIZE_N": 32, "SWAP_AB": True}, 32),
-            (staged, {"BLOCK_SIZE_N": 64, "SWAP_AB": True}, 64),
+            (staged, {"BLOCK_SIZE_N": 32, "SWAP_AB": True}, 128, 32),
+            (staged, {"BLOCK_SIZE_N": 64, "SWAP_AB": True}, 128, 64),
             (
                 blockscaled_impl._BlockscaledConfig(
                     format=_KernelBlockScaledFormat.MXFP8_E4M3,
@@ -452,10 +452,11 @@ class DistMoeConfigTest(unittest.TestCase):
                 ),
                 {"BLOCK_SIZE_N": 256},
                 256,
+                256,
             ),
-            (staged, None, blockscaled_impl.dist_bs_gemm.DEFAULT_M_MULTIPLE_OF),
+            (staged, None, 128, 128),
         )
-        for blockscaled, config, expected in cases:
+        for blockscaled, config, expected_routing, expected_launch in cases:
             compute = blockscaled_impl._ComputeDispatch(
                 config=config,
                 blockscaled=blockscaled,
@@ -466,8 +467,17 @@ class DistMoeConfigTest(unittest.TestCase):
                         compute,
                         inference_mode=True,
                     ),
-                    expected,
+                    expected_routing,
                 )
+                launch_multiple = (
+                    blockscaled_impl._inference_routing_multiple(
+                        config, mega=blockscaled.mega
+                    )
+                    if config is not None
+                    else blockscaled_impl.dist_bs_gemm.DEFAULT_M_MULTIPLE_OF
+                )
+                self.assertEqual(launch_multiple, expected_launch)
+                self.assertEqual(expected_routing % launch_multiple, 0)
 
     def test_dynamic_mxfp8_mega_weight_quant_recompute_policy(self) -> None:
         """Only callback-generated training quants are omitted from saved state."""
@@ -505,7 +515,7 @@ class DistMoeConfigTest(unittest.TestCase):
         )
 
     def test_bf16_training_compute_configs_are_pinned_by_value(self) -> None:
-        """Training schedules remain independent of inference auto-tuning."""
+        """Pin source presets and their row/expert selection boundaries."""
         fprop = grouped_gemm_config_impl.GROUPED_GEMM_CONFIGS[
             grouped_gemm_config_impl.grouped_gemm_training_config()
         ]
@@ -530,29 +540,59 @@ class DistMoeConfigTest(unittest.TestCase):
             wgrad,
             {
                 "NUM_CTAS": 2,
-                "NUM_MMAS": 1,
-                "BLOCK_SIZE_M": 256,
+                "NUM_MMAS": 2,
+                "BLOCK_SIZE_M": 512,
                 "BLOCK_SIZE_N": 256,
                 "BLOCK_SIZE_K": 64,
-                "NUM_SMEM_BUFFERS": 6,
-                "NUM_TMEM_BUFFERS": 2,
-                "NUM_TILE_BUFFERS": 3,
+                "NUM_SMEM_BUFFERS": 4,
+                "NUM_C_STAGES": 2,
+                "NUM_TMEM_BUFFERS": 1,
+                "NUM_TILE_BUFFERS": 2,
                 "EPILOGUE_SUBTILE": 4,
             },
         )
+        for is_wgrad, rows, groups, combine, block_m in (
+            (False, 8192, 1, False, 256),
+            (False, 8193, 1, False, 512),
+            (True, 8192, 1, False, 256),
+            (True, 8193, 1, False, 512),
+            (False, 16384, 64, False, 256),
+            (False, 32768, 64, False, 512),
+            (False, 16384, 1, True, 256),
+        ):
+            with self.subTest(
+                wgrad=is_wgrad, rows=rows, groups=groups, combine=combine
+            ):
+                selected = grouped_gemm_config_impl.grouped_gemm_training_config(
+                    wgrad=is_wgrad,
+                    routed_rows=rows,
+                    num_groups=groups,
+                    combine_fprop=combine,
+                )
+                self.assertEqual(
+                    grouped_gemm_config_impl.GROUPED_GEMM_CONFIGS[selected][
+                        "BLOCK_SIZE_M"
+                    ],
+                    block_m,
+                )
 
     def test_wide_tmem_load_workaround_targets_blackwell(self) -> None:
         """Apply the TMEM-load cap to both Blackwell targets and nothing else."""
         check = grouped_gemm_kernel_impl._tmem_ld_wide_fragment_nvvm_broken
         check.cache_clear()
         self.addCleanup(check.cache_clear)
-        for capability, expected in (
-            ((9, 0), False),
-            ((10, 0), True),
-            ((10, 3), True),
+        for version, capability, expected in (
+            ("4.6.1", (9, 0), False),
+            ("4.6.1", (10, 0), True),
+            ("4.6.1", (10, 3), True),
+            ("4.7.1", (10, 3), False),
+            ("4.8.0", (10, 3), False),
         ):
             check.cache_clear()
             with (
+                mock.patch.object(
+                    grouped_gemm_kernel_impl.cutlass, "__version__", version
+                ),
                 mock.patch.object(torch.cuda, "is_available", return_value=True),
                 mock.patch.object(
                     torch.cuda, "get_device_capability", return_value=capability
@@ -567,6 +607,13 @@ class DistMoeConfigTest(unittest.TestCase):
 
     def test_wide_tmem_load_workaround_caps_registers_per_thread(self) -> None:
         """Cap each recognized load shape without widening narrow atoms."""
+        self.assertIsNone(
+            grouped_gemm_kernel_impl.GroupedGemmKernel.TMEM_LOAD_MAX_REGS_PER_THREAD
+        )
+        self.assertEqual(
+            dist_grouped_gemm_impl.DistGroupedGemmKernel.TMEM_LOAD_MAX_REGS_PER_THREAD,
+            32,
+        )
         tcgen05 = grouped_gemm_kernel_impl.tcgen05
         cases = (
             (tcgen05.Ld32x32bOp, 1, tcgen05.Repetition.x128),
@@ -699,25 +746,114 @@ class DistMoeConfigTest(unittest.TestCase):
                     )
 
     def test_mxfp8_weight_preparation_supports_fake_tensor_tracing(self) -> None:
-        """FakeTensor preparation returns every fixed-shape owned operand."""
-        with FakeTensorMode():
-            weight = torch.empty(
-                2,
-                128,
-                256,
-                dtype=torch.bfloat16,
-                device="cuda",
-            )
-            prepared = dist_moe.prepare_block_scaled_weight(
-                weight,
-                dist_moe.BlockScaledConfig(),
-            )
+        """Fake preparation preserves exact packed shapes and backward ownership.
 
-        self.assertIs(prepared.source, weight)
-        self.assertIs(prepared.fprop_data, prepared.dgrad_data)
-        self.assertEqual(prepared.fprop_data.shape, weight.shape)
-        self.assertEqual(prepared.fprop_scale.shape, (256, 8))
-        self.assertEqual(prepared.dgrad_scale.shape, (512, 4))
+        MXFP8 training shares qdata; inference omits DGRAD. Interleaved Mega
+        W13 retains its layout identity without changing the operand shapes.
+        """
+        cases = (
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, False, False),
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True, False),
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True, True),
+            (dist_moe.BlockScaledFormat.NVFP4, True, False),
+            (dist_moe.BlockScaledFormat.NVFP4, True, True),
+        )
+        for block_format, inference, fuse_swiglu in cases:
+            with (
+                self.subTest(
+                    format=block_format,
+                    inference=inference,
+                    fuse_swiglu=fuse_swiglu,
+                ),
+                FakeTensorMode(),
+            ):
+                weight = torch.empty(2, 128, 256, dtype=torch.bfloat16, device="cuda")
+                prepared = dist_moe.prepare_block_scaled_weight(
+                    weight,
+                    dist_moe.BlockScaledConfig(
+                        format=block_format,
+                        pipeline="mega" if fuse_swiglu else "staged",
+                    ),
+                    inference=inference,
+                    fuse_swiglu=fuse_swiglu,
+                )
+
+                self.assertIs(prepared.source, weight)
+                self.assertIs(prepared.format, block_format)
+                self.assertIs(prepared._interleaved_fc13, fuse_swiglu)
+                if block_format is dist_moe.BlockScaledFormat.NVFP4:
+                    self.assertEqual(prepared.fprop_data.shape, (2, 128, 128))
+                    self.assertIs(prepared.fprop_data.dtype, torch.float4_e2m1fn_x2)
+                    self.assertEqual(prepared.fprop_scale.shape, (256, 16))
+                    self.assertIs(prepared.fprop_scale.dtype, torch.float8_e4m3fn)
+                    for scale in (prepared.global_scale, prepared.global_scale_inv):
+                        assert scale is not None
+                        self.assertEqual(scale.shape, (2,))
+                        self.assertIs(scale.dtype, torch.float32)
+                else:
+                    self.assertEqual(prepared.fprop_data.shape, weight.shape)
+                    self.assertIs(prepared.fprop_data.dtype, torch.float8_e4m3fn)
+                    self.assertEqual(prepared.fprop_scale.shape, (256, 8))
+                    self.assertIs(prepared.fprop_scale.dtype, torch.float8_e8m0fnu)
+                    self.assertIsNone(prepared.global_scale)
+                    self.assertIsNone(prepared.global_scale_inv)
+                if inference:
+                    self.assertIsNone(prepared.dgrad_data)
+                    self.assertIsNone(prepared.dgrad_scale)
+                else:
+                    self.assertIs(prepared.fprop_data, prepared.dgrad_data)
+                    assert prepared.dgrad_scale is not None
+                    self.assertEqual(prepared.dgrad_scale.shape, (512, 4))
+                    self.assertIs(prepared.dgrad_scale.dtype, torch.float8_e8m0fnu)
+
+        for inference in (False, True):
+            for shape in ((2, 64, 128), (2, 128, 64)):
+                with (
+                    self.subTest(inference=inference, unsupported_shape=shape),
+                    FakeTensorMode(),
+                    self.assertRaisesRegex(ValueError, "divisible by 128"),
+                ):
+                    dist_moe.prepare_block_scaled_weight(
+                        torch.empty(shape, dtype=torch.bfloat16, device="cuda"),
+                        dist_moe.BlockScaledConfig(),
+                        inference=inference,
+                    )
+
+    def test_nvfp4_weight_preparation_rejects_odd_columns(self) -> None:
+        """Reject an unpaired NVFP4 column before packed preparation loses it."""
+        with FakeTensorMode():
+            weight = torch.empty(2, 128, 255, dtype=torch.bfloat16, device="cuda")
+            with self.assertRaisesRegex(ValueError, "even K"):
+                dist_moe.prepare_block_scaled_weight(
+                    weight,
+                    dist_moe.BlockScaledConfig(format=dist_moe.BlockScaledFormat.NVFP4),
+                    inference=True,
+                )
+
+    def test_fused_weight_preparation_requires_mega_inference(self) -> None:
+        """Interleaved W13 must not enter training or a staged consumer."""
+        with FakeTensorMode():
+            weight = torch.empty(2, 128, 256, dtype=torch.bfloat16, device="cuda")
+            for block_format in (
+                dist_moe.BlockScaledFormat.MXFP8_E4M3,
+                dist_moe.BlockScaledFormat.NVFP4,
+            ):
+                for pipeline, inference, message in (
+                    ("mega", False, "inference=True"),
+                    ("staged", True, "Mega inference pipeline"),
+                ):
+                    with (
+                        self.subTest(format=block_format, pipeline=pipeline),
+                        self.assertRaisesRegex(ValueError, message),
+                    ):
+                        dist_moe.prepare_block_scaled_weight(
+                            weight,
+                            dist_moe.BlockScaledConfig(
+                                format=block_format, pipeline=pipeline
+                            ),
+                            inference=inference,
+                            fuse_swiglu=True,
+                        )
 
     def test_inference_allows_zero_activation_stacks(self) -> None:
         """Inference configuration permits a scratch-only zero-stack layout."""
@@ -874,7 +1010,7 @@ class DistMoeConfigTest(unittest.TestCase):
         self.assertEqual(plan.device_scratch_capacity_rows, 768)
 
     def test_blockscaled_uses_activation_buffer_and_vmm_controls(self) -> None:
-        """Async low-precision execution shares the activation/VMM planner."""
+        """VMM preserves offset scratch rather than static inference layouts."""
         config = dist_moe.Config(
             max_num_local_input_tokens=128,
             hidden_dim=128,
@@ -888,6 +1024,34 @@ class DistMoeConfigTest(unittest.TestCase):
         plan = dist_moe.plan_memory(config, ep_size=2)
         self.assertGreater(plan.total_activation_bytes, 0)
         self.assertGreater(plan.host_scratch_bytes, 0)
+        for block_format in (
+            dist_moe.BlockScaledFormat.MXFP8_E4M3,
+            dist_moe.BlockScaledFormat.NVFP4,
+        ):
+            with self.subTest(format=block_format):
+                inference_config = dataclasses.replace(
+                    config,
+                    hidden_dim=256,
+                    intermediate_dim=256,
+                    inference=True,
+                    num_sms=8,
+                    block_scaled=dist_moe.BlockScaledConfig(
+                        format=block_format, pipeline="mega"
+                    ),
+                )
+                vmm_plan = dist_moe.plan_memory(inference_config, ep_size=2)
+                model_config = api_impl._model_config(inference_config, ep_size=2)
+                self.assertIsNone(vmm_plan.inference_operand_bytes)
+                self.assertEqual(
+                    vmm_plan.device_scratch_bytes,
+                    api_impl._align_memory(model_config.min_buffer_size(0)),
+                )
+                self.assertGreater(vmm_plan.host_scratch_bytes, 0)
+                device_plan = dist_moe.plan_memory(
+                    dataclasses.replace(inference_config, vmm=None), ep_size=2
+                )
+                self.assertIsNotNone(device_plan.inference_operand_bytes)
+                self.assertGreater(device_plan.inference_operand_bytes, 0)
 
     def test_callback_options_require_eager_execution(self) -> None:
         """Only Python-owned execution controls leave the custom-op path."""
@@ -2499,73 +2663,89 @@ class DistMoeKernelTest(unittest.TestCase):
                         )
 
     def test_mxfp8_inference_cuda_graph_has_no_autograd_state(self) -> None:
-        """Staged and Mega inference replay without retaining backward state."""
-        for pipeline in ("staged", "mega"):
-            with self.subTest(pipeline=pipeline):
+        """Prepared layouts preserve inference numerics through tracing and capture.
+
+        Concat and interleaved Mega W13 use the same canonical weights. Each
+        layout replays bitwise with eager and satisfies the format's existing
+        dense-reference bounds without retaining autograd state.
+        """
+        for block_format in (
+            dist_moe.BlockScaledFormat.MXFP8_E4M3,
+            dist_moe.BlockScaledFormat.NVFP4,
+        ):
+            for pipeline in ("staged", "mega"):
                 policy = dist_moe.BlockScaledConfig(
-                    format=dist_moe.BlockScaledFormat.MXFP8_E4M3,
-                    pipeline=pipeline,
+                    format=block_format, pipeline=pipeline
                 )
                 context, case_a, case_b, w13_EFD, w2_EDF = self._create_case(
                     inference=True,
                     block_scaled=policy,
-                )
-                prepared_w13 = dist_moe.prepare_block_scaled_weight(
-                    w13_EFD,
-                    policy,
-                    inference=True,
+                    num_experts=64 if pipeline == "staged" else 4,
                 )
                 prepared_w2 = dist_moe.prepare_block_scaled_weight(
-                    w2_EDF,
-                    policy,
-                    inference=True,
+                    w2_EDF, policy, inference=True
                 )
-                static_x_TD, static_ids_TK, static_scores_TK = (
-                    tensor.clone() for tensor in case_a
-                )
-                with torch.no_grad():
-                    dist_moe.routed_experts(
-                        static_x_TD,
-                        static_ids_TK,
-                        static_scores_TK,
-                        prepared_w13,
-                        prepared_w2,
-                        context,
-                    )
-                    torch.cuda.synchronize()
-                    graph = torch.cuda.CUDAGraph()
-                    with torch.cuda.graph(graph):
-                        output_TD = dist_moe.routed_experts(
-                            static_x_TD,
-                            static_ids_TK,
-                            static_scores_TK,
-                            prepared_w13,
-                            prepared_w2,
-                            context,
+                for fuse_swiglu in (False, True) if pipeline == "mega" else (False,):
+                    with self.subTest(
+                        format=block_format, pipeline=pipeline, fuse_swiglu=fuse_swiglu
+                    ):
+                        prepared_w13 = dist_moe.prepare_block_scaled_weight(
+                            w13_EFD,
+                            policy,
+                            inference=True,
+                            fuse_swiglu=fuse_swiglu,
                         )
+                        run = partial(
+                            dist_moe.routed_experts,
+                            w13_weight=prepared_w13,
+                            w2_weight=prepared_w2,
+                            context=context,
+                        )
+                        static_inputs = tuple(tensor.clone() for tensor in case_a)
+                        with torch.no_grad():
+                            eager_TD = run(*static_inputs)
+                            traced = make_fx(run)(*static_inputs)
+                            self.assertIn(
+                                torch.ops.dist_moe.block_scaled_forward.default,
+                                {
+                                    node.target
+                                    for node in traced.graph.nodes
+                                    if node.op == "call_function"
+                                },
+                            )
+                            torch.testing.assert_close(
+                                traced(*static_inputs), eager_TD, rtol=0, atol=0
+                            )
+                            torch.cuda.synchronize()
+                            graph = torch.cuda.CUDAGraph()
+                            with torch.cuda.graph(graph):
+                                output_TD = run(*static_inputs)
 
-                self.assertIsNone(output_TD.grad_fn)
-                for x_TD, ids_TK, scores_TK in (case_a, case_b):
-                    static_x_TD.copy_(x_TD)
-                    static_ids_TK.copy_(ids_TK)
-                    static_scores_TK.copy_(scores_TK)
-                    graph.replay()
-                    torch.cuda.synchronize()
-                    expected_TD = _reference_moe(
-                        x_TD,
-                        ids_TK,
-                        scores_TK,
-                        w13_EFD,
-                        w2_EDF,
-                    )
-                    _rtol, _atol, relative_l2, cosine = _blockscaled_tolerance(
-                        policy.format,
-                        "fwd",
-                    )
-                    self.assertLess(_relative_l2(output_TD, expected_TD), relative_l2)
-                    self.assertGreater(
-                        _cosine_similarity(output_TD, expected_TD), cosine
-                    )
+                            self.assertIsNone(output_TD.grad_fn)
+                            for inputs in (case_a, case_b):
+                                for static, value in zip(
+                                    static_inputs, inputs, strict=True
+                                ):
+                                    static.copy_(value)
+                                eager_TD = run(*inputs)
+                                torch.testing.assert_close(
+                                    traced(*inputs), eager_TD, rtol=0, atol=0
+                                )
+                                graph.replay()
+                                torch.cuda.synchronize()
+                                torch.testing.assert_close(
+                                    output_TD, eager_TD, rtol=0, atol=0
+                                )
+                                expected_TD = _reference_moe(*inputs, w13_EFD, w2_EDF)
+                                _rtol, _atol, relative_l2, cosine = (
+                                    _blockscaled_tolerance(block_format, "fwd")
+                                )
+                                self.assertLess(
+                                    _relative_l2(output_TD, expected_TD), relative_l2
+                                )
+                                self.assertGreater(
+                                    _cosine_similarity(output_TD, expected_TD), cosine
+                                )
 
     def test_non_power_of_two_topk_matches_reference(self) -> None:
         """DSV3-style non-power-of-two top-k supports forward and backward."""
@@ -3412,6 +3592,8 @@ class DistMoeKernelTest(unittest.TestCase):
             [call[0] for call in calls.mock_calls],
             ["barrier", "routing", "save_dispatch", "barrier"],
         )
+        # Spy cycles must not retain CUDA arguments for GC during later captures.
+        calls.reset_mock()
         eager.backward(grad_output)
         eager_gradients = tuple(tensor.grad.clone() for tensor in eager_inputs)
 
@@ -4206,6 +4388,7 @@ class DistMoeTwoRankTest(unittest.TestCase):
         parameter_grad_dtype: torch.dtype = torch.bfloat16,
         max_num_tokens: int | None = None,
         padding_rank: int | None = None,
+        wgrad_dtype: torch.dtype | None = torch.float32,
     ) -> None:
         """Run one precision through real peer dispatch and combine paths.
 
@@ -4225,6 +4408,8 @@ class DistMoeTwoRankTest(unittest.TestCase):
             parameter_grad_dtype: Dtype declared by both expert parameters.
             max_num_tokens: Optional context capacity above the actual input T.
             padding_rank: Optional rank whose every route is inactive.
+            wgrad_dtype: Explicit WGRAD output dtype, or the logical-weight
+                dtype when omitted by the public configuration.
         """
         rank = dist.get_rank()
         device = torch.device("cuda", rank)
@@ -4321,7 +4506,7 @@ class DistMoeTwoRankTest(unittest.TestCase):
             "activation": activation,
             "swiglu_alpha": swiglu_alpha,
             "swiglu_limit": swiglu_limit,
-            "wgrad_dtype": None if accumulate_execution else torch.float32,
+            "wgrad_dtype": None if accumulate_execution else wgrad_dtype,
         }
         if block_scaled is None:
             config = dist_moe.Config(
@@ -4795,10 +4980,16 @@ class DistMoeTwoRankTest(unittest.TestCase):
         This proves the storage-free logical-weight autograd bridge preserves
         the same two-rank result as dynamically prepared execution.
         """
-        self._run_two_rank_numerics(
-            dist_moe.BlockScaledConfig(format=dist_moe.BlockScaledFormat.MXFP8_E4M3),
-            prepared_weights=True,
-        )
+        for pipeline in ("staged", "mega"):
+            with self.subTest(pipeline=pipeline):
+                self._run_two_rank_numerics(
+                    dist_moe.BlockScaledConfig(
+                        format=dist_moe.BlockScaledFormat.MXFP8_E4M3,
+                        pipeline=pipeline,
+                    ),
+                    prepared_weights=True,
+                    wgrad_dtype=None,
+                )
 
     @with_comms
     def test_expert_and_wgrad_postprocess_exercise_peer_paths(self) -> None:

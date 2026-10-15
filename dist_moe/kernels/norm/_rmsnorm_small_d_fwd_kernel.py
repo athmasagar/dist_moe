@@ -65,7 +65,6 @@ import cutlass.cute as cute
 import torch
 from cutlass import const_expr, Float32
 
-from .. import _dsl_compat as _cute_extern  # noqa: F401
 from .._iket_shim import iket, iket_level
 from .._jit_cache import jit_cache
 from .._quack import copy_utils, layout_utils
@@ -147,12 +146,12 @@ class RMSNormSmallDFwd:
                 f"(dtype width {dtype.width}, widest operand {max_width})"
             )
         self.vec, self.threads_per_row, self.rows_per_step = geom
-        # Chunk/depth defaults from a GB200 sweep of representative Q/K shapes:
+        # Chunk/depth defaults from a GB200 shmoo of query/key slice shapes:
         # large problems (>= 64MB of x) want wide 8KB chunks at 2 stages
-        # (fewer, longer LDGSTS bursts per warp: representative Q 0.92x -> 0.99x);
+        # (fewer, longer LDGSTS bursts per warp: query slices 0.92x -> 0.99x);
         # smaller ones want 16-row chunks at 3 stages so the chunk supply
-        # per warp stays deep enough to pipeline (one K workload improves 1.12x
-        # while another remains at parity). Explicit arguments override.
+        # per warp stays deep enough to pipeline (key slices 1.12x, another key slice at
+        # parity). Explicit arguments override.
         row_bytes = N * dtype.width // 8
         big = T_hint == 0 or T_hint * row_bytes >= 64 * 1024 * 1024
         if chunk_rows is None:

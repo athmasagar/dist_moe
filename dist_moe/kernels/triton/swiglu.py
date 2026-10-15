@@ -12,7 +12,7 @@ activation function, which is commonly used in transformer models and LLMs.
 
 SwiGLU combines the Swish (SiLU) activation with a gating mechanism:
     SwiGLU(x, y) = x * σ(x) * y
-    where σ(x) = x * sigmoid(x) is the Swish/SiLU activation
+    where σ(x) = sigmoid(x)
 
 The implementation includes:
 - Forward pass: Fused computation of x * sigmoid(x) * y
@@ -61,7 +61,7 @@ from .repr_utils import make_dtype_repr
         "_triton_swiglu_fwd", ["ptr_x", "ptr_z"], dtype_constexpr="DTYPE"
     ),
 )
-def _triton_swiglu_fwd(
+def _triton_swiglu_fwd(  # noqa: C901
     # Regular mode pointers
     ptr_x,
     stride_x_t,
@@ -80,10 +80,11 @@ def _triton_swiglu_fwd(
     clip_stats_ptr,
     # Common parameters
     T,
+    CTA_CAP: tl.constexpr,
     D: tl.constexpr,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
-    NUM_CTA: tl.constexpr,
+    D_TILES: tl.constexpr,
     DTYPE: tl.constexpr,
     FAST_MATH: tl.constexpr,
     CLIP_LIMIT: tl.constexpr,
@@ -97,7 +98,9 @@ def _triton_swiglu_fwd(
     Computes z = x * sigmoid(x) * y element-wise, or the GPT-OSS-style clamped
     variant z = g * sigmoid(ALPHA * g) * (u + 1) when CLAMPED, where
     g = min(x, LIMIT) and u = clamp(y, -LIMIT, LIMIT).
-    Uses persistent kernel design where each CTA iterates over tokens.
+    Uses persistent kernel design where each CTA iterates over tiles of
+    BLOCK_T rows by all D columns (D_TILES == 1) or by one BLOCK_D column
+    block (D_TILES > 1).
 
     Supports both regular mode (ptr_x, ptr_y, ptr_z) and activation_buffer mode.
     When activation_buffer_ptr is not None, uses activation_buffer mode with pointer chasing.
@@ -156,19 +159,27 @@ def _triton_swiglu_fwd(
         up_over_acc = tl.zeros((), tl.float32)
         total_acc = tl.zeros((), tl.float32)
 
-    # Persistent kernel: each CTA processes multiple tiles in strided manner
-    num_tiles = tl.cdiv(T, BLOCK_T)
-    num_tiles_per_cta = tl.cdiv(num_tiles, NUM_CTA)
+    # Below CTA_CAP, the launch grid still has at least one CTA per active tile.
+    num_tiles = tl.cdiv(T, BLOCK_T) * D_TILES
+    num_tiles_per_cta = tl.cdiv(num_tiles, CTA_CAP)
     tile_start = pid * num_tiles_per_cta
     tile_end = min(tile_start + num_tiles_per_cta, num_tiles)
     for tile_id in tl.range(tile_start, tile_end):
+        if D_TILES == 1:
+            row_tile = tile_id
+            d_start = 0
+            d_end = D
+        else:
+            row_tile = tile_id // D_TILES
+            d_start = tile_id % D_TILES * BLOCK_D
+            d_end = d_start + BLOCK_D
         # Compute row indices for this tile - use int64 to avoid overflow
-        t = (tile_id * BLOCK_T + tl.arange(0, BLOCK_T)).to(tl.int64)
+        t = (row_tile * BLOCK_T + tl.arange(0, BLOCK_T)).to(tl.int64)
         # Create mask to handle boundary conditions
         mask_t = t < T
 
-        # Loop over the D dimension in blocks of BLOCK_D
-        for offset_d in tl.range(0, D, BLOCK_D):
+        # Loop over this tile's columns in blocks of BLOCK_D
+        for offset_d in tl.range(d_start, d_end, BLOCK_D):
             # Compute column indices for this tile
             d = offset_d + tl.arange(0, BLOCK_D)
             # Create mask to handle boundary conditions in D dimension
@@ -212,6 +223,17 @@ def _triton_swiglu_fwd(
         tl.atomic_add(clip_stats_ptr + 2, total_acc)
 
 
+def _swiglu_fwd_tile(d: int) -> tuple[int, int, int, int]:
+    """``(BLOCK_T, BLOCK_D, num_warps, D_TILES)`` for the forward kernel:
+    narrow tiles, each its own work item, when they cut the padded lanes of
+    2048-wide tiles by at least 15%."""
+    wide_lanes = -(-d // 2048) * 2048
+    narrow_lanes = -(-d // 512) * 512
+    if narrow_lanes <= 0.85 * wide_lanes:
+        return 4, 512, 4, narrow_lanes // 512
+    return 2, 2048, 8, 1
+
+
 def _to_tl_dtype(dtype: torch.dtype) -> int:
     """Convert PyTorch dtype to Triton dtype."""
     match dtype:
@@ -230,6 +252,7 @@ def _validate_num_recv_tokens(
     *,
     device: torch.device,
 ) -> None:
+    """Validate optional device int32[1] row-count metadata without reading it."""
     if num_recv_tokens is None:
         return
     if num_recv_tokens.shape != (1,) or num_recv_tokens.dtype != torch.int32:
@@ -324,10 +347,7 @@ def swiglu_fwd(
         )
 
     # Common setup
-    BLOCK_T = 2
-    BLOCK_D = 2048
-    num_sms = num_sms_per_device()
-    num_warps = 8
+    cta_cap = num_sms_per_device() * 32
     num_stages = 1
     _validate_num_recv_tokens(num_recv_tokens, device=x.device)
 
@@ -382,8 +402,8 @@ def swiglu_fwd(
         T = 0  # Not used in activation_buffer mode, T comes from device tensor
 
         # Single kernel launch for activation_buffer mode
-        num_ctas = num_sms * 32
-        grid = (num_ctas, 1, 1)
+        grid = (cta_cap, 1, 1)
+        BLOCK_T, BLOCK_D, num_warps, d_tiles = _swiglu_fwd_tile(D)
         _triton_swiglu_fwd[grid](
             ptr_x=xy_offset,
             stride_x_t=stride_xy_t,
@@ -398,10 +418,11 @@ def swiglu_fwd(
             conditional_execution_ptr=conditional_execution,
             clip_stats_ptr=clip_stats_out if do_clip else None,
             T=T,
+            CTA_CAP=cta_cap,
             D=D,
             BLOCK_T=BLOCK_T,
             BLOCK_D=BLOCK_D,
-            NUM_CTA=num_ctas,
+            D_TILES=d_tiles,  # ty: ignore[invalid-argument-type]
             num_warps=num_warps,
             DTYPE=_to_tl_dtype(dtype),
             FAST_MATH=fast_math,
@@ -442,12 +463,13 @@ def swiglu_fwd(
         else:
             assert z.shape == shape_x, f"z shape {z.shape} != x shape {shape_x}"
             assert z.dtype == dtype_x, f"z dtype {z.dtype} != x dtype {dtype_x}"
+            assert z.is_contiguous(), f"z must be contiguous: {z.stride()=}"
 
         # Size the CUDA-graph-stable launch from capacity. The kernel loads the
         # active row count from device when num_recv_tokens is provided.
-        num_d_tiles = (D + BLOCK_D - 1) // BLOCK_D
+        BLOCK_T, BLOCK_D, num_warps, d_tiles = _swiglu_fwd_tile(D)
         num_t_tiles = (T + BLOCK_T - 1) // BLOCK_T
-        num_ctas = min(num_sms * 32, num_t_tiles * num_d_tiles)
+        num_ctas = min(cta_cap, num_t_tiles * d_tiles)
         grid = (num_ctas, 1, 1)
         _triton_swiglu_fwd[grid](
             ptr_x=x,
@@ -463,10 +485,11 @@ def swiglu_fwd(
             conditional_execution_ptr=conditional_execution,
             clip_stats_ptr=clip_stats_out if do_clip else None,
             T=T,
+            CTA_CAP=cta_cap,
             D=D,
             BLOCK_T=BLOCK_T,
             BLOCK_D=BLOCK_D,
-            NUM_CTA=num_ctas,
+            D_TILES=d_tiles,  # ty: ignore[invalid-argument-type]
             num_warps=num_warps,
             num_stages=num_stages,
             DTYPE=_to_tl_dtype(dtype_x),
@@ -508,10 +531,10 @@ def _triton_swiglu_bwd(
     num_recv_tokens_ptr,
     # Common parameters
     T,
+    CTA_CAP: tl.constexpr,
     D: tl.constexpr,
     BLOCK_T: tl.constexpr,
     BLOCK_D: tl.constexpr,
-    NUM_CTA: tl.constexpr,
     DTYPE: tl.constexpr,
     FAST_MATH: tl.constexpr,
     CLAMPED: tl.constexpr,
@@ -580,9 +603,9 @@ def _triton_swiglu_bwd(
     # Get the program ID
     pid = tl.program_id(axis=0)
 
-    # Persistent kernel: each CTA processes multiple tiles in strided manner
+    # Below CTA_CAP, the launch grid still has at least one CTA per active row tile.
     num_tiles = tl.cdiv(T, BLOCK_T)
-    num_tiles_per_cta = tl.cdiv(num_tiles, NUM_CTA)
+    num_tiles_per_cta = tl.cdiv(num_tiles, CTA_CAP)
     tile_start = pid * num_tiles_per_cta
     tile_end = min(tile_start + num_tiles_per_cta, num_tiles)
     for tile_id in tl.range(tile_start, tile_end):
@@ -591,7 +614,7 @@ def _triton_swiglu_bwd(
         # Create mask to handle boundary conditions
         mask_t = t < T
 
-        # Loop over the D dimension in blocks of BLOCK_D
+        # Loop over the D dimension in blocks of BLOCK_D.
         for offset_d in tl.range(0, D, BLOCK_D):
             # Compute column indices for this tile
             d = offset_d + tl.arange(0, BLOCK_D)
@@ -699,7 +722,7 @@ def swiglu_bwd(
     """
     # Common setup
     BLOCK_D = 2048
-    num_sms = num_sms_per_device()
+    cta_cap = num_sms_per_device() * 32
     num_warps = 8
     num_stages = 1
     _validate_num_recv_tokens(num_recv_tokens, device=x.device)
@@ -754,8 +777,7 @@ def swiglu_bwd(
         T = 0  # Not used in activation_buffer mode, T comes from device tensor
 
         # Single kernel launch for activation_buffer mode
-        num_ctas = num_sms * 32
-        grid = (num_ctas, 1, 1)
+        grid = (cta_cap, 1, 1)
         _triton_swiglu_bwd[grid](
             ptr_dz=dz_offset,
             stride_dz_t=stride_dz,
@@ -773,10 +795,10 @@ def swiglu_bwd(
             dz_offset_ptr=dz_offset,
             num_recv_tokens_ptr=num_recv_tokens,
             T=T,
+            CTA_CAP=cta_cap,
             D=D,
             BLOCK_T=BLOCK_T,
             BLOCK_D=BLOCK_D,
-            NUM_CTA=num_ctas,
             num_warps=num_warps,
             num_stages=num_stages,
             DTYPE=_to_tl_dtype(dtype),
@@ -799,7 +821,7 @@ def swiglu_bwd(
             original_shape = x.shape
             # Handle dxy output tensor: allocate if not provided
             if dxy is None:
-                dxy = torch.empty_like(x)
+                dxy = torch.empty_like(x, memory_format=torch.contiguous_format)
             else:
                 assert dxy.shape == original_shape, (
                     f"dxy shape {dxy.shape} != x shape {original_shape}"
@@ -807,6 +829,7 @@ def swiglu_bwd(
                 assert dxy.dtype == x.dtype, (
                     f"dxy dtype {dxy.dtype} != x dtype {x.dtype}"
                 )
+                assert dxy.is_contiguous(), f"dxy must be contiguous: {dxy.stride()=}"
             x_left = x[..., :D]
             x_right = x[..., D:]
             x = x_left
@@ -836,8 +859,6 @@ def swiglu_bwd(
             y = y.reshape(-1, D)
             dz = dz.reshape(-1, D)
             T = x.shape[0]
-            if chunked:
-                dxy = dxy.reshape(-1, 2 * D)
         else:
             T = shape_x[0]
 
@@ -854,14 +875,15 @@ def swiglu_bwd(
             dx = x.new_empty((T, D))
             dy = y.new_empty((T, D))
         else:
-            dx = dxy[:, :D]
-            dy = dxy[:, D:]
+            dxy_2d = dxy.view(T, 2 * D)
+            dx = dxy_2d[:, :D]
+            dy = dxy_2d[:, D:]
 
         # Size the CUDA-graph-stable launch from capacity. The kernel loads the
         # active row count from device when num_recv_tokens is provided.
         num_d_tiles = (D + BLOCK_D - 1) // BLOCK_D
         num_t_tiles = (T + BLOCK_T - 1) // BLOCK_T
-        num_ctas = min(num_sms * 32, num_t_tiles * num_d_tiles)
+        num_ctas = min(cta_cap, num_t_tiles * num_d_tiles)
         grid = (num_ctas, 1, 1)
         _triton_swiglu_bwd[grid](
             ptr_dz=dz,
@@ -880,10 +902,10 @@ def swiglu_bwd(
             dz_offset_ptr=None,
             num_recv_tokens_ptr=num_recv_tokens,
             T=T,
+            CTA_CAP=cta_cap,
             D=D,
             BLOCK_T=BLOCK_T,
             BLOCK_D=BLOCK_D,
-            NUM_CTA=num_ctas,
             num_warps=num_warps,
             num_stages=num_stages,
             DTYPE=_to_tl_dtype(dtype_x),
@@ -895,8 +917,6 @@ def swiglu_bwd(
 
         # Return based on mode
         if chunked:
-            if len(original_shape) != 2:
-                dxy = dxy.reshape(original_shape)
             return dxy
         else:
             if len(shape_x) != 2:

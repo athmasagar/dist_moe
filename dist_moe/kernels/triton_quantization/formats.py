@@ -377,8 +377,6 @@ FP4_E2M1_MAX_RECIP = 1.0 / FP4_E2M1_MAX
 # Public: every producer synthesizing an NVFP4 global scale (and any bench or
 # test mirroring the production scale) must share this value.
 NVFP4_MAX = FP8_E4M3_MAX * FP4_E2M1_MAX
-# Keeps an E4M3-rounded NVFP4 scale from shrinking below the no-clipping scale.
-NVFP4_NO_CLIP_TARGET_MAX = FP4_E2M1_MAX * (16.0 / 17.0)
 # Unsigned E5M3 scale, per PTX ISA 9.4: 5-bit exponent, 3-bit mantissa, no
 # sign, no infinity, NaN limited to the single byte 0xFF. The ISA gives only
 # the structure; the numbers below follow its unsigned siblings, where "NaN

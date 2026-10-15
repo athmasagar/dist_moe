@@ -36,7 +36,6 @@ from ...formats import (
     BlockScaledFormat,
     ScaleFactorLayout,
 )
-from .. import _dsl_compat as _cute_extern  # noqa: F401
 from .._cuda_context import ensure_cuda_driver_context
 from .._quack.cute_dsl_utils import torch2cute_dtype_map
 from ._fused_dw_reduce_and_quant_kernel import FusedDwReduce
@@ -67,6 +66,29 @@ def _check_dimension_alignment(D: int, *dtypes: torch.dtype) -> None:
             f"For {max_width}-bit dtypes, D must be divisible by "
             f"{_MIN_CP_ASYNC_BITS // max_width}."
         )
+
+
+def _small_d_fwd_selected(
+    x: Tensor,
+    w: Tensor | None,
+    output_dtype: torch.dtype,
+    use_fused_norm_reductions: bool,
+    input_scale: bool,
+) -> bool:
+    """Static forward selection for the small-D kernel (fwd counterpart of
+    :func:`_small_d_bwd_selected`): dispatch is on (D, dtypes) behind the
+    ``use_fused_norm_reductions`` opt-in; layout never affects it, and the
+    fused ``input_scale`` path has no small-D variant. TODO: drop the
+    opt-in requirement once a numerics ladder derisks the bundle and it
+    becomes the default."""
+    if not use_fused_norm_reductions or input_scale:
+        return False
+    return RMSNormSmallDFwd.can_implement(
+        torch2cute_dtype_map[x.dtype],
+        torch2cute_dtype_map[output_dtype],
+        torch2cute_dtype_map[w.dtype] if w is not None else None,
+        x.shape[-1],
+    )
 
 
 def _small_d_bwd_selected(
@@ -126,7 +148,12 @@ def _small_d_bwd(
     )
     dx = torch.empty(x.numel() // D, D, device=x.device, dtype=resolved_dx_dtype)
     with ensure_cuda_driver_context():
-        plan.launch(x, dy_2d, rstd_1d, dx)
+        plan.launch(
+            x,
+            dy_2d,
+            rstd_1d,
+            dx,
+        )
     return dx
 
 
@@ -173,13 +200,8 @@ def _fused_rmsnorm_fwd(
     out_dt = torch2cute_dtype_map[output_dtype]
     w_dt = torch2cute_dtype_map[w.dtype] if w is not None else None
 
-    # TODO: drop the flag condition once a numerics ladder derisks the
-    # bundle and it becomes the default
-    if (
-        use_fused_norm_reductions
-        and not input_scale
-        and not use_fp64_reduction
-        and RMSNormSmallDFwd.can_implement(dtype, out_dt, w_dt, D)
+    if not use_fp64_reduction and _small_d_fwd_selected(
+        x, w, output_dtype, use_fused_norm_reductions, input_scale
     ):
         # Bucket M to a power of two so varying token counts do not recompile
         # the JIT; T_hint only sizes the persistent grid and chunk defaults,
@@ -227,6 +249,7 @@ def _fused_rmsnorm_bwd(
     dx_dtype: Optional[torch.dtype] = None,
     sf_dtype: Optional[torch.dtype] = None,
     sf_vec_size: Optional[int] = None,
+    grad_scale: Optional[Tensor] = None,
     input_scale: bool = False,
     use_fused_norm_reductions: bool = False,
 ) -> Tuple[Tensor, Optional[Tensor], Optional[Tensor]]:
@@ -241,7 +264,8 @@ def _fused_rmsnorm_bwd(
     ``use_fused_norm_reductions`` opts the plain round-to-nearest path into
     the numerics-changing optimization bundle: the FusedDwReduce dw finalize
     (instead of the caller-side ``dw_partial.sum``) and the retuned
-    pure-16-bit launch bands. Quantized variants always use the fused finalize.
+    pure-16-bit launch bands. Quantized variants always use the fused
+    finalize (their contract predates the flag).
     """
     D = x.shape[-1]
     M = x.numel() // D
@@ -253,8 +277,8 @@ def _fused_rmsnorm_bwd(
     ]
     if w is not None:
         involved_widths.append(torch2cute_dtype_map[w.dtype].width)
-    bwd_div = _fake_div_widths(D, involved_widths)
-    dy_2d = _reshape_for_large_d(dy, bwd_div)
+    # TMA alignment is 16 bytes per operand, including narrower mixed dtypes.
+    dy_2d = _reshape_for_large_d(dy, _fake_div(D, (torch2cute_dtype_map[dy.dtype],)))
     rstd_1d = rstd.reshape(-1).to(torch.float32)
     # Bucket M to a power of two so varying token counts do not recompile the JIT.
     T_hint = 1 << max(0, int(M) - 1).bit_length()
@@ -267,7 +291,7 @@ def _fused_rmsnorm_bwd(
 
     # Static dispatch on (D, dtypes): every backward the small-D kernel is
     # capable of: usually the qk-norm slices, but generally any small red dim.
-    if _small_d_bwd_selected(
+    if grad_scale is None and _small_d_bwd_selected(
         x, w, dy, D, quant_dx, resolved_dx_dtype, use_fused_norm_reductions
     ):
         dx = _small_d_bwd(
@@ -280,10 +304,11 @@ def _fused_rmsnorm_bwd(
         )
         return dx, None, None
 
-    x_2d = _reshape_for_large_d(x, bwd_div)
+    x_2d = _reshape_for_large_d(x, _fake_div(D, (torch2cute_dtype_map[x.dtype],)))
 
     if quant_dx:
-        # Mirror the kernel's MXFP8 epilogue constraint before allocation.
+        # Mirror the kernel's MXFP8 epilogue constraint pre-launch (the
+        # kernel would only assert at trace time, after the allocations).
         max_width = max(involved_widths)
         vecsize = FusedRMSNormBwd.dx_epilogue_vecsize(D, max_width)
         if vecsize not in (4, 8):
@@ -342,6 +367,7 @@ def _fused_rmsnorm_bwd(
             T_hint=T_hint,
             use_fused_norm_reductions=use_fused_norm_reductions,
             input_scale=input_scale,
+            has_grad_scale=grad_scale is not None,
         )(
             x_2d,
             w,
@@ -354,11 +380,15 @@ def _fused_rmsnorm_bwd(
             None,  # dresidual
             None,  # db_partial
             gain_center,
+            grad_scale.reshape(1) if grad_scale is not None else None,
         )
         if w is not None and not use_legacy_rn_dw_finalize:
-            # One fused kernel column-reduces the fp32 partials and downcasts.
+            # Column-reduce the FP32 partials and downcast once.
             assert dw is not None
-            FusedDwReduce.compile(D, torch2cute_dtype_map[w.dtype])(dw_partial, dw)
+            FusedDwReduce.compile(D, torch2cute_dtype_map[w.dtype])(
+                dw_partial,
+                dw,
+            )
     if w is not None and use_legacy_rn_dw_finalize:
         assert dw_partial is not None
         dw = dw_partial.sum(dim=0).to(w.dtype)
@@ -466,7 +496,7 @@ def cute_rmsnorm_fwd(
     y: torch.Tensor | None = None,
     output_dtype: torch.dtype | None = None,
     gain_center: float = 0.0,
-    use_kahan_summation: bool = False,
+    use_kahan_summation: bool | None = None,
     use_fp64_reduction: Optional[bool] = None,
     input_scale: bool = False,
     use_fused_norm_reductions: bool = False,
@@ -476,6 +506,9 @@ def cute_rmsnorm_fwd(
     Selects the kernel variant based on use_kahan_summation/use_fp64_reduction:
       - use_kahan_summation=True: Kahan compensated FP32 reduction
       - use_kahan_summation=False: FP32 reduction unless use_fp64_reduction=True
+      - use_kahan_summation=None: auto — Kahan unless use_fp64_reduction is
+        set or the small-D forward serves the call (head-dim-scale reductions
+        need no compensation; the Kahan forward has no small-D variant)
       - use_fp64_reduction=True: FP64 sum-of-squares reduction (errors on GB300)
       - use_fp64_reduction=False/None: FP32 reduction (default)
 
@@ -487,7 +520,7 @@ def cute_rmsnorm_fwd(
         output_dtype: Output dtype (default: x.dtype).
         gain_center: Additive center for weight (fused). Default 0.0.
         use_kahan_summation: Whether to use Kahan summation for numerical stability.
-            Default False.
+            Default None resolves via the auto rule above.
         use_fp64_reduction: Use FP64 reduction for sum-of-squares. None = False.
             Raises RuntimeError on GB300 where FP64 throughput is 1/64 of FP32.
         input_scale: If True, weight is applied to input before normalization:
@@ -502,8 +535,10 @@ def cute_rmsnorm_fwd(
     """
     if input_scale:
         assert w is not None, "input_scale requires weight"
-    if output_dtype is None:
-        output_dtype = torch.promote_types(x.dtype, w.dtype) if input_scale else x.dtype
+        if output_dtype is None:
+            output_dtype = torch.promote_types(x.dtype, w.dtype)
+    elif output_dtype is None:
+        output_dtype = x.dtype
 
     if x.dtype == torch.float64 or output_dtype == torch.float64:
         raise NotImplementedError("CuTe RMSNorm does not support float64 input/output.")
@@ -528,6 +563,11 @@ def cute_rmsnorm_fwd(
         # tokens are routed to a particular expert. Return empty output.
         out = torch.empty_like(x, dtype=output_dtype) if y is None else y.view(x.shape)
         return out, torch.empty(x.shape[:-1], dtype=torch.float32, device=x.device)
+
+    if use_kahan_summation is None:
+        use_kahan_summation = not use_fp64_reduction and not _small_d_fwd_selected(
+            x, w, output_dtype, use_fused_norm_reductions, input_scale
+        )
 
     _validate_reduction_options(x.device, use_kahan_summation, use_fp64_reduction)
 
@@ -561,9 +601,7 @@ def cute_rmsnorm_fwd(
 
 @functools.lru_cache(maxsize=None)
 def _is_sm100(device: torch.device) -> bool:
-    """Cached per-device SM100 gate: the answer is immutable per device and
-    the backward validates on every call, so skip the repeated
-    device-property queries."""
+    """Return the cached, immutable SM100-or-newer device capability gate."""
     return (
         torch.cuda.is_available() and torch.cuda.get_device_capability(device)[0] >= 10
     )
@@ -626,6 +664,7 @@ def cute_rmsnorm_bwd(  # noqa: C901
     gain_center: float = 0.0,
     input_scale: bool = False,
     dx_dtype: torch.dtype | None = None,
+    grad_scale: torch.Tensor | None = None,
     use_fused_norm_reductions: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Backward pass for RMSNorm using CuTe DSL kernel with fused gain_center.
@@ -658,6 +697,9 @@ def cute_rmsnorm_bwd(  # noqa: C901
             before normalization. Requires w to be not None. Default False.
         dx_dtype: Dtype of the returned dx. Defaults to ``x.dtype``. The kernel
             computes dx in FP32 and downcasts once on the final store.
+        grad_scale: Optional one-element fp32 CUDA tensor multiplied into
+            ``dy`` in fp32 registers before the dx/dw algebra. This avoids a
+            low-precision materialized scaling step for fused callers.
 
     Returns:
         Tuple of (grad_input, grad_weight) where grad_weight is None if w is None.
@@ -671,6 +713,17 @@ def cute_rmsnorm_bwd(  # noqa: C901
     if x.dtype == torch.float64 or dy.dtype == torch.float64:
         raise NotImplementedError("CuTe RMSNorm backward does not support float64.")
 
+    if grad_scale is not None and (
+        grad_scale.numel() != 1
+        or grad_scale.dtype != torch.float32
+        or grad_scale.device != x.device
+    ):
+        raise ValueError(
+            "grad_scale must be a one-element fp32 tensor on the input device; "
+            f"got shape={tuple(grad_scale.shape)}, dtype={grad_scale.dtype}, "
+            f"device={grad_scale.device}"
+        )
+
     if dx is not None and dx_dtype is not None and dx.dtype != dx_dtype:
         raise ValueError(
             f"Pre-allocated dx dtype {dx.dtype} does not match dx_dtype {dx_dtype}"
@@ -682,6 +735,7 @@ def cute_rmsnorm_bwd(  # noqa: C901
         raise NotImplementedError(
             "MXFP8 dx needs the scale outputs; use cute_rmsnorm_bwd_quant"
         )
+
     D = x.shape[-1]
     M = x.numel() // D
     involved_dtypes = [x.dtype, dy.dtype, resolved_dx_dtype]
@@ -712,6 +766,7 @@ def cute_rmsnorm_bwd(  # noqa: C901
         rstd,
         gain_center=gain_center,
         dx_dtype=resolved_dx_dtype,
+        grad_scale=grad_scale,
         input_scale=input_scale,
         use_fused_norm_reductions=use_fused_norm_reductions,
     )
@@ -736,15 +791,15 @@ def cute_rmsnorm_bwd_quant(
     rstd: torch.Tensor,
     *,
     gain_center: float = 0.0,
-    format: BlockScaledFormat = BlockScaledFormat.MXFP8_E4M3,
+    format: BlockScaledFormat = BlockScaledFormat.MXFP8_E4M3,  # ty: ignore[invalid-parameter-default]
     layout: ScaleFactorLayout = ScaleFactorLayout.NATURAL,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """RMSNorm backward with dx fused-quantized to MXFP8 (E4M3 + E8M0 scales).
 
     Computes the same dx as :func:`cute_rmsnorm_bwd` in FP32 internally, then
     quantizes it in-register per 32-column block: rceil E8M0 scale (identical
-    numerics to the retained block-scaled quantization rule) and an E4M3 data
-    round-to-nearest-even cast. Intended for the post-expert-norm
+    numerics to the format quantizer) and an E4M3 data
+    cast with round-to-nearest-even. Intended for the post-expert-norm
     backward, whose dx feeds the MoE combine-backward all-to-all in MXFP8.
 
     Args:
@@ -756,7 +811,6 @@ def cute_rmsnorm_bwd_quant(
         format: Target block-scaled format. Only MXFP8_E4M3 is supported.
         layout: Scale-factor layout. Only NATURAL (``[*, D // 32]`` row-major)
             is supported.
-
     Returns:
         Tuple of (dx_q, dx_scales, dw): ``dx_q`` is float8_e4m3fn of x's shape,
         ``dx_scales`` is float8_e8m0fnu of shape ``(*x.shape[:-1], D // 32)``,
@@ -776,6 +830,7 @@ def cute_rmsnorm_bwd_quant(
         raise NotImplementedError(
             "Fused MXFP8 dx quantization requires SM100+ (Blackwell)"
         )
+
     qdata_dtype, sf_dtype, sf_vec_size = block_scaled_format_constants(format)
     assert sf_vec_size == _MX_SF_VEC_SIZE
     D = x.shape[-1]
@@ -807,4 +862,5 @@ def cute_rmsnorm_bwd_quant(
         sf_dtype=sf_dtype,
         sf_vec_size=sf_vec_size,
     )
+    assert dx_sf is not None
     return dx_q.reshape(orig_shape), dx_sf.reshape(sf_shape), dw_out

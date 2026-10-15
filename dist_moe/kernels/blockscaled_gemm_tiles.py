@@ -15,6 +15,7 @@ parameters (the ``swiglu_epilogue.py`` convention).
 import cutlass
 import cutlass.cute as cute
 import cutlass.utils.blockscaled_layout as blockscaled_utils
+from cutlass._mlir.dialects import llvm
 from cutlass.cute.nvgpu import (
     tcgen05,
 )
@@ -397,6 +398,70 @@ def _blockscaled_tma_load_tile(
     return accum_cnt_smem
 
 
+_MXF8F6F4_FORMAT = {
+    cutlass.Float8E4M3FN: 0,
+    cutlass.Float8E5M2: 1,
+    cutlass.Float6E2M3FN: 3,
+    cutlass.Float6E3M2FN: 4,
+    cutlass.Float4E2M1FN: 5,
+}
+
+
+def _runtime_n_mma_kind(op) -> tuple[str, int]:
+    """PTX kind and the instruction descriptor without its N and scale-factor-id fields."""
+    assert op.shape_mnk[0] == 256 and op.cta_group == tcgen05.CtaGroup.TWO
+    assert op.a_major_mode == tcgen05.OperandMajorMode.K
+    assert op.b_major_mode == tcgen05.OperandMajorMode.K
+    if isinstance(op, tcgen05.MmaMXF4NVF4Op):
+        assert op.sf_vec_size == 16
+        scale_format = 0 if op.sf_dtype == cutlass.Float8E4M3FN else 1
+        kind, a_format, b_format = "mxf4nvf4.block_scale.block16", 1, 1
+    elif isinstance(op, tcgen05.MmaMXF4Op):
+        assert op.sf_vec_size == 32
+        scale_format = 1
+        kind, a_format, b_format = "mxf4.block_scale.block32", 1, 1
+    else:
+        assert isinstance(op, tcgen05.MmaMXF8F6F4Op) and op.sf_vec_size == 32
+        scale_format = 1
+        kind = "mxf8f6f4.block_scale.block32"
+        a_format = _MXF8F6F4_FORMAT[op.a_dtype]
+        b_format = _MXF8F6F4_FORMAT[op.b_dtype]
+    return kind, (
+        (a_format << 7) | (b_format << 10) | (scale_format << 23) | ((256 >> 4) << 24)
+    )
+
+
+def _runtime_n_mma(
+    kind, idesc, tCtAcc_atom, tCrA_atom, tCrB_atom, sfa_iter, sfb_iter, accumulate
+):
+    """Issue one two-CTA block-scaled MMA whose N comes from ``idesc`` at runtime."""
+    sfa_addr = sfa_iter.toint()
+    sfb_addr = sfb_iter.toint()
+    # The scale pointers carry the byte-in-column id in bits [30, 32); cute.gemm
+    # copies it into the descriptor's a_sf_id / b_sf_id fields the same way.
+    idesc = idesc | (((sfa_addr >> 30) & 3) << 29) | (((sfb_addr >> 30) & 3) << 4)
+    with cute.arch.elect_one():
+        llvm.inline_asm(
+            None,
+            [
+                tCtAcc_atom.iterator.toint().ir_value(),
+                tcgen05.smem_descriptor_to_int(tCrA_atom.iterator).ir_value(),
+                tcgen05.smem_descriptor_to_int(tCrB_atom.iterator).ir_value(),
+                idesc.ir_value(),
+                sfa_addr.ir_value(),
+                sfb_addr.ir_value(),
+                cutlass.Int32(accumulate).ir_value(),
+            ],
+            "{\n\t.reg .pred p;\n\tsetp.ne.b32 p, $6, 0;\n\t"
+            f"tcgen05.mma.cta_group::2.kind::{kind} [$0], $1, $2, $3, [$4], [$5], p;\n\t"
+            "}\n",
+            "r,l,l,r,r,r,r",
+            has_side_effects=True,
+            is_align_stack=False,
+            asm_dialect=llvm.AsmDialect.AD_ATT,
+        )
+
+
 @cute.jit
 def _blockscaled_mma_consumer_tile(  # noqa: C901
     pipeline: GroupedGemmMmaPipeline,
@@ -411,6 +476,7 @@ def _blockscaled_mma_consumer_tile(  # noqa: C901
     OVERLAPPING_ACCUM: cutlass.Constexpr[bool],
     cta_group: cutlass.Constexpr,
     sf_dtype: cutlass.Constexpr[type[cutlass.Numeric]],
+    dynamic_n: cutlass.Int32 | None = None,
 ) -> cutlass.Int32:
     tiled_copy_s2t_sfa, tCsSFA_compact_s2t, tCtSFA_compact_s2t = (
         _mainloop_s2t_copy_and_partition(
@@ -432,6 +498,12 @@ def _blockscaled_mma_consumer_tile(  # noqa: C901
                 (accum_cnt_tile - cutlass.Int32(1)) & 1,
             )
 
+    runtime_n = dynamic_n is not None
+    if cutlass.const_expr(runtime_n):
+        mma_kind, mma_idesc = _runtime_n_mma_kind(pipeline.tiled_mma.op)
+        # Bits [17, 23) of the instruction descriptor hold N >> 3.
+        mma_idesc = cutlass.Int32(mma_idesc) | ((dynamic_n >> 3) << 17)
+    tiled_mma = pipeline.tiled_mma
     for kk in cutlass.range(num_k_tiles, unroll=KLOOP_UNROLL):
         smem_buf, smem_phase = _get_bufidx_phase(accum_cnt_smem, NUM_SMEM_BUFFERS)
         if sync.pred_cta0:
@@ -451,6 +523,8 @@ def _blockscaled_mma_consumer_tile(  # noqa: C901
             num_kblocks = cute.size(pipeline.tCrA, mode=[2])
             NUM_MMA_ATOMS_M = cute.size(tCtAcc_slot.shape, mode=[1])
             NUM_MMA_ATOMS_N = cute.size(tCtAcc_slot.shape, mode=[2])
+            if cutlass.const_expr(runtime_n):
+                assert NUM_MMA_ATOMS_N == 1
             for kblock_idx in cutlass.range_constexpr(num_kblocks):
                 tCrA_kblock = pipeline.tCrA[(None, None, kblock_idx, smem_buf)]
                 tCrB_kblock = pipeline.tCrB[(None, None, kblock_idx, smem_buf)]
@@ -466,15 +540,12 @@ def _blockscaled_mma_consumer_tile(  # noqa: C901
                         ].iterator
                     else:
                         sfa_iter = pipeline.tCtSFA[(None, None, kblock_idx)].iterator
-                    pipeline.tiled_mma.set(tcgen05.Field.SFA, sfa_iter)
+                    if cutlass.const_expr(not runtime_n):
+                        tiled_mma.set(tcgen05.Field.SFA, sfa_iter)
                     for mma_n_idx in cutlass.range_constexpr(NUM_MMA_ATOMS_N):
                         tCtAcc_atom = cute.local_tile(
                             tCtAcc_slot,
-                            (
-                                tCtAcc_slot.shape[0],
-                                1,
-                                1,
-                            ),
+                            (tCtAcc_slot.shape[0], 1, 1),
                             (0, mma_m_idx, mma_n_idx),
                         )
                         tCrB_atom = cute.local_tile(
@@ -488,24 +559,32 @@ def _blockscaled_mma_consumer_tile(  # noqa: C901
                             ].iterator
                         else:
                             sfb_iter = tCtSFB_field[(None, None, kblock_idx)].iterator
-                        pipeline.tiled_mma.set(tcgen05.Field.SFB, sfb_iter)
-                        if cutlass.const_expr(kblock_idx > 0):
-                            pipeline.tiled_mma.set(
-                                tcgen05.Field.ACCUMULATE,
-                                True,
+                        if cutlass.const_expr(runtime_n):
+                            _runtime_n_mma(
+                                mma_kind,
+                                mma_idesc,
+                                tCtAcc_atom,
+                                tCrA_atom,
+                                tCrB_atom,
+                                sfa_iter,
+                                sfb_iter,
+                                cutlass.Boolean(kk > 0)
+                                if kblock_idx == 0
+                                else cutlass.Boolean(True),
                             )
                         else:
-                            pipeline.tiled_mma.set(
+                            tiled_mma.set(tcgen05.Field.SFB, sfb_iter)
+                            tiled_mma.set(
                                 tcgen05.Field.ACCUMULATE,
-                                kk > 0,
+                                kk > 0 if kblock_idx == 0 else True,
                             )
-                        cute.gemm(
-                            pipeline.tiled_mma,
-                            tCtAcc_atom,
-                            tCrA_atom,
-                            tCrB_atom,
-                            tCtAcc_atom,
-                        )
+                            cute.gemm(
+                                tiled_mma,
+                                tCtAcc_atom,
+                                tCrA_atom,
+                                tCrB_atom,
+                                tCtAcc_atom,
+                            )
             with cute.arch.elect_one():
                 tcgen05.commit(
                     sync.ab_empty_mbar + smem_buf,
@@ -927,6 +1006,7 @@ def _prepare_blockscaled_problem_tensormaps(  # noqa: C901
     borrow_a_row_bytes: cutlass.Int64 = 0,
     borrow_sfa_base: cutlass.Int64 = 0,
     borrow_sfa_row_bytes: cutlass.Int64 = 0,
+    tensormap_warp_id: cutlass.Constexpr[int] = 0,
 ):
     # With `ring_b_rows`, the activation (B/SFB) operand lives in a
     # schedule-position ring shared by every group: descriptors carry the
@@ -964,19 +1044,19 @@ def _prepare_blockscaled_problem_tensormaps(  # noqa: C901
 
     if problem.warp_idx == 0:
         tensormap_manager.init_tensormap_from_atom(
-            params.tma_atom_a, tensormap_a_smem_ptr, 0
+            params.tma_atom_a, tensormap_a_smem_ptr, tensormap_warp_id
         )
         tensormap_manager.init_tensormap_from_atom(
-            params.tma_atom_b, tensormap_b_smem_ptr, 0
+            params.tma_atom_b, tensormap_b_smem_ptr, tensormap_warp_id
         )
         tensormap_manager.init_tensormap_from_atom(
-            params.tma_atom_sfa, tensormap_sfa_smem_ptr, 0
+            params.tma_atom_sfa, tensormap_sfa_smem_ptr, tensormap_warp_id
         )
         tensormap_manager.init_tensormap_from_atom(
-            params.tma_atom_sfb, tensormap_sfb_smem_ptr, 0
+            params.tma_atom_sfb, tensormap_sfb_smem_ptr, tensormap_warp_id
         )
         tensormap_manager.init_tensormap_from_atom(
-            params.tma_atom_c, tensormap_c_smem_ptr, 0
+            params.tma_atom_c, tensormap_c_smem_ptr, tensormap_warp_id
         )
         _clear_tma_oob_prefetch_bit(tensormap_a_smem_ptr)
         _clear_tma_oob_prefetch_bit(tensormap_b_smem_ptr)
@@ -993,7 +1073,11 @@ def _prepare_blockscaled_problem_tensormaps(  # noqa: C901
         sfa_off_bytes = cutlass.Int64(0)
         sfb_off_bytes = cutlass.Int64(0)
 
-        for prev_g in cutlass.range(problem.groups, unroll=1):
+        # Each lane sums every 32nd preceding group, then the butterfly adds
+        # the lanes, so all 32 lanes of warp 0 must reach this point.
+        lane = cute.arch.lane_idx()
+        for group_base in cutlass.range_constexpr(0, problem.groups, 32):
+            prev_g = lane + group_base
             if prev_g < problem.prepare_g:
                 prev_m, prev_n, prev_k = _get_group_sizes_swap_aware(
                     problem.split_sizes,
@@ -1084,6 +1168,16 @@ def _prepare_blockscaled_problem_tensormaps(  # noqa: C901
                     )
                     sfb_off_bytes += cutlass.Int64(sfb_per_group_bytes)
 
+        for shift in cutlass.range_constexpr(5):
+            a_off_bytes += cute.arch.shuffle_sync_bfly(a_off_bytes, offset=1 << shift)
+            b_off_bytes += cute.arch.shuffle_sync_bfly(b_off_bytes, offset=1 << shift)
+            c_off_bytes += cute.arch.shuffle_sync_bfly(c_off_bytes, offset=1 << shift)
+            sfa_off_bytes += cute.arch.shuffle_sync_bfly(
+                sfa_off_bytes, offset=1 << shift
+            )
+            sfb_off_bytes += cute.arch.shuffle_sync_bfly(
+                sfb_off_bytes, offset=1 << shift
+            )
         m_size, n_size, k_size = _get_group_sizes_swap_aware(
             problem.split_sizes,
             problem.prepare_g,
@@ -1250,7 +1344,7 @@ def _prepare_blockscaled_problem_tensormaps(  # noqa: C901
                 tensormap_sfb_ptr,
                 tensormap_c_ptr,
             ),
-            0,
+            tensormap_warp_id,
             (
                 tensormap_a_smem_ptr,
                 tensormap_b_smem_ptr,

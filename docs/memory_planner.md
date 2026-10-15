@@ -64,6 +64,22 @@ reimplementing this topology-aware calculation.
 also resolves CUDA VMM granularity, physical section padding, and the allocator
 size-class adjustment used by `dist_moe.create_context()`.
 
+For device-only Mega inference, a device-resolved plan also reserves the physical operand
+layout needed by the inference kernels. This includes row-quantized X/H2,
+blocked scale pages, tile tails, H1 and kernel metadata. Concatenated weights
+require full BF16 H1 storage; fused gate/up inference needs only an H1
+descriptor placeholder because it produces H2 directly.
+These are aligned views of the same scratch allocation, not another activation
+buffer. `inference_operand_bytes` reports the required envelope inside device
+scratch. The envelope is unresolved only when both `device` and `config.num_sms`
+are absent; an explicit SM count also resolves it without a device. Context
+creation resolves it before allocating. The envelope covers both prepared layouts and every
+supported T, since a smaller decode tile can require more scale-page padding
+than the largest T. Receive capacity remains the original hard routing bound.
+VMM inference instead retains GPU-planned byte offsets and device tensor maps,
+so `inference_operand_bytes` remains `None`. This preserves packing into the
+hot device-backed suffix before host overflow is used.
+
 For example, `max_num_local_input_tokens=4096`, `top_k=8`, EP 16, device
 factor 1.5, and total factor 16 produce 32,768 balanced rows, 49,152
 device-scratch rows, and 524,288 total scratch rows. The exact byte counts also

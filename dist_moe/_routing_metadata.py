@@ -102,7 +102,7 @@ class PreparedDecodeRouting:
     max_num_recv_tokens: int | None = None
 
 
-def to_tl_dtype(dtype: torch.dtype) -> int:
+def to_tl_dtype(dtype: torch.dtype) -> tl.dtype:
     """Map a supported PyTorch dtype to its Triton scalar dtype.
 
     Args:
@@ -169,6 +169,7 @@ def _routing_ptrs_capacity(
     num_local_experts: int,
     m_multiple_of: int,
     max_num_recv_tokens: int | None,
+    pointer_capacity_multiple_of: int = 1,
 ) -> int:
     """Return pointer storage covering topology and an optional row ceiling.
 
@@ -179,6 +180,8 @@ def _routing_ptrs_capacity(
         num_local_experts: Experts owned by this rank.
         m_multiple_of: Per-expert row padding multiple.
         max_num_recv_tokens: Optional configured receive-row ceiling.
+        pointer_capacity_multiple_of: Physical allocation row alignment. It
+            does not change the logical overflow guard.
 
     Returns:
         Required routing-pointer capacity.
@@ -190,7 +193,14 @@ def _routing_ptrs_capacity(
         num_local_experts=num_local_experts,
         m_multiple_of=m_multiple_of,
     )
-    return max(required, max_num_recv_tokens or 0)
+    if pointer_capacity_multiple_of <= 0:
+        raise ValueError("pointer_capacity_multiple_of must be positive")
+    capacity = max(required, max_num_recv_tokens or 0)
+    return (
+        (capacity + pointer_capacity_multiple_of - 1)
+        // pointer_capacity_multiple_of
+        * pointer_capacity_multiple_of
+    )
 
 
 def _is_power_of_two(value: int) -> bool:
@@ -350,6 +360,7 @@ def _decode_dispatch_routing(
     scatter_stride_bytes: int,
     m_multiple_of: int,
     max_num_recv_tokens: int | None,
+    pointer_capacity_multiple_of: int = 1,
 ) -> DistDispatchRoutingOutput:
     """Allocate, clear, and execute one direct decode routing launch.
 
@@ -367,6 +378,7 @@ def _decode_dispatch_routing(
         scatter_stride_bytes: Bytes in one combined row.
         m_multiple_of: Per-expert row padding multiple.
         max_num_recv_tokens: Optional configured receive-row ceiling.
+        pointer_capacity_multiple_of: Physical pointer-storage row alignment.
 
     Returns:
         Routing counts and gather/scatter pointer tables.
@@ -385,6 +397,7 @@ def _decode_dispatch_routing(
         scatter_stride_bytes=scatter_stride_bytes,
         m_multiple_of=m_multiple_of,
         max_num_recv_tokens=max_num_recv_tokens,
+        pointer_capacity_multiple_of=pointer_capacity_multiple_of,
     )
     _clear_prepared_decode_routing(prepared)
     return launch_prepared_decode_routing(prepared)
@@ -405,6 +418,7 @@ def _allocate_prepared_decode_routing(
     scatter_stride_bytes: int,
     m_multiple_of: int,
     max_num_recv_tokens: int | None,
+    pointer_capacity_multiple_of: int = 1,
 ) -> PreparedDecodeRouting:
     """Allocate fixed-capacity outputs and counters for decode routing.
 
@@ -422,6 +436,7 @@ def _allocate_prepared_decode_routing(
         scatter_stride_bytes: Bytes in one combined row.
         m_multiple_of: Per-expert row padding multiple.
         max_num_recv_tokens: Optional configured receive-row ceiling.
+        pointer_capacity_multiple_of: Physical pointer-storage row alignment.
 
     Returns:
         Reusable decode-routing state.
@@ -434,6 +449,7 @@ def _allocate_prepared_decode_routing(
         num_local_experts=num_local_experts,
         m_multiple_of=m_multiple_of,
         max_num_recv_tokens=max_num_recv_tokens,
+        pointer_capacity_multiple_of=pointer_capacity_multiple_of,
     )
     expert_counters = torch.empty((num_experts,), dtype=torch.int32, device=device)
     completed_ctas = torch.empty((1,), dtype=torch.int32, device=device)
@@ -688,7 +704,7 @@ def prepare_decode_routing(
         max_num_recv_tokens=max_num_recv_tokens,
     )
     local_routing_buffer = _routing_ids_view(
-        routing_buffer, local_rank, expert_ids.shape
+        routing_buffer, local_rank, (expert_ids.shape[0], expert_ids.shape[1])
     )
     _clear_prepared_decode_routing(
         prepared,
@@ -713,6 +729,7 @@ def dist_dispatch_routing(
     bwd_dispatch_stride_bytes: int | None = None,
     generate_bwd_gather_ptrs: bool = True,
     use_low_latency: bool = False,
+    pointer_capacity_multiple_of: int = 1,
 ) -> DistDispatchRoutingOutput:
     """Compute routing indices for distributed grouped GEMM with expert parallelism.
 
@@ -779,6 +796,9 @@ def dist_dispatch_routing(
         use_low_latency: Select the two-launch decode path when its bounded
               shape and synchronization requirements are satisfied. Unsupported
               configurations fall back to the general three-phase path.
+        pointer_capacity_multiple_of: Physical pointer-storage row alignment
+              for a capacity-shaped consumer. The configured receive-row
+              overflow guard is unchanged.
 
     Returns:
         DistDispatchRoutingOutput containing:
@@ -860,6 +880,7 @@ def dist_dispatch_routing(
             scatter_stride_bytes=scatter_stride_bytes,
             m_multiple_of=m_multiple_of_constexpr,
             max_num_recv_tokens=max_num_recv_tokens,
+            pointer_capacity_multiple_of=pointer_capacity_multiple_of,
         )
 
     # Plan the split grid before the gather launch so the gather CTAs can also
@@ -965,6 +986,7 @@ def dist_dispatch_routing(
         num_local_experts=num_local_experts,
         m_multiple_of=m_multiple_of_constexpr,
         max_num_recv_tokens=max_num_recv_tokens,
+        pointer_capacity_multiple_of=pointer_capacity_multiple_of,
     )
     bwd_gather_ptrs = (
         torch.empty((ptrs_size,), dtype=torch.int64, device=device)

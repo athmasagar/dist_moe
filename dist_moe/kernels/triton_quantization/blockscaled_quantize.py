@@ -249,9 +249,6 @@ _TL_UE5M3_F32_MIN_NORMAL_BITS = _wrap((127 + 1 - UE5M3_EXP_BIAS) << 23)
 _TL_UE5M3_F32_CODE_REBIAS = _wrap((127 - UE5M3_EXP_BIAS) << 3)
 # 1 / min subnormal: maps a subnormal-range value onto its integer code 0..8.
 _TL_UE5M3_SUBNORMAL_QUANTUM_RECIP = _wrap(1.0 / UE5M3_MIN_SUBNORMAL)
-# No-clip subnormal threshold: max(amax, T) / 96 must reach half the UE5M3
-# subnormal spacing (2^-18), so T = 96 * 2^-18 = 3 * 2^-13 (E4M3 analog: 3/32).
-_TL_UE5M3_NO_CLIP_SUB_THRESHOLD = _wrap(3.0 * 2.0**-13)
 # 0xFE: only the NaN byte 0xFF is non-numeric (ue4m3/ue8m0 convention);
 # see the formats.py derivation.
 _TL_UE5M3_MAX_FINITE_CODE = _wrap(UE5M3_MAX_FINITE_CODE)
@@ -369,7 +366,7 @@ def _compute_e8m0_scale_rceil(
 
 
 @triton.jit
-def _compute_nvfp4_scale_rtne(max_abs, USE_NVFP4_NO_CLIP_SCALE: tl.constexpr):
+def _compute_nvfp4_scale_rtne(max_abs):
     """Round-to-nearest-even NVFP4 block scale and its fp32 reciprocal.
 
     Inf/NaN in ``max_abs`` maps to the E4M3 NaN byte 0x7F -- NVFP4 can't signal
@@ -380,17 +377,7 @@ def _compute_nvfp4_scale_rtne(max_abs, USE_NVFP4_NO_CLIP_SCALE: tl.constexpr):
     """
     tl.static_assert(max_abs.dtype == tl.float32, "max_abs must be fp32")
     block_amax = tl.where(max_abs == float("inf"), float("nan"), max_abs)
-    if USE_NVFP4_NO_CLIP_SCALE:
-        # Normal E4M3 bins need 17/16 relative headroom. Subnormal bins have
-        # fixed 2^-9 spacing, so add half that spacing before RTNE instead:
-        # amax / 6 + max(amax / 96, 2^-10).
-        scale_input = tl.fma(
-            block_amax,
-            _TL_FP4_E2M1_MAX_RECIP,
-            tl.maximum(block_amax, 3.0 / 32.0) * (1.0 / 96.0),
-        )
-    else:
-        scale_input = block_amax * _TL_FP4_E2M1_MAX_RECIP
+    scale_input = block_amax * _TL_FP4_E2M1_MAX_RECIP
     # ``satfinite`` covers the top (>448 -> 448) + NaN -> 0x7F; the clamp's lower
     # bound is the EPS rule keeping scale off zero so 1/scale stays finite.
     scale_input = tl.clamp(
@@ -484,7 +471,6 @@ def _nvfp4_scale_and_recip(
     max_abs,
     global_scale,
     HAS_GLOBAL_SCALE: tl.constexpr,
-    USE_NVFP4_NO_CLIP_SCALE: tl.constexpr = False,
 ):
     if HAS_GLOBAL_SCALE:
         global_scale_safe = _safe_global_scale(global_scale)
@@ -497,17 +483,13 @@ def _nvfp4_scale_and_recip(
         # fl(1/6) multiply), flipping the scale byte and with it the whole
         # 16-element block. When ``max_abs * gs`` is exactly representable
         # this is also the closer evaluation of ``amax * gs / 6``.
-        block_scale_fp8 = _compute_nvfp4_scale_rtne(
-            max_abs * global_scale_safe, USE_NVFP4_NO_CLIP_SCALE
-        )[0]
+        block_scale_fp8 = _compute_nvfp4_scale_rtne(max_abs * global_scale_safe)[0]
         # Single correctly-rounded division: reciprocal-then-multiply double
         # rounds and can land 1 ulp off, flipping FP4 codes for values that
         # scale to within 1 ulp of an E2M1 rounding boundary.
         recip_scale = tl.div_rn(global_scale_safe, block_scale_fp8.to(tl.float32))
     else:
-        block_scale_fp8, recip_scale = _compute_nvfp4_scale_rtne(
-            max_abs, USE_NVFP4_NO_CLIP_SCALE
-        )
+        block_scale_fp8, recip_scale = _compute_nvfp4_scale_rtne(max_abs)
     return block_scale_fp8, recip_scale
 
 
@@ -556,7 +538,6 @@ def _ue5m3_code_to_f32(code):
 @triton.jit
 def _compute_nvfp4_ue5m3_scale(
     max_abs,
-    USE_NVFP4_NO_CLIP_SCALE: tl.constexpr,
 ):
     """UE5M3 block scale: ``(code_i32, scale_fp32, recip_fp32)``.
 
@@ -566,17 +547,7 @@ def _compute_nvfp4_ue5m3_scale(
     """
     tl.static_assert(max_abs.dtype == tl.float32, "max_abs must be fp32")
     block_amax = tl.where(max_abs == float("inf"), float("nan"), max_abs)
-    if USE_NVFP4_NO_CLIP_SCALE:
-        # Headroom so the rounded (RTNE) scale stays >= amax/6 (no clipping):
-        # rounding can go down by half an ulp (1/16 relative), so add
-        # amax/96; below T = 3 * 2^-13 the fixed subnormal half-spacing
-        # (2^-18) dominates, supplied by T/96. Same rule as E4M3.
-        headroom = tl.maximum(block_amax, _TL_UE5M3_NO_CLIP_SUB_THRESHOLD) * (
-            1.0 / 96.0
-        )
-        scale_input = tl.fma(block_amax, _TL_FP4_E2M1_MAX_RECIP, headroom)
-    else:
-        scale_input = block_amax * _TL_FP4_E2M1_MAX_RECIP
+    scale_input = block_amax * _TL_FP4_E2M1_MAX_RECIP
     is_nan = scale_input != scale_input
     scale_input = tl.clamp(
         scale_input,
@@ -599,20 +570,15 @@ def _nvfp4_ue5m3_scale_and_recip(
     max_abs,
     global_scale,
     HAS_GLOBAL_SCALE: tl.constexpr,
-    USE_NVFP4_NO_CLIP_SCALE: tl.constexpr = False,
 ):
     """Two-level UE5M3 composition; same raw-scale order and single
     correctly-rounded recip division as ``_nvfp4_scale_and_recip``."""
     if HAS_GLOBAL_SCALE:
         global_scale_safe = _safe_global_scale(global_scale)
-        code, scale_f32, _ = _compute_nvfp4_ue5m3_scale(
-            max_abs * global_scale_safe, USE_NVFP4_NO_CLIP_SCALE
-        )
+        code, scale_f32, _ = _compute_nvfp4_ue5m3_scale(max_abs * global_scale_safe)
         recip_scale = tl.div_rn(global_scale_safe, scale_f32)
     else:
-        code, scale_f32, recip_scale = _compute_nvfp4_ue5m3_scale(
-            max_abs, USE_NVFP4_NO_CLIP_SCALE
-        )
+        code, scale_f32, recip_scale = _compute_nvfp4_ue5m3_scale(max_abs)
     return code, scale_f32, recip_scale
 
 
@@ -662,7 +628,7 @@ def _canonicalize_mx_half_range(
     values still fit, making ``quantize -> dequantize -> quantize`` bitwise
     stable. The per-format midpoint sets the comparison: E4M3 rounds 232 -> 224
     (inclusive), while E5M2 rounds 30720 up and E2M1 rounds 3.5 up (exclusive).
-    Off by default to match the pinned reference rules.
+    Off by default to match the llama4x reference rules.
     """
     tl.static_assert(max_abs.dtype == tl.float32, "max_abs must be fp32")
     tl.static_assert(scale_u8.dtype == tl.uint8, "scale_u8 must be uint8")
@@ -696,7 +662,6 @@ def _compute_scale_and_recip_from_amax(
     amax,  # fp32 [N_BLOCKS] — per-block amax (NaN already mapped to inf).
     FORMAT_ID: tl.constexpr,
     USE_HALF_RANGE_SCALE: tl.constexpr,
-    USE_NVFP4_NO_CLIP_SCALE: tl.constexpr = False,
 ):
     """Per-block scale byte + fp32 reciprocal, shared by all quant kernels.
 
@@ -731,7 +696,7 @@ def _compute_scale_and_recip_from_amax(
                 amax, scale_u8, recip_scale, FORMAT_ID=FORMAT_ID
             )
         return scale_u8, recip_scale
-    scale_fp8, recip_scale = _compute_nvfp4_scale_rtne(amax, USE_NVFP4_NO_CLIP_SCALE)
+    scale_fp8, recip_scale = _compute_nvfp4_scale_rtne(amax)
     scale_u8 = scale_fp8.to(tl.uint8, bitcast=True)
     return scale_u8, recip_scale
 
@@ -743,14 +708,12 @@ def _compute_scale_and_recip_from_amax_with_optional_nvfp4_lut(
     FORMAT_ID: tl.constexpr,
     USE_HALF_RANGE_SCALE: tl.constexpr,
     USE_NVFP4_RECIP_LUT: tl.constexpr,
-    USE_NVFP4_NO_CLIP_SCALE: tl.constexpr = False,
 ):
     """Compute scale + reciprocal from amax, optionally using the NVFP4 recip LUT."""
     scale_u8, recip = _compute_scale_and_recip_from_amax(
         amax,
         FORMAT_ID=FORMAT_ID,
         USE_HALF_RANGE_SCALE=USE_HALF_RANGE_SCALE,
-        USE_NVFP4_NO_CLIP_SCALE=USE_NVFP4_NO_CLIP_SCALE,
     )
     if FORMAT_ID == _TL_BLOCK_SCALED_FORMAT_NVFP4 and USE_NVFP4_RECIP_LUT:
         # Optional NVFP4 fast path: read the reciprocal from a precomputed LUT
@@ -820,7 +783,7 @@ def _apply_block_scaled_quant_producer(
     Producer math runs in fp32 immediately after the HBM load; the returned
     tensor is the exact value whose block amax and quantized data are emitted.
     ``CLAMPED`` selects the GPT-OSS clamped SwiGLU; its op order mirrors
-    the standalone SwiGLU quantization path so the two stay bitwise equal.
+    ``dist_moe.kernels.triton.swiglu`` so the two stay bitwise equal.
     """
     primary = primary.to(tl.float32)
     if PRODUCER_ID == _TL_BLOCK_SCALED_PRODUCER_IDENTITY:
@@ -849,14 +812,10 @@ def _apply_block_scaled_quant_dxy_concat_producer(
     ALPHA: tl.constexpr = 1.702,
     LIMIT: tl.constexpr = 7.0,
 ):
-    """Apply the concatenated SwiGLU backward producer for a dx or dy tile.
+    """Produce one tile of logical ``[dx, dy]`` without materializing DXY.
 
-    The concatenated backward emits logical ``[dx, dy]`` without materializing
-    it. CTAs never cross the dx/dy boundary.
-
-    Compute both ``dx`` and ``dy`` and select with ``tl.where`` so this producer
-    preserves the established deterministic operation order and remains
-    bitwise-compatible with the CuTe path.
+    CTAs do not cross the dx/dy boundary. Both halves retain the source vector
+    layout before ``tl.where`` selects the requested half.
     """
     dx, dy, _ = _apply_block_scaled_quant_dxy_fwd_producer(
         dz,
@@ -1041,19 +1000,6 @@ def _pack_u8x4_to_u32(
         | (v1.to(tl.uint32) << 8)
         | (v2.to(tl.uint32) << 16)
         | (v3.to(tl.uint32) << 24)
-    )
-
-
-@triton.jit
-def _pack_fp4_e2m1_blocks_to_u32_rn(
-    x_scaled,
-    N_BLOCKS: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-):
-    return _pack_fp4_e2m1_blocks_to_u32(
-        x_scaled,
-        N_BLOCKS=N_BLOCKS,
-        BLOCK_SIZE=BLOCK_SIZE,
     )
 
 
@@ -1375,7 +1321,6 @@ def _store_tile2d_qdata_col_major_fp4(
     # Output.
     q_ptr,
     q_row_stride,
-    N_COLS: tl.constexpr,
     # Shape & addressing.
     # Tiling.
     BLOCK_M: tl.constexpr,
@@ -1385,7 +1330,7 @@ def _store_tile2d_qdata_col_major_fp4(
     # is (cols, rows // 2). Pack eight row codes into one u32 store per
     # column to match the fast axis=1 FP4 path's store width.
     q_t = tl.permute(q_values, (1, 0))
-    packed = _pack_fp4_e2m1_blocks_to_u32_rn(
+    packed = _pack_fp4_e2m1_blocks_to_u32(
         q_t,
         N_BLOCKS=BLOCK_K,
         BLOCK_SIZE=BLOCK_M,
@@ -1444,7 +1389,7 @@ def _store_tile2d_qdata_row_major(
         # FP4: pack eight adjacent K-axis codes into one u32 output word.
         # The byte layout is still two codes per byte; the wider store removes
         # the generic path's previous byte-store bottleneck.
-        packed = _pack_fp4_e2m1_blocks_to_u32_rn(
+        packed = _pack_fp4_e2m1_blocks_to_u32(
             q_values,
             N_BLOCKS=BLOCK_M,
             BLOCK_SIZE=BLOCK_K,
@@ -1473,7 +1418,6 @@ def _store_row1d_qdata_row_major(
     q_ptr,
     FORMAT_ID: tl.constexpr,
     Q_COLS: tl.constexpr,
-    SCALE_COLS: tl.constexpr,
     N_BLOCKS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -1499,7 +1443,7 @@ def _store_row1d_qdata_row_major(
         )
     else:
         x_scaled = x_values * recip_scale[:, None]
-        packed = _pack_fp4_e2m1_blocks_to_u32_rn(
+        packed = _pack_fp4_e2m1_blocks_to_u32(
             x_scaled,
             N_BLOCKS=N_BLOCKS,
             BLOCK_SIZE=BLOCK_SIZE,
@@ -1789,7 +1733,7 @@ def _get_row1d_cublas_blocked_kernel_config(
 ) -> _Row1dCublasBlockedKernelConfig | None:
     if format_id == BlockScaledFormatId.NVFP4.value:
         # m_tile=32, num_warps=1 was the sweep winner after the inf/NaN
-        # correctness fixes and the reference-compatible refactor. The kernel became
+        # correctness fixes and the llama4x-style refactor. The kernel became
         # compute-bound from the per-element NaN check, so smaller CTAs with
         # fewer warps maximise SM-level parallelism.
         return _Row1dCublasBlockedKernelConfig(m_tile=32, block_size=16, num_warps=1)
@@ -2048,11 +1992,10 @@ def _triton_quantize_blockscaled_row1d_tile(  # noqa: C901, TR001 -- format-spec
     group_output_elems,
     HAS_GROUPS: tl.constexpr,
     USE_64BIT_OFFSETS: tl.constexpr,
+    USE_64BIT_COL_OFFSETS: tl.constexpr,
     HAS_GLOBAL_SCALE: tl.constexpr,
     GLOBAL_SCALE_RANK: tl.constexpr,
     GLOBAL_SCALE_ROWS_PER_GROUP: tl.constexpr,
-    # Tiling.
-    GRID_COL_TILES: tl.constexpr,
     ROW_TILE: tl.constexpr,
     SCALE_COL_TILE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
@@ -2097,6 +2040,8 @@ def _triton_quantize_blockscaled_row1d_tile(  # noqa: C901, TR001 -- format-spec
     elem_offsets = tl.arange(0, BLOCK_SIZE)
     x_offsets = scale_col[:, None] * BLOCK_SIZE + elem_offsets[None, :]
     load_mask = valid_blocks[:, None] & (x_offsets < N_COLS)
+    if USE_64BIT_COL_OFFSETS:
+        x_offsets = x_offsets.to(tl.int64)
     x = _load_row1d_tile_with_simple_producer(
         x_ptr,
         producer_b_ptr,
@@ -2117,7 +2062,6 @@ def _triton_quantize_blockscaled_row1d_tile(  # noqa: C901, TR001 -- format-spec
             max_abs,
             global_scale,
             HAS_GLOBAL_SCALE=HAS_GLOBAL_SCALE,
-            USE_NVFP4_NO_CLIP_SCALE=False,
         )
         scale_u8 = scale_fp8.to(tl.uint8, bitcast=True)
     else:
@@ -2125,7 +2069,6 @@ def _triton_quantize_blockscaled_row1d_tile(  # noqa: C901, TR001 -- format-spec
             max_abs,
             FORMAT_ID=FORMAT_ID,
             USE_HALF_RANGE_SCALE=USE_HALF_RANGE_SCALE,
-            USE_NVFP4_NO_CLIP_SCALE=False,
         )
     tl.store(
         scale_ptr + scale_offsets,
@@ -2143,7 +2086,6 @@ def _triton_quantize_blockscaled_row1d_tile(  # noqa: C901, TR001 -- format-spec
         q_ptr=q_ptr,
         FORMAT_ID=FORMAT_ID,
         Q_COLS=Q_COLS,
-        SCALE_COLS=SCALE_COLS,
         N_BLOCKS=n_scale_blocks,
         BLOCK_SIZE=BLOCK_SIZE,
     )
@@ -2154,7 +2096,7 @@ def _triton_quantize_blockscaled_row1d_tile(  # noqa: C901, TR001 -- format-spec
 # =============================================================================
 
 
-@triton.jit
+@triton.jit()
 def _triton_quantize_blockscaled_tile2d_given_grid(  # noqa: TR001
     # Input.
     x_ptr,
@@ -2173,8 +2115,6 @@ def _triton_quantize_blockscaled_tile2d_given_grid(  # noqa: TR001
     N_COLS: tl.constexpr,
     Q_COLS: tl.constexpr,
     SCALE_COLS: tl.constexpr,
-    # Tiling.
-    GRID_COL_TILES: tl.constexpr,
     ROW_TILE: tl.constexpr,
     SCALE_COL_TILE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
@@ -2206,6 +2146,7 @@ def _triton_quantize_blockscaled_tile2d_given_grid(  # noqa: TR001
     elem_offsets = tl.arange(0, BLOCK_SIZE)
     x_offsets = scale_col[:, None] * BLOCK_SIZE + elem_offsets[None, :]
     load_mask = valid_blocks[:, None] & (x_offsets < N_COLS)
+    x_offsets = x_offsets.to(tl.int64)
     x = tl.load(
         x_ptr + rows[:, None] * x_row_stride + x_offsets * x_col_stride,
         mask=load_mask,
@@ -2222,7 +2163,6 @@ def _triton_quantize_blockscaled_tile2d_given_grid(  # noqa: TR001
         q_ptr=q_ptr,
         FORMAT_ID=FORMAT_ID,
         Q_COLS=Q_COLS,
-        SCALE_COLS=SCALE_COLS,
         N_BLOCKS=n_scale_blocks,
         BLOCK_SIZE=BLOCK_SIZE,
     )
@@ -2279,6 +2219,7 @@ def _triton_quantize_blockscaled_row1d_cublas_blocked(  # noqa: C901, TR001 -- c
     GLOBAL_SCALE_ROWS_PER_GROUP: tl.constexpr,
     # Tiling.
     GRID_COL_TILES: tl.constexpr,
+    FLAT_GRID: tl.constexpr,
     M_TILE: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -2295,8 +2236,15 @@ def _triton_quantize_blockscaled_row1d_cublas_blocked(  # noqa: C901, TR001 -- c
     coalesced and the per-CTA descriptor cost outweighs the TMA savings
     at this tile size, so we kept the original path.
     """
-    pid_col = tl.program_id(0)
-    pid_row = tl.program_id(1)
+    # Flat grid with column tiles fastest: row tiles can exceed the 65535
+    # gridDim.y cap, and a rows-fastest 2D grid measured up to 1.6x slower.
+    if FLAT_GRID:
+        pid = tl.program_id(0)
+        pid_row = pid // GRID_COL_TILES
+        pid_col = pid % GRID_COL_TILES
+    else:
+        pid_col = tl.program_id(0)
+        pid_row = tl.program_id(1)
     k_tile: tl.constexpr = BLOCK_SIZE * _TL_CUBLAS_BLOCKED_SCALE_COLS_PER_ATOM
     n_scale_blocks: tl.constexpr = M_TILE * _TL_CUBLAS_BLOCKED_SCALE_COLS_PER_ATOM
 
@@ -2359,7 +2307,6 @@ def _triton_quantize_blockscaled_row1d_cublas_blocked(  # noqa: C901, TR001 -- c
             max_abs,
             global_scale,
             HAS_GLOBAL_SCALE=HAS_GLOBAL_SCALE,
-            USE_NVFP4_NO_CLIP_SCALE=False,
         )
         scale_u8 = scale_fp8.to(tl.uint8, bitcast=True)
     else:
@@ -2367,7 +2314,6 @@ def _triton_quantize_blockscaled_row1d_cublas_blocked(  # noqa: C901, TR001 -- c
             max_abs,
             FORMAT_ID=FORMAT_ID,
             USE_HALF_RANGE_SCALE=USE_HALF_RANGE_SCALE,
-            USE_NVFP4_NO_CLIP_SCALE=False,
         )
     tl.store(
         scale_ptr + scale_offsets,
@@ -2403,10 +2349,9 @@ def _triton_quantize_blockscaled_row1d_cublas_blocked(  # noqa: C901, TR001 -- c
                     max_abs,
                     global_scale,
                     HAS_GLOBAL_SCALE=HAS_GLOBAL_SCALE,
-                    USE_NVFP4_NO_CLIP_SCALE=False,
                 )
             else:
-                _, recip_scale = _compute_nvfp4_scale_rtne(max_abs, False)
+                _, recip_scale = _compute_nvfp4_scale_rtne(max_abs)
         _store_row1d_qdata_row_major(
             x_values=tl.reshape(x_blocks, (n_scale_blocks, BLOCK_SIZE)),
             recip_scale=tl.reshape(recip_scale, (n_scale_blocks,)),
@@ -2422,7 +2367,6 @@ def _triton_quantize_blockscaled_row1d_cublas_blocked(  # noqa: C901, TR001 -- c
             q_ptr=q_ptr,
             FORMAT_ID=FORMAT_ID,
             Q_COLS=Q_COLS,
-            SCALE_COLS=SCALE_COLS,
             N_BLOCKS=n_scale_blocks,
             BLOCK_SIZE=BLOCK_SIZE,
         )
@@ -2510,11 +2454,10 @@ def _triton_quantize_blockscaled_tile2d(  # noqa: C901, TR001 -- format/mode bra
     SF_VEC: tl.constexpr,
     M_TILE: tl.constexpr,
     K_TILE: tl.constexpr,
-    # Runtime, not constexpr: used for gather-rank index math. As a constexpr
+    # Runtime, not constexpr: used for the gather rank offset. As a constexpr
     # its value (grid_m ~ n_rows/SF_VEC) recompiled
     # the kernel for every distinct row count.
     grid_m_tiles,
-    GRID_K_TILES: tl.constexpr,
 ):
     # Each CTA covers (M_TILE * SF_VEC) rows x (K_TILE * SF_VEC) cols of input
     # — M_TILE x K_TILE scale-blocks. n-d reshape lets the single tl.load feed
@@ -2606,7 +2549,6 @@ def _triton_quantize_blockscaled_tile2d(  # noqa: C901, TR001 -- format/mode bra
                 FORMAT_ID,
                 USE_HALF_RANGE_SCALE,
                 USE_NVFP4_RECIP_LUT,
-                False,
             )
         )
         recip_groups_t = tl.reshape(recip_t, (BLOCK_K, M_TILE, 1)) + tl.zeros(
@@ -2614,7 +2556,7 @@ def _triton_quantize_blockscaled_tile2d(  # noqa: C901, TR001 -- format/mode bra
         )
         q_t = x_t * tl.reshape(recip_groups_t, (BLOCK_K, BLOCK_M))
 
-        packed = _pack_fp4_e2m1_blocks_to_u32_rn(
+        packed = _pack_fp4_e2m1_blocks_to_u32(
             q_t,
             N_BLOCKS=BLOCK_K,
             BLOCK_SIZE=BLOCK_M,
@@ -2753,7 +2695,6 @@ def _triton_quantize_blockscaled_tile2d(  # noqa: C901, TR001 -- format/mode bra
                 tile_max,
                 global_scale_rows[:, None],
                 HAS_GLOBAL_SCALE=HAS_GLOBAL_SCALE,
-                USE_NVFP4_NO_CLIP_SCALE=False,
             )
             tile_scale_u8 = tile_scale_fp8.to(tl.uint8, bitcast=True)
         else:
@@ -2763,7 +2704,6 @@ def _triton_quantize_blockscaled_tile2d(  # noqa: C901, TR001 -- format/mode bra
                     nvfp4_recip_lut_ptr,
                     FORMAT_ID,
                     USE_HALF_RANGE_SCALE,
-                    False,
                     False,
                 )
             )
@@ -2811,9 +2751,6 @@ def _triton_quantize_blockscaled_tile2d(  # noqa: C901, TR001 -- format/mode bra
                     col_mask=col_mask,
                     row_start=row_start,
                     q_row_stride=q0_row_stride,
-                    batch_idx=pid_g,
-                    n_rows=n_rows,
-                    N_COLS=N_COLS,
                     BLOCK_M=BLOCK_M,
                     BLOCK_K=BLOCK_K,
                 )
@@ -2907,7 +2844,6 @@ def _triton_quantize_blockscaled_tile2d(  # noqa: C901, TR001 -- format/mode bra
                 FORMAT_ID,
                 USE_HALF_RANGE_SCALE,
                 False,
-                False,
             )
         )
         # Store the scale byte before computing qdata so ``row_scale_u8`` is
@@ -2930,7 +2866,7 @@ def _triton_quantize_blockscaled_tile2d(  # noqa: C901, TR001 -- format/mode bra
             cache_modifier=".cs",
         )
         if FORMAT_ID == _TL_BLOCK_SCALED_FORMAT_NVFP4:
-            _, row_recip = _compute_nvfp4_scale_rtne(row_amax, False)
+            _, row_recip = _compute_nvfp4_scale_rtne(row_amax)
         recip_3d = tl.reshape(row_recip, (BLOCK_M, K_TILE, 1)) + tl.zeros(
             (BLOCK_M, K_TILE, SF_VEC), tl.float32
         )
@@ -2960,7 +2896,6 @@ def _triton_quantize_blockscaled_tile2d(  # noqa: C901, TR001 -- format/mode bra
                 FORMAT_ID,
                 USE_HALF_RANGE_SCALE,
                 USE_NVFP4_RECIP_LUT,
-                False,
             )
         )
         # Store the scale byte before computing qdata so ``col_scale_u8`` (the
@@ -3010,7 +2945,7 @@ def _triton_quantize_blockscaled_tile2d(  # noqa: C901, TR001 -- format/mode bra
             # recomputed here so it is decoupled from the stored bitcast scale
             # byte — both the direct and LUT reciprocals corrupt when co-live
             # with that byte in the col-major store path on this Triton build.
-            _, col_recip = _compute_nvfp4_scale_rtne(col_amax, False)
+            _, col_recip = _compute_nvfp4_scale_rtne(col_amax)
         recip_3d_n = tl.reshape(col_recip, (M_TILE, 1, BLOCK_K)) + tl.zeros(
             (M_TILE, SF_VEC, BLOCK_K), tl.float32
         )
@@ -3028,7 +2963,6 @@ def _triton_quantize_blockscaled_tile2d(  # noqa: C901, TR001 -- format/mode bra
                 col_mask=col_mask,
                 row_start=row_start,
                 q_row_stride=q0_row_stride,
-                N_COLS=N_COLS,
                 BLOCK_M=BLOCK_M,
                 BLOCK_K=BLOCK_K,
             )
@@ -3118,7 +3052,6 @@ def _store_swiglu_fused_axis0_mxfp8(
     row_mask,
     col_mask,
     row_start,
-    logical_col_start,
     q0_row_stride,
     s0_row_stride,
     s0_n_col_blocks,  # runtime: M-derived (ragged rows) — keeps one compile across shapes
@@ -3232,7 +3165,6 @@ def _triton_quantize_swiglu_bwd_dxy_fwd_col_mxfp8(
     SF_VEC: tl.constexpr,
     M_TILE: tl.constexpr,
     K_TILE: tl.constexpr,
-    GRID_K_TILES: tl.constexpr,
 ):
     tl.static_assert(
         FORMAT_ID == _TL_BLOCK_SCALED_FORMAT_MXFP8_E4M3
@@ -3333,7 +3265,6 @@ def _triton_quantize_swiglu_bwd_dxy_fwd_col_mxfp8(
         row_mask,
         col_mask,
         row_start,
-        col_start,
         dxy_q0_row_stride,
         dxy_s0_row_stride,
         DXY_S0_N_COL_BLOCKS,
@@ -3354,7 +3285,6 @@ def _triton_quantize_swiglu_bwd_dxy_fwd_col_mxfp8(
         row_mask,
         col_mask,
         row_start,
-        SOURCE_COLS + col_start,
         dxy_q0_row_stride,
         dxy_s0_row_stride,
         DXY_S0_N_COL_BLOCKS,
@@ -3375,7 +3305,6 @@ def _triton_quantize_swiglu_bwd_dxy_fwd_col_mxfp8(
         row_mask,
         col_mask,
         row_start,
-        col_start,
         h2_q0_row_stride,
         h2_s0_row_stride,
         H2_S0_N_COL_BLOCKS,
@@ -3437,6 +3366,7 @@ def quantize_swiglu_bwd_dxy_fwd_col(  # noqa: C901 -- host validation/launch set
         raise ValueError(f"axis=0 dimension {n_rows} not divisible by {sf_vec}")
     if source_cols % sf_vec != 0:
         raise ValueError(f"source_cols {source_cols} not divisible by {sf_vec}")
+
     dxy_cols = source_cols * 2
     q_dtype = _get_qdata_dtype_for_format_id(format_id)
     sdtype = _get_scale_dtype_for_format_id(format_id)
@@ -3533,7 +3463,6 @@ def quantize_swiglu_bwd_dxy_fwd_col(  # noqa: C901 -- host validation/launch set
         SF_VEC=sf_vec,
         M_TILE=m_tile,
         K_TILE=k_tile,
-        GRID_K_TILES=grid[1],
         num_warps=2,
     )
     return (dxy_q0, dxy_s0), (dxy_q1, dxy_s1), (h2_q0, h2_s0)
@@ -3689,15 +3618,13 @@ def quantize_block_scaled(  # noqa: C901 -- host validation/launch setup is form
         else None
     )
     if blocked_config is not None:
-        grid = (
-            triton.cdiv(
-                K, blocked_config.block_size * CUBLAS_BLOCKED_SCALE_COLS_PER_ATOM
-            ),
-            triton.cdiv(rows, blocked_config.m_tile),
-        )
+        row_tiles = triton.cdiv(rows, blocked_config.m_tile)
+        flat_grid = row_tiles > 65535
+        grid = (n_col_blocks * row_tiles,) if flat_grid else (n_col_blocks, row_tiles)
         _triton_quantize_blockscaled_row1d_cublas_blocked[grid](
             **common_row1d_kernel_args,
-            GRID_COL_TILES=grid[0],
+            GRID_COL_TILES=n_col_blocks,
+            FLAT_GRID=flat_grid,
             M_TILE=blocked_config.m_tile,
             BLOCK_SIZE=blocked_config.block_size,
             USE_64BIT_OFFSETS=use_64bit_offsets,
@@ -3713,10 +3640,12 @@ def quantize_block_scaled(  # noqa: C901 -- host validation/launch setup is form
     _triton_quantize_blockscaled_row1d_tile[grid](
         **common_row1d_kernel_args,
         SCALE_FACTOR_LAYOUT=layout_id,
-        GRID_COL_TILES=grid[1],
         ROW_TILE=config.row_tile,
         SCALE_COL_TILE=config.scale_col_tile,
         USE_64BIT_OFFSETS=use_64bit_offsets,
+        USE_64BIT_COL_OFFSETS=_needs_64bit_offsets(
+            (K - 1) * abs(x_2d.stride(-1)), (K - 1) * abs(producer_b_2d.stride(-1))
+        ),
         BLOCK_SIZE=sf_vec_size,
         num_warps=config.num_warps,
     )
@@ -3815,6 +3744,7 @@ def quantize_mxfp8_given_grid(
     _validate_given_e8m0_grid(e8m0_grid, x, row_offset, row_dim, scale_cols)
     if e8m0_grid.device != x.device:
         raise ValueError("e8m0_grid must be on the input device")
+
     x_2d = x.reshape(-1, k)
     n_rows = x_2d.shape[0]
     q = torch.empty(x.shape, dtype=torch.float8_e4m3fn, device=x.device)
@@ -3842,7 +3772,6 @@ def quantize_mxfp8_given_grid(
         N_COLS=k,
         Q_COLS=k,
         SCALE_COLS=scale_cols,
-        GRID_COL_TILES=grid[1],
         ROW_TILE=config.row_tile,
         SCALE_COL_TILE=config.scale_col_tile,
         BLOCK_SIZE=_MXFP8_SHARED_TILE,
@@ -3997,7 +3926,7 @@ def quantize_block_scaled_axes(  # noqa: C901 -- dispatch setup is format/axis g
         and axis_mask == AxisMask.K.value
         and producer_id == BlockScaledProducer.IDENTITY.value
     ):
-        # Axis-1-only path uses the dedicated row-1D kernel.
+        # axis-1 only path → route through the row-1D kernel.
         return quantize_block_scaled(
             x,
             format_id=format_id,
@@ -4276,7 +4205,6 @@ def quantize_block_scaled_axes(  # noqa: C901 -- dispatch setup is format/axis g
         M_TILE=m_tile,
         K_TILE=k_tile,
         grid_m_tiles=grid[0],
-        GRID_K_TILES=grid[1],
         num_warps=tile_config.num_warps,
     )
 

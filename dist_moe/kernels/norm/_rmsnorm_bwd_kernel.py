@@ -4,13 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""CuTe DSL RMSNorm backward kernel with fused gain_center.
-
-Contains the forked `FusedRMSNormBwd` kernel class. The gain center is added
-in Float32 at each weight use, matching the forward's
-``w.to(Float32) + gain_center``. The optional MXFP8 epilogue emits E4M3 data
-and E8M0 scales directly from the computed input gradient.
-"""
+"""CuTe RMSNorm backward with fused gain center and deterministic MXFP8 output."""
 
 import math
 from functools import lru_cache, partial
@@ -35,25 +29,20 @@ from cutlass._mlir.dialects import nvvm
 from cutlass.cute.nvgpu import cpasync
 
 from ...formats import FP8_E4M3_MAX
-from .. import (
-    _dsl_compat as _cute_extern,  # noqa: F401
-    _quack_utils as utils,
-)
+from .. import _quack_utils as utils
 from .._jit_cache import jit_cache
 from .._quack import copy_utils, layout_utils
 from .._quack.pipeline import make_pipeline_state, PipelineStasAsync
 from .._quack.reduce import row_reduce
 from .._quack.reduction_base import ReductionBase
 from .._quack_compile_utils import make_fake_stream, make_fake_tensor as fake_tensor
-from .._quant_conversion import (
-    _cvt_f32x4_to_fp8x4_u32_rn,
-)
+from .._quant_conversion import _cvt_f32x4_to_fp8x4_u32_rn
 from ..blockscaled_quantization_common import (
     _compute_fp8_e8m0_scale_rceil,
     _frag_amax_nan,
     _reduce_amax_f32,
 )
-from ._rmsnorm_common import _fma_dot_f32
+from ._rmsnorm_common import _fma_dot_f32, _make_row_tma_atom
 
 # MXFP8 scale-factor vector size: one E8M0 scale byte per 32 columns.
 _MX_SF_VEC_SIZE = 32
@@ -89,8 +78,9 @@ def _mxfp8_emit_vec(
     """Scale and store one MXFP8 vector: block amax (butterfly-reduced across
     the ``32 // vecsize`` lanes of the scale block, every lane deriving the
     same rceil E8M0 byte, NaN routed to 0xFF), predicated scale-byte store by
-    the block's first lane, then the E4M3x4 data cast(s). Data words go through
-    ``q_base_ptr`` straight to gmem, predicated per vector.
+    the block's first lane, then the E4M3x4 data cast(s). Data words go
+    through ``q_base_ptr`` straight to gmem, predicated
+    per vector.
 
     The amax uses SM100 3-input ``max.NaN`` chains: a NaN element survives
     the max tree and the cross-lane butterfly and reaches the E8M0 rceil cvt
@@ -131,8 +121,8 @@ def _quantize_frag_to_mxfp8(
 ):
     """Quantize an FP32 dx fragment to MXFP8 (E4M3 data + E8M0 scales).
 
-    Data bytes are packed with round-to-nearest E4M3 conversion and written as
-    32/64-bit words straight to gmem through ``q_base_ptr``.
+    Data bytes are packed with ``cvt.rn.satfinite.e4m3x4.f32`` and
+    written as 32/64-bit words straight to gmem through ``q_base_ptr``.
     Buffering them in a register fragment for a deferred tiled copy pushes
     the kernel past the 255-register cap and into spills. ``q_base_ptr``
     must be a Uint32-recast pointer at this thread's (row, col_base) with
@@ -172,7 +162,7 @@ def _quantize_frag_to_mxfp8(
 #   - Fused gain_center: added in Float32 at each weight use so the backward
 #     multiplies by the same (w + gain_center) the forward used; dw =
 #     sum(dout * x_hat) is independent of the constant.
-#   - Blackwell launch heuristic tuned from a broad CUDA-graph sweep (see
+#   - Blackwell launch heuristic tuned from a wide-row CUDA-graph shmoo (see
 #     ``_blackwell_launch_config``); Hopper path keeps Quack's defaults.
 #   - TMA tensor-tile load + PipelineTmaAsync (N-stage) for the gmem->smem
 #     path, with a cp.async fallback for shapes that don't meet the TMA
@@ -186,9 +176,10 @@ class FusedRMSNormBwd(ReductionBase):
     ``input_scale`` switches the derivative to RMSNorm of
     ``(w + gain_center) * x`` rather than an affine output weight.
 
-    Optional ``dx_dtype=Float8E4M3FN`` emits dx as MXFP8: E4M3 data bytes
+    Optional dx epilogues (compile-time specialized, zero cost when off):
+      - ``dx_dtype=Float8E4M3FN``: dx is emitted as MXFP8 — E4M3 data bytes
         plus NATURAL-layout ``[M, N // 32]`` E8M0 scale bytes (rceil scales,
-        bit-compatible with the retained block-scaled quantization rule).
+        bit-compatible with the block-scaled format quantizer).
     """
 
     @staticmethod
@@ -201,33 +192,6 @@ class FusedRMSNormBwd(ReductionBase):
         return math.gcd(N, 128 // largest_dtype_width)
 
     @staticmethod
-    def _make_row_tma_atom(op, m: cute.Tensor, tiler_mn):
-        """Row-tile TMA atom with the row mode pre-split into (box, tN // box).
-
-        The split (box = gcd(tN, 256), mirrored on the gmem view and the smem
-        layout — the descriptor rank follows the gmem leaf modes) fits the
-        whole (tile_m, tN) tile in one multi-dim TMA box, so each
-        ``cute.copy`` lowers to a single ``cp.async.bulk.tensor`` instead of
-        tN/box elect_one-guarded box copies whose issue cost hinges on an
-        unreliable ptxas elect-merge. Smem bytes are laid out identically.
-        Falls back to the flat (unrolled) form when the rest mode exceeds the
-        256 box cap or box does not divide N.
-        """
-        tile_m, tN = tiler_mn
-        M, N = m.shape
-        box = math.gcd(tN, 256)
-        rest = tN // box
-        if rest == 1 or rest > 256 or N % box != 0:
-            smem_layout = cute.make_ordered_layout(tiler_mn, order=(1, 0))
-        else:
-            smem_layout = cute.make_layout((tile_m, (box, rest)), stride=(tN, (1, box)))
-            m = cute.make_tensor(
-                m.iterator,
-                cute.make_layout((M, (box, N // box)), stride=(N, (1, box))),
-            )
-        return cpasync.make_tiled_tma_atom(op, m, smem_layout, tiler_mn)
-
-    @staticmethod
     @cute.jit
     def _dw_row_contrib(
         input_scale: cutlass.Constexpr,
@@ -236,10 +200,9 @@ class FusedRMSNormBwd(ReductionBase):
         dout,
         x_hat,
     ):
-        """Per-row dw contribution shared by quantized and plain accumulation.
-
-        Keeping this derivative in one helper prevents the input-scale path from
-        diverging between them again."""
+        """Per-row dw contribution, shared by the early quantized and late
+        (plain-RN) accumulation sites so the input_scale derivative cannot
+        diverge between them again."""
         if const_expr(input_scale):
             return dx_inner * x
         return dout * x_hat
@@ -260,10 +223,12 @@ class FusedRMSNormBwd(ReductionBase):
         # epilogue (its data bytes are launched through a Uint8 view).
         self.dx_dtype = dx_dtype if dx_dtype is not None else dtype
         self.quant_dx = self.dx_dtype is Float8E4M3FN
-        self._is_blackwell = (
-            torch.cuda.is_available()
-            and torch.cuda.get_device_capability(torch.cuda.current_device())[0] >= 10
+        device_major = (
+            torch.cuda.get_device_capability(torch.cuda.current_device())[0]
+            if torch.cuda.is_available()
+            else 0
         )
+        self._is_blackwell = device_major >= 10
         if self.quant_dx and N % _MX_SF_VEC_SIZE != 0:
             raise ValueError(
                 f"MXFP8 dx requires N divisible by {_MX_SF_VEC_SIZE}, got {N}"
@@ -327,6 +292,7 @@ class FusedRMSNormBwd(ReductionBase):
         T_hint=0,
         use_fused_norm_reductions=False,
         input_scale=False,
+        has_grad_scale=False,
     ):
         """Compile and cache a launch-specialized backward kernel variant."""
         batch_sym, batch_partial_sym = cute.sym_int(), cute.sym_int()
@@ -346,6 +312,7 @@ class FusedRMSNormBwd(ReductionBase):
         dx_sf_cute = (
             fake_tensor(Uint8, (batch_sym, N // _MX_SF_VEC_SIZE)) if quant_dx else None
         )
+        grad_scale_cute = fake_tensor(Float32, (1,)) if has_grad_scale else None
         dw_partial_cute = (
             fake_tensor(Float32, (batch_partial_sym, N), div)
             if has_dw_partial
@@ -377,6 +344,7 @@ class FusedRMSNormBwd(ReductionBase):
             dres_cute,
             db_partial_cute,
             Float32(0),  # gain_center
+            grad_scale_cute,
             make_fake_stream(),
             options="--enable-tvm-ffi",
         )
@@ -425,7 +393,7 @@ class FusedRMSNormBwd(ReductionBase):
         """Resolve the backward launch's sm_count: the Blackwell heuristic's
         sm_mult when available, else the Hopper per-N get_sm_count table.
 
-        Pure function of shape, dtype widths, T_hint, and device;
+        Pure function of (shape, dtype widths, T_hint, device);
         cached so the eager hot path skips the config recompute and
         device-property queries. T_hint buckets naturally (one entry per
         unique M, mirroring the JIT cache).
@@ -463,7 +431,7 @@ class FusedRMSNormBwd(ReductionBase):
         matches ``dtype_in``.
 
         Two fits: mixed-dtype rows (an fp32 operand somewhere) use the
-        3.8k-point v17 registry shmoo (48 tier-1..6 shapes x 3 epilogue
+        3.8k-point registry shmoo (48 norm/expert shapes x 3 source epilogue
         variants, CUDA-graph + L2-rotation timing, within 9% geomean of the
         per-shape oracle); pure-bf16 rows take a dedicated branch below.
         Mixed-dtype decisions derive from the per-row on-chip I/O traffic:
@@ -476,10 +444,11 @@ class FusedRMSNormBwd(ReductionBase):
         - ``cluster_n``: split only very wide rows. The per-thread fp32 dw
           accumulator holds ``N / (cn * tpr)`` elements; cn=2 above 48 KB
           rows and cn=8 above 56 KB keeps it under ~50 registers per thread.
-          The quantized epilogue's register pressure starves 8-wide cluster
-          co-scheduling on those wide rows, so cap it at cn=2.
-        - reloads: none. The epilogue re-reads both x and w*dy at store time;
-          an smem round-trip adds bandwidth without freeing enough registers.
+          The RN-quant epilogue's register pressure limits cluster
+          co-scheduling on wide rows, so its cluster size is capped at two.
+        - reloads: none. The epilogue re-reads both x and w*dy at store time
+          while holding block-amax state across the row reduction;
+          an smem round-trip adds bandwidth without freeing those registers.
           (Inheriting the plain kernel's large-T ``reload_x='smem'`` rule was
           the single biggest epilogue cliff -- up to 2x on the expert norms.)
         - ``sm_mult`` (persistence vs occupancy): with T >= 32K rows and
@@ -495,8 +464,8 @@ class FusedRMSNormBwd(ReductionBase):
         if is_pure_bf16:
             # Pure 16-bit rows (the bf16-in/bf16-out production regime; fp16
             # shares the byte/register profile and takes the same bands): fit
-            # on a dedicated 1.4k-point sweep of the 24 v17 tier norm+expert
-            # shapes (2026-07-07, current kernel), geomean within 3% of the
+            # on a dedicated 1.4k-point sweep of the 24 norm+expert
+            # shapes (2026-07-07, source kernel), geomean within 3% of the
             # per-cell oracle. Bands are COLUMN-denominated: the register
             # mechanism is the per-thread fp32 dw accumulator (N / (cn *
             # tpr)), and byte-denominated bands sent the D=12288 io=4 shape
@@ -558,20 +527,22 @@ class FusedRMSNormBwd(ReductionBase):
         fused-norm-reductions numerics bundle; when False, pure-16-bit rows
         take the general bands below (bitwise-stable launch geometry).
 
-        The MXFP8 dx epilogue (8-bit ``dtype_dx``) changes the store phase's
-        register and compute profile enough to need its own heuristic; see
-        :meth:`_epilogue_launch_config`.
+        The MXFP8 dx epilogue (8-bit ``dtype_dx``)
+        changes the store phase's register and compute profile enough to need
+        its own heuristic -- see :meth:`_epilogue_launch_config`. The plain
+        path retains the pure-16-bit launch bands below.
 
-        Tuned from a 4,140-point CUDA-graph and L2-rotation sweep plus an
-        earlier 70-shape sweep for fallback bands. All decisions are
-        byte-derived (``rb_in``, ``rb_io``, and ``T_hint``).
+        Tuned from a 4,140-point wide-row CUDA-graph + L2-rotation shmoo
+        (the normalization workload benchmark) plus the earlier
+        70-shape general shmoo for other fallback bands. All decisions
+        are byte-derived (rb_in, rb_io, T_hint).
 
         Under cgraph measurement, this picks rank 1 in the shmoo oracle
-        for four of five target shapes (pre_norm 69.1%, post_norm 52.6%,
+        for 4 of 5 wide-row shapes (pre_norm 69.1%, post_norm 52.6%,
         output_norm 62.2%, pre_expert 70.3%) and rank 2 within 0.3 pp of
         rank 1 for post_expert (80.9% vs 81.2%).
 
-        Key findings baked in:
+        Key wide-row findings baked in:
         - ``tile_m = 1`` with ``nt = tpr = 128`` wins for all wide shapes.
         - Aggressive ``cn`` (up to 8) shrinks per-CTA tile and raises
           occupancy from ~18% -> ~50% for the register-pressure-bound
@@ -595,7 +566,7 @@ class FusedRMSNormBwd(ReductionBase):
             # Pure 16-bit plain path (bf16-in / bf16-RN-out production regime;
             # fp16 shares the byte/register profile and takes the same bands):
             # refit on the dedicated 1.4k-point 2026-07-07 sweep of the 24
-            # v17 tier norm+expert shapes, geomean within 2% of the per-cell
+            # norm+expert shapes, geomean within 2% of the per-cell
             # oracle (up to 1.5x over the general bands below on the narrow
             # expert rows, which want 4-row tiles + 4x persistence). Bands
             # are column-denominated; reload bands are empirical
@@ -634,10 +605,11 @@ class FusedRMSNormBwd(ReductionBase):
         large_T = T_hint >= 8192
 
         # - cluster_n --------------------------
-        # Aggressive cn=8 wins for measured D in [14K, 28K]. Gate it
+        # Aggressive cn=8 is a wide-row shmoo result (D in [14K, 28K]). Gate it
         # on N>=14K so we don't apply it to mid-D shapes where the shmoo
         # didn't run  those regressed 5-8 pp under an ungated rule.
-        # Outside that range, use the general table validated on mid-D shapes.
+        # Outside wide-row we fall back to general table
+        # that the mid-D perf was validated against.
         if small_T and N >= 14 * 1024 and rb_io >= 48 * 1024:
             cn = 8
         elif is_bf16_in:
@@ -651,7 +623,7 @@ class FusedRMSNormBwd(ReductionBase):
             else:
                 cn = 8
         else:
-            # FP32 input uses the established bands outside the wide-shape range.
+            # fp32 input  master-compatible outside wide-row.
             if N <= 8 * 1024:
                 cn = 1
             elif N <= 16 * 1024:
@@ -662,7 +634,7 @@ class FusedRMSNormBwd(ReductionBase):
             cn //= 2
 
         # - num_threads / threads_per_row ----------------
-        # nt=tpr=128 single-row (tile_m=1) wins for all measured wide
+        # wide-row shmoo: nt=tpr=128 single-row (tile_m=1) wins for all wide
         # shapes. Only very-small bf16_bf16 uses multi-row.
         if is_pure_bf16 and N <= 1536:
             nt, tpr = 128, 32  # tile_m=4 (small bf16_bf16 expert)
@@ -674,7 +646,7 @@ class FusedRMSNormBwd(ReductionBase):
         # - reload_wdy -------------------------
         # bf16_in small-T: mid-D band wants smem reload; large-T prefers
         # rl_x instead (shmoo: pre_expert's rl_wdy=None, rl_x=smem wins).
-        # FP32 input uses SMEM reload at very wide D (measured at D=28K).
+        # fp32_in: smem reload at very wide D (wide-row pre_norm D=28K).
         if is_bf16_in:
             if large_T:
                 rl_wdy = None  # expert shapes: rl_x instead
@@ -687,7 +659,7 @@ class FusedRMSNormBwd(ReductionBase):
             rl_wdy = "smem" if (N >= 24 * 1024 or 6144 <= N <= 8192) else None
 
         # - reload_x --------------------------
-        # rl_x=smem wins for large-T BF16 expert shapes
+        # wide-row shmoo: rl_x=smem mandatory for large-T bf16 expert shapes
         # (pre/post_expert at D=7168) cuts register pressure. Also for
         # very-wide fp32 pre_norm and small bf16 shapes
         if is_pure_bf16:
@@ -701,7 +673,7 @@ class FusedRMSNormBwd(ReductionBase):
             else:
                 rl_x = None
         else:
-            # FP32 input reloads x from SMEM at very wide D.
+            # fp32 input: smem-reload x at very wide D (wide-row pre_norm).
             rl_x = "smem" if (N >= 24 * 1024 or N == 4096) else None
 
         # - tma_stages -------------------------
@@ -709,12 +681,12 @@ class FusedRMSNormBwd(ReductionBase):
         stages = 2
 
         # - sm_mult --------------------------─
-        # Wide small-T shapes prefer a lean sm_count (0.5-1.0x base)
+        # wide-row wide small-T wants a lean sm_count (0.5–1.0x base)
         # shmoo showed extra CTAs just add launch overhead once T=2K rows
         # already saturate the ~152 SMs. Mid-D small-T still wants master's
         # base*2 boost (the Blackwell path in get_sm_count). Very small D
         # ramps the multiplier up to keep the grid populated.
-        # Large-T expert shapes use the measured 2.0 multiplier.
+        # Large-T (expert): 2.0 (wide-row shmoo winner).
         if T_hint == 0:
             sm_mult = 2.0
         elif small_T:
@@ -725,7 +697,7 @@ class FusedRMSNormBwd(ReductionBase):
             elif rb_in <= 4 * 1024:
                 sm_mult = 4.0
             elif N >= 14 * 1024:
-                # Sweep-tuned lean SM count for wide shapes.
+                # wide-row shmoo-tuned lean sm_count.
                 sm_mult = 0.5 if rb_in <= 64 * 1024 else 1.0
             else:
                 sm_mult = 2.0  # master's base*2 for mid-D small-T
@@ -836,6 +808,7 @@ class FusedRMSNormBwd(ReductionBase):
         mdRes: Optional[cute.Tensor],
         mdB: Optional[cute.Tensor],
         gain_center: Float32,
+        mGradScale: Optional[cute.Tensor],
         stream: cuda.CUstream,
     ):
         assert mX.element_type == self.dtype
@@ -851,8 +824,8 @@ class FusedRMSNormBwd(ReductionBase):
         )
         vecsize = self.dx_epilogue_vecsize(self.N, largest_dtype_width)
         if const_expr(self.quant_dx):
-            # The MXFP8 lane-group amax assumes vectors of 4 or 8 consecutive
-            # columns. The Python wrapper validates this before launch.
+            # The MXFP8 lane-group amax assumes
+            # vectors of 4 or 8 consecutive columns (see the module docstring).
             # The python wrapper pre-validates this via dx_epilogue_vecsize.
             assert vecsize in (4, 8), (
                 f"MXFP8 dx epilogues require a 4- or 8-element vector size, "
@@ -877,8 +850,8 @@ class FusedRMSNormBwd(ReductionBase):
         # the gmem extent so OOB lanes are zero-filled at runtime.
         if const_expr(self.USE_TMA):
             tma_op = cpasync.CopyBulkTensorTileG2SOp()
-            tma_atom_X, mX_tma = self._make_row_tma_atom(tma_op, mX, tiler_mn)
-            tma_atom_dO, mdO_tma = self._make_row_tma_atom(tma_op, mdO, tiler_mn)
+            tma_atom_X, mX_tma = _make_row_tma_atom(tma_op, mX, tiler_mn)
+            tma_atom_dO, mdO_tma = _make_row_tma_atom(tma_op, mdO, tiler_mn)
         else:
             tma_atom_X, mX_tma, tma_atom_dO, mdO_tma = None, None, None, None
         num_blocks = self.sm_count
@@ -894,6 +867,7 @@ class FusedRMSNormBwd(ReductionBase):
             mdB,
             mdRes,
             gain_center,
+            mGradScale,
             tma_atom_X,
             mX_tma,
             tma_atom_dO,
@@ -922,6 +896,7 @@ class FusedRMSNormBwd(ReductionBase):
         mdB: Optional[cute.Tensor],
         mdRes: Optional[cute.Tensor],
         gain_center: Float32,
+        mGradScale: Optional[cute.Tensor],
         tma_atom_X: Optional[cute.CopyAtom],
         mX_tma: Optional[cute.Tensor],
         tma_atom_dO: Optional[cute.CopyAtom],
@@ -1079,6 +1054,9 @@ class FusedRMSNormBwd(ReductionBase):
             # gradient inconsistent with the forward function.
 
         vecsize_dx = const_expr(cute.size(tXrX, mode=[0]))
+        grad_scale = Float32(1.0)
+        if const_expr(mGradScale is not None):
+            grad_scale = Float32(mGradScale[0])
 
         if const_expr(self.cluster_n > 1):
             cute.arch.cluster_wait()
@@ -1204,9 +1182,9 @@ class FusedRMSNormBwd(ReductionBase):
         if const_expr(mdB is not None):
             tXrdB.fill(0.0)
         # Reduction-slot toggle. A bare Int32, not a PipelineState: the
-        # Register-limited MXFP8 epilogue configs measurably lose occupancy
-        # to extra loop-carried pipeline-state registers (7% on the T=64K
-        # D=2560 BF16-output shape). Only the cluster path needs the state pair —
+        # register-limited MXFP8 epilogue configs measurably lose occupancy
+        # to extra loop-carried pipeline-state registers. Only the cluster
+        # path needs the state pair:
         # the producer view gates publishing on the empty barriers, the
         # consumer view tracks the full-barrier phase; both advance in
         # lockstep, one stage per row iteration.
@@ -1291,6 +1269,8 @@ class FusedRMSNormBwd(ReductionBase):
             x = tXrX.load().to(cute.Float32)
             cute.autovec_copy(tXsdO[None, None, None, smem_stage], tXrdO)
             dout = tXrdO.load().to(cute.Float32)
+            if const_expr(mGradScale is not None):
+                dout *= grad_scale
             wdy = dout
             if const_expr(self.input_scale and mW is not None):
                 x_hat = x * (tXrW.load().to(Float32) + gain_center) * rstd
@@ -1332,6 +1312,8 @@ class FusedRMSNormBwd(ReductionBase):
             if const_expr(self.reload_wdy == "smem"):
                 cute.autovec_copy(tXsdO[None, None, None, smem_stage], tXrdO)
                 dout = tXrdO.load().to(cute.Float32)
+                if const_expr(mGradScale is not None):
+                    dout *= grad_scale
                 wdy = dout
                 if const_expr(mW is not None and not self.input_scale):
                     wdy *= tXrW.load().to(Float32) + gain_center
@@ -1350,7 +1332,7 @@ class FusedRMSNormBwd(ReductionBase):
                 dx = dx_inner
             if const_expr(mdResO is not None):
                 dx += tXrdResO.load().to(cute.Float32)
-            # The quantized epilogue is a long instruction sequence; accumulate
+            # The quantized epilogues are long instruction sequences; accumulate
             # dw/db first so dout and x_hat retire before the epilogue instead
             # of staying live across it (which pushes the kernel into register
             # spills). Bitwise identical: the per-accumulator FP order is

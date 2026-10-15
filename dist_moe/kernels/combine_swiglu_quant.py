@@ -29,8 +29,8 @@ from .blockscaled_grouped_gemm import (
     NVFP4,
 )
 from .dispatch_quant import (
-    _mega_dispatch_quant_wgrad_col_tile_wait,
     _wait_counter_at_least,
+    _wait_lane_counters_at_least,
 )
 from .grouped_gemm_kernel import (
     _activation_buffer_rows,
@@ -661,7 +661,7 @@ def _combine_swiglu_fwd_quant_producer_body(
                 cutlass.Int32(0),
                 group_act_tiles,
                 local_rank,
-                params.world_size,
+                params.schedule_world_size,
             )
             local_row_block = (
                 local_row_block + token_off * cutlass.Int32(row_blocks_per_act_tile)
@@ -796,7 +796,7 @@ def _combine_swiglu_bwd_quant_producer_body(
                 cutlass.Int32(0),
                 group_act_tiles,
                 local_rank,
-                params.world_size,
+                params.schedule_world_size,
             )
             local_row_block = (
                 local_row_block + token_off * cutlass.Int32(row_blocks_per_act_tile)
@@ -1061,6 +1061,8 @@ def _mega_combine_quant_wgrad_feature_tile_wait(
         source_dim // cutlass.Int32(sf_vec_size),
         cutlass.Int32(COMBINE_SWIGLU_BWD_SCALE_COLS_PER_TILE),
     )
+    range_start = [cutlass.Int32(0), cutlass.Int32(0)]
+    range_len = [cutlass.Int32(0), cutlass.Int32(0)]
     for half in cutlass.range_constexpr(2):
         half_start = cutlass.Int32(half) * source_dim
         half_end = half_start + source_dim
@@ -1070,6 +1072,8 @@ def _mega_combine_quant_wgrad_feature_tile_wait(
         intersect_end = feature_end
         if intersect_end > half_end:
             intersect_end = half_end
+        first_col_work_tile = cutlass.Int32(0)
+        num_col_work_tiles = cutlass.Int32(0)
         if intersect_start < intersect_end:
             source_start = intersect_start - half_start
             source_end = intersect_end - half_start
@@ -1081,23 +1085,34 @@ def _mega_combine_quant_wgrad_feature_tile_wait(
             first_col_work_tile = first_scale_col // cutlass.Int32(
                 COMBINE_SWIGLU_BWD_SCALE_COLS_PER_TILE
             )
-            last_col_work_tile_excl = ceil_div(
-                last_scale_col_excl,
-                cutlass.Int32(COMBINE_SWIGLU_BWD_SCALE_COLS_PER_TILE),
-            )
-            for col_work_tile in cutlass.range(
-                first_col_work_tile,
-                last_col_work_tile_excl,
-                unroll=1,
-            ):
-                _mega_dispatch_quant_wgrad_col_tile_wait(
-                    mDoneCounter=mDoneCounter,
-                    col_done_counter_offset=col_done_counter_offset,
-                    g=g,
-                    col_work_tile=col_work_tile,
-                    group_row_blocks=group_row_blocks,
-                    col_work_tiles=col_work_tiles,
+            num_col_work_tiles = (
+                ceil_div(
+                    last_scale_col_excl,
+                    cutlass.Int32(COMBINE_SWIGLU_BWD_SCALE_COLS_PER_TILE),
                 )
+                - first_col_work_tile
+            )
+        range_start[half] = first_col_work_tile
+        range_len[half] = num_col_work_tiles
+    total = range_len[0] + range_len[1]
+    lane = cute.arch.lane_idx()
+    for chunk in cutlass.range(0, total, 32, unroll=1):
+        slot = chunk + lane
+        col_work_tile = range_start[0] + slot
+        if slot >= range_len[0]:
+            col_work_tile = range_start[1] + (slot - range_len[0])
+        if slot >= total:
+            col_work_tile = range_start[0]
+        ptr = cute.recast_ptr(
+            mDoneCounter.iterator
+            + col_done_counter_offset
+            + g * col_work_tiles
+            + col_work_tile,
+            dtype=cutlass.Uint32,
+        )
+        _wait_lane_counters_at_least(
+            ptr, slot < total, cutlass.Uint32(group_row_blocks)
+        )
 
 
 @cute.jit

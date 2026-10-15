@@ -43,7 +43,9 @@ from .dispatch_quant import (
 )
 from .gemm_warp_roles import (
     _gemm_mma_warp,
+    _gemm_scheduler_warp,
     _gemm_tma_warp,
+    _mega_problem_specs,
 )
 from .grouped_gemm_kernel import (
     _activation_buffer_rows,
@@ -63,11 +65,18 @@ from .swiglu_epilogue import (
     MEGA_BLOCKSCALED_SWIGLU_VALUES_PER_THREAD,
     STAGED_BLOCKSCALED_SWIGLU_VALUES_PER_THREAD,
 )
+from .tensormap_fold import (
+    build_folded_tensormaps,
+    FOLDED_TENSORMAP_SMEM_INT64,
+    folded_tensormap_smem_offset,
+    wait_folded_tensormaps,
+)
 from .tile_scheduler import (
     _chunk_offset,
     _get_bufidx_phase,
     _subtile_coords,
     _subtile_is_valid,
+    _subtile_valid_n,
     CHUNKED_MEGA_WORK_INFO_FIELDS,
     CHUNKED_MEGA_WORK_INFO_ROLE_EPILOGUE,
     load_chunked_mega_work_info,
@@ -99,6 +108,7 @@ def _chunked_mega_producer_topology(
     dispatch_quant_warps: int,
     nvfp4_high_throughput: bool,
     nvfp4_wide_row_quant: bool,
+    nvfp4_row_quant_warps: int = 0,
 ) -> tuple[int, int, int]:
     warps_per_group = 2
     row_reduction_slots = (
@@ -108,6 +118,14 @@ def _chunked_mega_producer_topology(
         warps_per_group = 8 if nvfp4_wide_row_quant else 4
         if nvfp4_wide_row_quant:
             row_reduction_slots = warps_per_group + 2
+    if nvfp4_row_quant_warps:
+        if warps_per_group != 8 or warps_per_group % nvfp4_row_quant_warps:
+            raise ValueError("row-quant groups must split the wide NVFP4 group")
+        # The single dispatch group's reduction span holds every row group.
+        row_reduction_slots = max(
+            row_reduction_slots,
+            warps_per_group // nvfp4_row_quant_warps * (nvfp4_row_quant_warps + 2),
+        )
     if dispatch_quant_warps % warps_per_group != 0:
         raise ValueError("dispatch quant warps must divide evenly into producer groups")
     return (
@@ -120,10 +138,13 @@ def _chunked_mega_producer_topology(
 class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKernel):
     """Forward-only MegaMoE kernel with expert-local FC13/FC2 waves."""
 
+    NATIVE_MMA_TAILS: bool = False
+    PRUNE_NATIVE_EPILOGUE_ROWS: bool = False
     PIPELINE_LEAD_CHUNKS: int = 2
     PIPELINE_CHUNK_ROWS: int = 512
     FC2_TILES_PER_SCHEDULE_ITEM: int = 2
     STAGE_ALL_FC13: bool = False
+    SCHEDULER_RELAY: bool = False
     # Cross-group lead window: > 0 replaces the per-group FC13/FC2 lead with
     # a schedule where FC2 trails FC13 by this many chunks ACROSS group
     # boundaries. Fixes the per-group lead collapse at 1 chunk/group (the
@@ -507,7 +528,9 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                 mode=0,
             )
 
-        schedule_rank = (local_rank + cutlass.Int32(1)) % cutlass.Int32(self.world_size)
+        schedule_rank = (local_rank + cutlass.Int32(1)) % cutlass.Int32(
+            self.schedule_world_size
+        )
         problem = GroupedGemmProblem(
             split_sizes=split_sizes,
             groups=G,
@@ -634,6 +657,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
         work_info_smem_ptr,
         *,
         load_b: bool,
+        dispatch_gather_ptrs=None,
         weight_borrow_args=None,
     ) -> None:
         fc13_state, fc2_state, problem, sync = self._make_gemm_role_context(
@@ -702,6 +726,8 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
             fc13_seg_tx=fc13_seg_tx,
             fc2_seg_tx=fc2_seg_tx,
             weight_borrow_args=weight_borrow_args,
+            b_layouts=(dgrad.mB.layout, wgrad.mB.layout),
+            dispatch_gather_ptrs=dispatch_gather_ptrs,
         )
 
     def __init__(
@@ -745,7 +771,11 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                 f"size; got {self.PIPELINE_CHUNK_ROWS} and {act_block}"
             )
 
-    def _configure_warp_topology(self, wide_gather: bool) -> None:
+    def _configure_warp_topology(
+        self, wide_gather: bool, epilogue_warpgroups: int = 1
+    ) -> None:
+        if epilogue_warpgroups not in (1, 2):
+            raise ValueError("EPILOGUE_WARPGROUPS must be 1 or 2")
         self.VECTOR_DISPATCH_SCALE_COPY = wide_gather and self.format is NVFP4
         if wide_gather:
             self.DISPATCH_QUANT_WARP_IDS = (0, 1, 2, 3, 4, 5, 6, 7)
@@ -765,6 +795,13 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
             self.FORWARD_QUANT_FIRST_WARP = 12
             self.FORWARD_QUANT_LAST_WARP = 16
             self.FORWARD_QUANT_SYNC_BAR = 5
+        extra_warps = 4 * (epilogue_warpgroups - 1)
+        self.EPILOG_WARP_IDS = tuple(
+            range(self.EPILOG_WARP_IDS[0], self.FORWARD_QUANT_FIRST_WARP + extra_warps)
+        )
+        self.EPILOG_WG_THREADS = 128 * epilogue_warpgroups
+        self.FORWARD_QUANT_FIRST_WARP += extra_warps
+        self.FORWARD_QUANT_LAST_WARP += extra_warps
         self.DISPATCH_QUANT_WARPS = len(self.DISPATCH_QUANT_WARP_IDS)
         self.COMBINE_SWIGLU_QUANT_FIRST_WARP = self.FORWARD_QUANT_FIRST_WARP
         self.DISPATCH_QUANT_GROUPS = (
@@ -772,7 +809,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
         )
         self.DISPATCH_TOTAL_WARPS = (
             self.FORWARD_QUANT_FIRST_WARP
-            if wide_gather and self.INTERLEAVED_FC13 and self.format is not NVFP4
+            if self.INTERLEAVED_FC13 and self.format is not NVFP4
             else self.FORWARD_QUANT_LAST_WARP
         )
         self.DISPATCH_THREADS_PER_CTA = 32 * self.DISPATCH_TOTAL_WARPS
@@ -783,7 +820,9 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
         self,
         high_throughput: bool,
         wide_row_quant: bool = False,
+        row_quant_warps: int = 0,
     ) -> None:
+        self.ROW_QUANT_WARPS_PER_GROUP = row_quant_warps
         self.NVFP4_GROUP_SOURCE_WAIT = wide_row_quant
         self.NVFP4_WARP_LEADER_ROW_SCALE_LOAD = wide_row_quant
         self.NVFP4_WARP_LOCAL_ROW_SCALE = not high_throughput and not wide_row_quant
@@ -796,6 +835,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
             dispatch_quant_warps=self.DISPATCH_QUANT_WARPS,
             nvfp4_high_throughput=high_throughput,
             nvfp4_wide_row_quant=wide_row_quant,
+            nvfp4_row_quant_warps=row_quant_warps,
         )
         self.NVFP4_ROW_SCALE_SLOT = self.NVFP4_ROW_REDUCTION_SLOTS - 1
         self.DISPATCH_QUANT_GROUP_THREADS = 32 * self.DISPATCH_QUANT_WARPS_PER_GROUP
@@ -832,8 +872,21 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
             wgrad_layout,
             True,
             G,
-            CHUNKED_MEGA_WORK_INFO_FIELDS,
+            self._work_info_fields(),
             use_a_global_scale_inv,
+            min_tensormap_buffer=(
+                self._fold_tensormap_smem_offset(G) + FOLDED_TENSORMAP_SMEM_INT64
+                if self.FOLD_TENSORMAP_PREP
+                else 0
+            ),
+        )
+
+    def _work_info_fields(self) -> int:
+        return CHUNKED_MEGA_WORK_INFO_FIELDS - 1 + int(self.NATIVE_MMA_TAILS)
+
+    def _fold_tensormap_smem_offset(self, G: int) -> int:
+        return folded_tensormap_smem_offset(
+            G, self._work_info_fields(), self.NUM_TILE_BUFFERS
         )
 
     @classmethod
@@ -850,7 +903,9 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
         kernel = super().from_config(config, **kwargs)
         kernel.PIPELINE_CHUNK_ROWS = chunk_rows
         kernel.INTERLEAVED_FC13 = interleaved_fc13
-        kernel._configure_warp_topology(wide_gather)
+        kernel._configure_warp_topology(
+            wide_gather, int(config.get("EPILOGUE_WARPGROUPS", 1))
+        )
         kernel.SWIGLU_VALUES_PER_THREAD = int(
             config.get(
                 "SWIGLU_VALUES_PER_THREAD",
@@ -869,6 +924,13 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
             config.get("FC2_TILES_PER_SCHEDULE_ITEM", 2)
         )
         kernel.STAGE_ALL_FC13 = bool(config.get("STAGE_ALL_FC13", False))
+        kernel.SCHEDULER_RELAY = bool(config.get("SCHEDULER_RELAY", False))
+        kernel.FOLD_TENSORMAP_PREP = bool(config.get("FOLD_TENSORMAP_PREP", False))
+        kernel.COMPACT_DECODE_ROWS = bool(config.get("COMPACT_DECODE_ROWS", False))
+        kernel.NATIVE_MMA_TAILS = bool(config.get("NATIVE_MMA_TAILS", False))
+        kernel.PRUNE_NATIVE_EPILOGUE_ROWS = bool(
+            config.get("PRUNE_NATIVE_EPILOGUE_ROWS", False)
+        )
         kernel.GLOBAL_LEAD_CHUNKS = int(config.get("GLOBAL_LEAD_CHUNKS", 0))
         kernel.ACTIVATION_RING_CHUNKS = int(config.get("ACTIVATION_RING_CHUNKS", 0))
         kernel._validate_schedule_gates(interleaved_fc13)
@@ -877,6 +939,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
         kernel.MUTABLE_COMBINE_ACC_FRAGMENT = bool(
             config.get("MUTABLE_COMBINE_ACC_FRAGMENT", False)
         )
+        kernel.COMBINE_C_SMEM_SKEW = bool(config.get("COMBINE_C_SMEM_SKEW", False))
         compiler_opt_level = config.get("CUTE_DSL_OPT_LEVEL")
         if compiler_opt_level is not None and (
             type(compiler_opt_level) is not int or compiler_opt_level not in (1, 3)
@@ -889,7 +952,61 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
         kernel._validate_chunk_rows()
         return kernel
 
-    def _validate_schedule_gates(self, interleaved_fc13: bool) -> None:
+    def _dynamic_interleaved_topology(self, interleaved_fc13: bool) -> bool:
+        return not (
+            self.STATIC_SCHEDULER
+            or self.ACTIVATION_RING_CHUNKS
+            or self.USE_SM103_ULTRA
+            or not self.SWAP_AB
+            or not interleaved_fc13
+        )
+
+    def supports_scheduler_relay(self, interleaved_fc13: bool) -> bool:
+        return (
+            self._dynamic_interleaved_topology(interleaved_fc13)
+            and self.TMA_B_WARP_ID + 1 not in self.EPILOG_WARP_IDS
+        )
+
+    def _validate_schedule_gates(self, interleaved_fc13: bool) -> None:  # noqa: C901
+        dynamic_interleaved_m256 = (
+            self._dynamic_interleaved_topology(interleaved_fc13)
+            and self.BLOCK_SIZE_M // self.NUM_MMAS == 256
+            and self.NUM_CTAS == 2
+        )
+        if self.EPILOG_WG_THREADS == 256 and not dynamic_interleaved_m256:
+            raise ValueError(
+                "Parallel epilogues require dynamic interleaved two-CTA M256 atoms"
+            )
+        if self.NATIVE_MMA_TAILS and (
+            not dynamic_interleaved_m256
+            or not 32 <= self.BLOCK_SIZE_N <= 256
+            or self.BLOCK_SIZE_N % 32 != 0
+            or self._mma_atom_n != self.BLOCK_SIZE_N
+            or self.WEIGHT_BORROW_SLOTS != 0
+        ):
+            raise ValueError(
+                "NATIVE_MMA_TAILS requires aligned routing and two-CTA M256 native atoms"
+            )
+        if self.COMPACT_DECODE_ROWS and (
+            not dynamic_interleaved_m256
+            or not 64 <= self.BLOCK_SIZE_N <= 256
+            or self.BLOCK_SIZE_N % 32 != 0
+            or self._mma_atom_n != self.BLOCK_SIZE_N
+            or self.sf_vec_size not in (16, 32)
+        ):
+            raise ValueError(
+                "COMPACT_DECODE_ROWS requires block scaling with two-CTA M256 MMA atoms"
+            )
+        if self.SCHEDULER_RELAY and not self.supports_scheduler_relay(interleaved_fc13):
+            raise ValueError(
+                "SCHEDULER_RELAY requires the dynamic interleaved non-ring topology"
+            )
+        if self.PRUNE_NATIVE_EPILOGUE_ROWS and (
+            not self.NATIVE_MMA_TAILS or self.OVERLAPPING_ACCUM
+        ):
+            raise ValueError(
+                "Native epilogue row pruning requires independent native tiles"
+            )
         if self.GLOBAL_LEAD_CHUNKS < 0:
             raise ValueError("GLOBAL_LEAD_CHUNKS must be >= 0")
         if self.GLOBAL_LEAD_CHUNKS > 0 and self.STAGE_ALL_FC13:
@@ -950,7 +1067,9 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
             group_rows,
             cutlass.Int32(self.PIPELINE_CHUNK_ROWS),
         )
-        chunk_offset = _chunk_offset(num_chunks, local_rank, world_size=self.world_size)
+        chunk_offset = _chunk_offset(
+            num_chunks, local_rank, world_size=self.schedule_world_size
+        )
         act_tile_offset = chunk_offset * cutlass.Int32(
             self.PIPELINE_CHUNK_ROWS // self._forward_act_block_size()
         )
@@ -1007,6 +1126,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
         dgrad_b_global_scale_inv_ptr: cutlass.Int64,
         wgrad_b_global_scale_inv_ptr: cutlass.Int64,
         use_global_scale_inv: cutlass.Constexpr[bool],
+        dispatch_gather_ptrs=None,
     ) -> None:
         M, N, K = problem.mnk
         scheduler = MegaDynamicScheduler.create_record_consumer(
@@ -1033,7 +1153,10 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
             cutlass.Int32(0),
             self.format is not NVFP4,
             CHUNKED_MEGA_WORK_INFO_ROLE_EPILOGUE,
+            native_mma_tails=self.NATIVE_MMA_TAILS,
         )
+        if cutlass.const_expr(use_device_tensormaps and self.FOLD_TENSORMAP_PREP):
+            wait_folded_tensormaps(sync.counter_ptr, problem.groups)
 
         while work.is_valid_tile:
             g = work.group_idx
@@ -1198,6 +1321,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                                             work.group_tile_prefix + subtile_m_idx,
                                             subtile_n_idx,
                                         )
+                                    # NVFP4 row quantization reads every padded BF16 row.
                                     is_leader = self._blockscaled_epilog_consumer_tile(
                                         tidx,
                                         pipeline,
@@ -1214,11 +1338,37 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                                         use_device_tensormaps,
                                         dgrad_b_scale,
                                         True,
+                                        dynamic_n=(
+                                            min(
+                                                _subtile_valid_n(
+                                                    work.full_n_size,
+                                                    subtile_n_idx,
+                                                    self.BLOCK_SIZE_N,
+                                                ),
+                                                work.mma_n,
+                                            )
+                                            if self.PRUNE_NATIVE_EPILOGUE_ROWS
+                                            and self.format is not NVFP4
+                                            else _subtile_valid_n(
+                                                work.full_n_size,
+                                                subtile_n_idx,
+                                                self.BLOCK_SIZE_N,
+                                            )
+                                            if self.COMPACT_DECODE_ROWS
+                                            else None
+                                        ),
                                         split_prefix=work.split_prefix,
                                         postprocess_scale_prefix=(
-                                            postprocess_scale_cm_start
+                                            work.group_tile_prefix * self.BLOCK_SIZE_N
+                                            if self.COMPACT_DECODE_ROWS
+                                            and self.BLOCK_SIZE_N % 128 == 0
+                                            else postprocess_scale_cm_start
                                         ),
-                                        postprocess_row_prefix=postprocess_cm_start,
+                                        postprocess_row_prefix=(
+                                            work.group_tile_prefix * self.BLOCK_SIZE_N
+                                            if self.COMPACT_DECODE_ROWS
+                                            else postprocess_cm_start
+                                        ),
                                         a_scale_m_size=(
                                             work.full_n_size
                                             if self.SWAP_AB
@@ -1306,6 +1456,24 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                                         tidx=tidx,
                                         pipeline=pipeline,
                                         sync=sync,
+                                        dynamic_n=(
+                                            min(
+                                                _subtile_valid_n(
+                                                    work.full_n_size,
+                                                    subtile_n_idx,
+                                                    self.BLOCK_SIZE_N,
+                                                ),
+                                                work.mma_n,
+                                            )
+                                            if self.PRUNE_NATIVE_EPILOGUE_ROWS
+                                            else _subtile_valid_n(
+                                                work.full_n_size,
+                                                subtile_n_idx,
+                                                self.BLOCK_SIZE_N,
+                                            )
+                                            if self.COMPACT_DECODE_ROWS
+                                            else None
+                                        ),
                                         mScatter=scatter_ptrs,
                                         scatter_ptr_smem_ptr=scatter_ptr_smem_ptr,
                                         num_k_tiles=work.num_k_tiles,
@@ -1389,6 +1557,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                     accum_cnt_out % self.NUM_TILE_BUFFERS,
                     self.format is not NVFP4,
                     CHUNKED_MEGA_WORK_INFO_ROLE_EPILOGUE,
+                    native_mma_tails=self.NATIVE_MMA_TAILS,
                 )
         _wait_pending_epilog_store(
             EPILOG_WARP_IDS=self.EPILOG_WARP_IDS,
@@ -1550,10 +1719,12 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
         use_global_scale_inv: cutlass.Constexpr[bool],
         nvfp4_recip_lut_ptr: cutlass.Int64,
         weight_borrow_args=None,
+        fold_dgrad=None,
+        fold_wgrad=None,
     ):
         if cutlass.const_expr(use_conditional_execution):
             if conditional_execution[0] == cutlass.Int32(0):
-                base.thread_exit()
+                thread_exit()
         if cutlass.const_expr(use_activation_buffer):
             activation_rows = _activation_buffer_rows(split_sizes, G)
             dispatch_value_count = cutlass.Int64(activation_rows) * cutlass.Int64(K)
@@ -1850,13 +2021,15 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
         if cutlass.const_expr(
             self.DISPATCH_TOTAL_WARPS == 16 and self.DISPATCH_QUANT_WARPS == 4
         ):
-            # The narrow, one-CTA/SM layout uses the full 64K-register budget.
-            # WGs 0-3/4-7/8-11/12-15 are dispatch/TMA-MMA-idle/epilogue/quant:
-            # 4*32*(168+40+168+136) = 65536 registers.
+            # Both 16-warp layouts redistribute the initial 64K-register pool.
             if warp_idx < 4:
                 cute.arch.setmaxregister_increase(168)
             elif warp_idx < 8:
-                cute.arch.setmaxregister_decrease(40)
+                cute.arch.setmaxregister_decrease(
+                    56 if self.EPILOG_WG_THREADS == 256 else 40
+                )
+            elif cutlass.const_expr(self.EPILOG_WG_THREADS == 256):
+                cute.arch.setmaxregister_increase(144)
             elif warp_idx < 12:
                 cute.arch.setmaxregister_increase(168)
             else:
@@ -1869,10 +2042,40 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                 cpasync.prefetch_descriptor(params.tma_atom_sfa)
                 cpasync.prefetch_descriptor(params.tma_atom_sfb)
                 cpasync.prefetch_descriptor(params.tma_atom_c)
+        if cutlass.const_expr(use_device_tensormaps and self.FOLD_TENSORMAP_PREP):
+            # Epilogue warps idle until the first accumulator lands.
+            if warp_idx == self.EPILOG_WARP_IDS[-1]:
+                fold_mnk_pair, fold_problem_type_pair = _mega_problem_specs(
+                    M,
+                    N,
+                    K,
+                    MEGA_FORWARD_MODE=self.MEGA_FORWARD_MODE,
+                    mode=self.mode,
+                    MEGA_DGRAD_PROBLEM_TYPE=self.MEGA_DGRAD_PROBLEM_TYPE,
+                    MEGA_WGRAD_PROBLEM_TYPE=self.MEGA_WGRAD_PROBLEM_TYPE,
+                )
+                build_folded_tensormaps(
+                    (fold_dgrad, fold_wgrad),
+                    split_sizes,
+                    tensormaps,
+                    counter_ptr,
+                    storage.tensormap_buffer.data_ptr()
+                    + self._fold_tensormap_smem_offset(G),
+                    fold_mnk_pair,
+                    fold_problem_type_pair,
+                    (self.MEGA_DGRAD_TENSORMAP_BASE, self.MEGA_WGRAD_TENSORMAP_BASE),
+                    G,
+                    self.EPILOG_WARP_IDS[-1],
+                    self.BLOCK_SIZE_N,
+                    self.SWAP_AB,
+                    self.sf_dtype,
+                    self.sf_vec_size,
+                    self.USE_SM103_ULTRA,
+                )
 
         if warp_idx < self.DISPATCH_QUANT_WARPS:
             schedule_rank = (local_rank + cutlass.Int32(1)) % cutlass.Int32(
-                self.world_size
+                self.schedule_world_size
             )
             self._dispatch_warpgroup(
                 mDispatchQuantWorkCounter,
@@ -1930,6 +2133,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                 use_device_tensormaps,
                 work_info_smem_ptr,
                 load_b=False,
+                dispatch_gather_ptrs=mDispatchQuantGatherPtrs,
                 weight_borrow_args=weight_borrow_args,
             )
         elif warp_idx == self.TMA_B_WARP_ID:
@@ -1956,6 +2160,32 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                 use_device_tensormaps,
                 work_info_smem_ptr,
                 load_b=True,
+                dispatch_gather_ptrs=mDispatchQuantGatherPtrs,
+            )
+        elif (
+            cutlass.const_expr(self.SCHEDULER_RELAY)
+            and warp_idx == self.TMA_B_WARP_ID + 1
+        ):
+            fc13_state, fc2_state, problem, sync = self._make_gemm_role_context(
+                dgrad,
+                wgrad,
+                storage,
+                cluster_cta_rank,
+                pred_cta0,
+                split_sizes,
+                G,
+                M,
+                N,
+                K,
+                local_rank,
+                counter_ptr,
+            )
+            _gemm_scheduler_warp(
+                params_from_kernel(ChunkedGemmWarpParams, self),
+                problem,
+                sync,
+                work_info_smem_ptr,
+                dispatch_gather_ptrs=mDispatchQuantGatherPtrs,
             )
         elif warp_idx == self.MMA_WARP_ID:
             fc13_state, fc2_state, problem, sync = self._make_gemm_role_context(
@@ -1977,17 +2207,19 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                 alignment=16,
                 ptr_to_buffer_holding_addr=storage.tmem_holding_buf,
             )
-            _gemm_mma_warp(
-                params_from_kernel(ChunkedGemmWarpParams, self),
-                self._make_mma_pipeline(dgrad, fc13_state, tmem_ptr),
-                self._make_mma_pipeline(wgrad, fc2_state, tmem_ptr),
-                problem,
-                sync,
-                work_info_smem_ptr,
-                format=self.format,
-                cta_group=self.cta_group,
-                sf_dtype=self.sf_dtype,
-            )
+            if cutlass.const_expr(self.USE_SM103_ULTRA) or pred_cta0:
+                _gemm_mma_warp(
+                    params_from_kernel(ChunkedGemmWarpParams, self),
+                    self._make_mma_pipeline(dgrad, fc13_state, tmem_ptr),
+                    self._make_mma_pipeline(wgrad, fc2_state, tmem_ptr),
+                    problem,
+                    sync,
+                    work_info_smem_ptr,
+                    format=self.format,
+                    cta_group=self.cta_group,
+                    sf_dtype=self.sf_dtype,
+                    dispatch_gather_ptrs=mDispatchQuantGatherPtrs,
+                )
         elif warp_idx in self.EPILOG_WARP_IDS:
             fc13_state, fc2_state, problem, sync = self._make_gemm_role_context(
                 dgrad,
@@ -2064,6 +2296,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                 dgrad_b_global_scale_inv_ptr,
                 wgrad_b_global_scale_inv_ptr,
                 use_global_scale_inv,
+                dispatch_gather_ptrs=mDispatchQuantGatherPtrs,
             )
             if warp_idx == self.EPILOG_WARP_IDS[0]:
                 cute.arch.relinquish_tmem_alloc_permit(is_two_cta=(self.NUM_CTAS == 2))
@@ -2087,11 +2320,9 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
             warp_idx < self.FORWARD_QUANT_LAST_WARP
         ):
             schedule_rank = (local_rank + cutlass.Int32(1)) % cutlass.Int32(
-                self.world_size
+                self.schedule_world_size
             )
             if cutlass.const_expr(self.INTERLEAVED_FC13 and self.format is not NVFP4):
-                # The shared pipeline fixes this warp topology, and SMEM already
-                # limits the kernel to one CTA per SM, so these warps exit early.
                 thread_exit()
             elif cutlass.const_expr(self.format is NVFP4):
                 nvfp4_row_reduce_smem_ptr = (
@@ -2126,6 +2357,7 @@ class ChunkedMegaBlockScaledGroupedGemmKernel(base.MegaBlockScaledGroupedGemmKer
                     source_done_counter_offset=activation_col_done_counter_offset,
                     barrier_id_base=self.FORWARD_QUANT_SYNC_BAR,
                     precomputed_swiglu=self.INTERLEAVED_FC13,
+                    compact_decode_rows=self.COMPACT_DECODE_ROWS,
                     ring_h1_done_offset=cutlass.Int32(
                         self.ACTIVATION_RING_H1_DONE_OFFSET
                     ),
@@ -2177,11 +2409,12 @@ class _ReleaseOnlyChunkedMegaBlockScaledGroupedGemmKernel(
         quant_group_lane: cutlass.Int32,
         completed_quant_col_tiles: cutlass.Int32,
         barrier_id_base: cutlass.Constexpr[int] = 3,
+        group_threads: cutlass.Constexpr[int] = 0,
     ) -> cutlass.Uint32:
         cute.arch.fence_proxy("async.global")
         cute.arch.barrier(
             barrier_id=barrier_id_base + quant_group,
-            number_of_threads=self.DISPATCH_QUANT_GROUP_THREADS,
+            number_of_threads=group_threads or self.DISPATCH_QUANT_GROUP_THREADS,
         )
         # Mirror the base contract: return the pre-add counter value
         # (meaningful on group lane 0 only) for tile-completion detection.

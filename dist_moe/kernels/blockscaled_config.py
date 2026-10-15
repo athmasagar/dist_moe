@@ -14,15 +14,12 @@ cutlass-free geometry layer; this module owns the config policy that needs
 ``BlockScaledFormatSpec`` (and therefore cutlass).
 """
 
+from dataclasses import dataclass
+
 import cutlass
 import torch
 
 from . import sm103_blockscaled_helpers as sm103
-from .blockscaled_grouped_gemm_kernel import (
-    _format_has_fp4_b,
-    BlockScaledProductionConfig,
-    MXFP8_E4M3,
-)
 from .config import (
     _FPROP,
     _WGRAD,
@@ -45,6 +42,15 @@ from .params import (
 
 
 _MIXED_FORMAT_CACHE: dict[tuple[str, str], BlockScaledFormatSpec] = {}
+
+
+MXFP8_E4M3 = BlockScaledFormatSpec(
+    name="mxfp8_e4m3",
+    a_dtype=cutlass.Float8E4M3FN,
+    b_dtype=cutlass.Float8E4M3FN,
+    sf_dtype=cutlass.Float8E8M0FNU,
+    sf_vec_size=32,
+)
 
 
 MXFP8_E5M2 = BlockScaledFormatSpec(
@@ -87,6 +93,10 @@ def _as_blockscaled_format_spec(
 
 def _format_has_fp4_a(format: BlockScaledFormatSpec) -> bool:
     return format.a_dtype == cutlass.Float4E2M1FN
+
+
+def _format_has_fp4_b(format: BlockScaledFormatSpec) -> bool:
+    return format.b_dtype == cutlass.Float4E2M1FN
 
 
 def _format_uses_fp4(format: BlockScaledFormatSpec) -> bool:
@@ -146,6 +156,66 @@ def _cutlass_dtype_from_torch(dtype: torch.dtype) -> type[cutlass.Numeric]:
 # ``build_blockscaled_config`` is kept for ad hoc sweeps; the auto-picker
 # below is intentionally narrower and only returns one of the literal
 # production configs.
+
+
+@dataclass(frozen=True)
+class BlockScaledProductionConfig:
+    """Format-family-specific production config.
+
+    These are already final kernel config dictionaries. The auto-picker
+    only returns one of the entries in ``PRODUCTION_BLOCKSCALED_CONFIGS``.
+    """
+
+    label: str
+    format_names: frozenset[str]
+    config: dict[str, int | bool]
+    required_compute_capability: tuple[int, int] | None = None
+    directions: frozenset[str] = frozenset({"fprop", "dgrad", "wgrad"})
+
+    def supports_format(self, format: BlockScaledFormatSpec) -> bool:
+        return format.name.lower() in self.format_names
+
+    def supports_device(self, device: torch.device | None = None) -> bool:
+        if self.required_compute_capability is None:
+            return True
+        return (
+            torch.cuda.is_available()
+            and torch.cuda.get_device_capability(device)
+            == self.required_compute_capability
+        )
+
+    def build(
+        self,
+        format: BlockScaledFormatSpec = MXFP8_E4M3,
+        *,
+        static_scheduler: bool | None = None,
+    ) -> dict:
+        if not self.supports_format(format):
+            raise ValueError(f"{self.label} does not support format {format.name!r}")
+        cfg = dict(self.config)
+        if static_scheduler is not None:
+            cfg["STATIC_SCHEDULER"] = static_scheduler
+        return cfg
+
+    @property
+    def num_ctas(self) -> int:
+        return int(self.config["NUM_CTAS"])
+
+    @property
+    def block_m(self) -> int:
+        return int(self.config["BLOCK_SIZE_M"])
+
+    @property
+    def block_n(self) -> int:
+        return int(self.config["BLOCK_SIZE_N"])
+
+    @property
+    def swap_ab(self) -> bool:
+        return bool(self.config["SWAP_AB"])
+
+    @property
+    def overlapping_accum(self) -> bool:
+        return bool(self.config["OVERLAPPING_ACCUM"])
 
 
 def build_blockscaled_config(
@@ -235,7 +305,7 @@ def build_blockscaled_config(
 
 _MXFP8_FORMAT_NAMES = frozenset({"mxfp8_e4m3", "mxfp8_e5m2"})
 _FP4_FORMAT_NAMES = frozenset({"nvfp4", "mxfp4"})
-# These T6 prefill contractions are measured overrides of the generic
+# These contraction prefill contractions are measured overrides of the generic
 # compute-tier config; adjacent and unmeasured shapes remain on that config.
 _NVFP4_T6_PREFILL_CONTRACTIONS = frozenset(
     {
@@ -286,6 +356,7 @@ _MXFP8_MEMORY_CONFIG: dict[str, int | bool] = {
 }
 _MXFP8_MEGA_DECODE_CONFIG: dict[str, int | bool] = {
     **_MXFP8_MEMORY_CONFIG,
+    "STATIC_SCHEDULER": False,
     "KLOOP_UNROLL": 1,
     "MEGA_NUM_SMEM_BUFFERS": 8,
     "NUM_TILE_BUFFERS": 4,
@@ -361,6 +432,7 @@ _FP4_MEMORY_CONFIG: dict[str, int | bool] = {
 }
 _MXFP4_MEGA_DECODE_CONFIG: dict[str, int | bool] = {
     **_FP4_MEMORY_CONFIG,
+    "STATIC_SCHEDULER": False,
     "KLOOP_UNROLL": 1,
     "MEGA_NUM_SMEM_BUFFERS": 11,
     "NUM_TILE_BUFFERS": 4,
@@ -371,6 +443,7 @@ _MXFP4_MEGA_DECODE_CONFIG: dict[str, int | bool] = {
 }
 _NVFP4_MEGA_DECODE_CONFIG: dict[str, int | bool] = {
     **_FP4_MEMORY_CONFIG,
+    "STATIC_SCHEDULER": False,
     "KLOOP_UNROLL": 1,
     "MEGA_NUM_SMEM_BUFFERS": 7,
     "NUM_TILE_BUFFERS": 4,
@@ -520,11 +593,11 @@ def _retune_config_for_formats(
 
 
 def _require_decode_dtype(dtype: BlockScaledFormatSpec) -> None:
-    dtype_name = getattr(dtype, "name", "").lower()
+    dtype_name = dtype.name.lower()
     if dtype_name not in _MXFP8_FORMAT_NAMES and dtype_name not in _FP4_FORMAT_NAMES:
         raise ValueError(
             "blockscaled decode configs support only MXFP8 and FP4 dtypes, "
-            f"got {getattr(dtype, 'name', dtype)!r}"
+            f"got {dtype.name!r}"
         )
 
 
@@ -537,10 +610,10 @@ def blockscaled_mega_decode_config(
     intermediate_dim: int | None = None,
     num_local_experts: int | None = None,
     num_sms: int | None = None,
+    routing_capacity: int | None = None,
 ) -> dict[str, int | bool]:
     weight_dtype = _require_supported_weight_dtype(dtype, weight_dtype)
-    config_family = dtype
-    family_name = getattr(config_family, "name", "").lower()
+    family_name = dtype.name.lower()
     if family_name in _MXFP8_FORMAT_NAMES:
         config = _copy_config(_MXFP8_MEGA_DECODE_CONFIG)
     elif family_name == NVFP4.name:
@@ -578,7 +651,7 @@ def blockscaled_mega_decode_config(
             else None
         ),
         max_token_tile=max_token_tile,
-        use_mxfp4_mega_tile_buckets=dtype is MXFP4 and weight_dtype is dtype,
+        routing_capacity=routing_capacity,
     )
     config = _retune_config_for_formats(config, dtype=dtype, weight_dtype=weight_dtype)
     if geometry_applied and not mixed_operand_widths:
@@ -595,10 +668,10 @@ def blockscaled_staged_decode_config(
     intermediate_dim: int | None = None,
     num_local_experts: int | None = None,
     num_sms: int | None = None,
+    routing_capacity: int | None = None,
 ) -> dict[str, int | bool]:
     weight_dtype = _require_supported_weight_dtype(dtype, weight_dtype)
-    config_family = dtype
-    family_name = getattr(config_family, "name", "").lower()
+    family_name = dtype.name.lower()
     if family_name in _MXFP8_FORMAT_NAMES:
         config = _copy_config(_MXFP8_MEMORY_CONFIG)
     else:
@@ -648,6 +721,7 @@ def blockscaled_staged_decode_config(
         pipeline_depth_widths=(
             (dtype.a_dtype.width, weight_dtype.b_dtype.width) if use_wide_k else None
         ),
+        routing_capacity=routing_capacity,
     )
     config = _retune_config_for_formats(config, dtype=dtype, weight_dtype=weight_dtype)
     geometry_changed = any(config[key] != value for key, value in seed_geometry.items())
@@ -672,7 +746,7 @@ def blockscaled_training_config(
     FPROP/DGRAD and WGRAD share the measured schedule today. ``wgrad`` keeps
     the operation-specific API available for an independently tuned schedule.
     """
-    dtype_name = getattr(dtype, "name", "").lower()
+    dtype_name = dtype.name.lower()
     if dtype_name in _MXFP8_FORMAT_NAMES:
         config = _MXFP8_COMPUTE_CONFIG
     elif dtype_name in _FP4_FORMAT_NAMES:
@@ -780,16 +854,15 @@ def auto_blockscaled_config(
     grad-of-output paths that are uniformly compute-bound.
     """
     # ``format`` may be the kernel-local ``BlockScaledFormatSpec`` or
-    # the public block-scaled format enum.
+    # the public ``dist_moe.BlockScaledFormat`` enum.
     weight_format = _resolve_weight_format(format, weight_format)
-    fmt_name = getattr(format, "name", "").lower()
+    fmt_name = format.name.lower()
     a8w4 = _is_a8w4_format(format, weight_format)
     if format is not weight_format and not a8w4:
         raise NotImplementedError(
             "mixed block-scaled grouped GEMM currently supports only "
             "dtype:mxfp8_e4m3;weight_dtype:mxfp4"
         )
-    family_name = fmt_name
     if G <= 0:
         raise ValueError(f"G must be positive, got {G}")
     if m_multiple_of % BLOCKSCALED_GROUPED_GEMM_M_ALIGNMENT != 0:
@@ -800,7 +873,7 @@ def auto_blockscaled_config(
     m_per_group_estimate = max(1, GM // G)
     memory_bound = problem_type == _FPROP and m_per_group_estimate < 256
 
-    if family_name in _MXFP8_FORMAT_NAMES:
+    if fmt_name in _MXFP8_FORMAT_NAMES:
         cfg = _pick_literal_config(
             compute_config=_MXFP8_COMPUTE_CONFIG,
             fallback_config=_MXFP8_FALLBACK_CONFIG,
@@ -810,7 +883,7 @@ def auto_blockscaled_config(
             N=N,
             G=G,
         )
-    elif family_name in _FP4_FORMAT_NAMES:
+    elif fmt_name in _FP4_FORMAT_NAMES:
         compute_config = (
             _SM103_NVFP4_COMPUTE_CONFIG
             if (
@@ -832,7 +905,7 @@ def auto_blockscaled_config(
         # These schedules were qualified only at NTPE=8192. Keep the equality
         # exact instead of extrapolating from a routing-average estimate.
         if (
-            family_name == "mxfp4"
+            fmt_name == "mxfp4"
             and problem_type == _FPROP
             and m_per_group_estimate == 8192
             and (N, K) == _MXFP4_T6_FC2_PREFILL_CONTRACTION
@@ -840,7 +913,7 @@ def auto_blockscaled_config(
         ):
             cfg = _copy_config(_MXFP4_T6_FC2_PREFILL_CONFIG)
         elif (
-            family_name == "nvfp4"
+            fmt_name == "nvfp4"
             and problem_type == _FPROP
             and m_per_group_estimate == 8192
             and (N, K) in _NVFP4_T6_PREFILL_CONTRACTIONS
@@ -850,7 +923,8 @@ def auto_blockscaled_config(
     else:
         raise ValueError(
             "No block-scaled production config among the literal "
-            f"configs for format={fmt_name!r}, weight_format={family_name!r}, "
+            f"configs for format={fmt_name!r}, "
+            f"weight_format={weight_format.name.lower()!r}, "
             f"G={G}, GM={GM}, N={N}, K={K}, "
             f"num_sms={num_sms}, m_per_group_estimate={m_per_group_estimate}, "
             f"m_multiple_of={m_multiple_of}."
@@ -872,7 +946,7 @@ def inference_fprop_static_scheduler(
 ) -> bool | None:
     if not inference_mode or problem_type != _FPROP:
         return None
-    format_name = getattr(format, "name", "").lower()
+    format_name = format.name.lower()
     if format_name == "mxfp4" or _is_a8w4_format(format, weight_format):
         return True if (N, K) in STATIC_FPROP_SCHEDULER_SHAPES else None
     return None

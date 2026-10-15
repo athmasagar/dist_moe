@@ -60,9 +60,10 @@ def get_flat_bid():
 
 @triton.jit
 def sync_threads():
-    tl.inline_asm_elementwise(
-        "bar.sync 0;", "=r", [], dtype=tl.int32, is_pure=False, pack=1
-    )
+    """CTA-wide barrier, called from CTA-uniform control flow.  It must stay
+    convergent: LLVM may clone an inline-asm ``bar.sync`` across an
+    ``if flat_tid == 0:`` branch, and a warp split between the copies hangs."""
+    tl.debug_barrier()
 
 
 @triton.jit

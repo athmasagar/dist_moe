@@ -34,10 +34,14 @@ import threading
 import traceback
 from dataclasses import dataclass
 from enum import Enum
+from importlib import import_module
+from types import ModuleType
 from typing import Any, Callable, Dict, Iterator, List
 
 import torch
-from cuda.bindings import driver as drv
+
+# The native driver extension has no Python declarations in the source build.
+drv: ModuleType = import_module("cuda.bindings.driver")
 
 logger = logging.getLogger(__name__)
 
@@ -889,6 +893,7 @@ def make_vmm_pool(sections: List[SectionSpec]) -> torch.cuda.MemPool:
         _c_vmm_free = FREE_FN(_vmm_free)
         alloc_ptr = ctypes.cast(_c_vmm_alloc, ctypes.c_void_p).value
         free_ptr = ctypes.cast(_c_vmm_free, ctypes.c_void_p).value
+        assert alloc_ptr is not None and free_ptr is not None
         _allocator = torch._C._cuda_customAllocator(alloc_ptr, free_ptr)
     return torch.cuda.MemPool(_allocator)
 

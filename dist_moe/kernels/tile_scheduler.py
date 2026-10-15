@@ -59,45 +59,31 @@ from .config import (  # noqa: F401
     _WGRAD,
     uses_paged_blockscaled_scale_rows,
 )
+from .grouped_problem_visitor import (  # noqa: F401
+    _group_sizes,
+    _tile_coords,
+    _tile_grid,
+    advance_blockscaled_scale_start,
+    blockscaled_scale_row_start,
+    GroupedProblemVisitor,
+)
 from .params import (
+    _CHUNKED_MEGA_CONSUMER_WORK_INFO_FIELDS,
+    _CHUNKED_MEGA_EPILOGUE_WORK_INFO_FIELDS,
+    _CHUNKED_MEGA_MMA_WORK_INFO_FIELDS,
+    _CHUNKED_MEGA_TMA_B_WORK_INFO_FIELDS,
     ceil_div,
+    CHUNKED_MEGA_WORK_INFO_FIELDS,
+    CHUNKED_MEGA_WORK_INFO_ROLE_ALL,
+    CHUNKED_MEGA_WORK_INFO_ROLE_EPILOGUE,
+    CHUNKED_MEGA_WORK_INFO_ROLE_MMA,
+    CHUNKED_MEGA_WORK_INFO_ROLE_TMA_B,
+    ChunkedMegaWorkTileInfo,
+    MEGA_WORK_INFO_FIELDS,
+    MegaWorkTileInfo,
 )
 
 _HAS_MAP_DSMEM_PTR = hasattr(cute.arch, "map_dsmem_ptr")
-
-
-@cute.jit
-def blockscaled_scale_row_start(
-    scale_start_m: Int32,
-    row_offset: Int32,
-    SWAP_MN: cutlass.Constexpr[bool],
-    BLOCK_SIZE_N: cutlass.Constexpr[int],
-) -> Int32:
-    if cutlass.const_expr(not SWAP_MN):
-        return scale_start_m + row_offset
-    if cutlass.const_expr(uses_paged_blockscaled_scale_rows(BLOCK_SIZE_N)):
-        scale_page_rows: cutlass.Constexpr[int] = ((BLOCK_SIZE_N + 127) // 128) * 128
-        return (
-            scale_start_m
-            + row_offset // Int32(BLOCK_SIZE_N) * Int32(scale_page_rows)
-            + row_offset % Int32(BLOCK_SIZE_N)
-        )
-    return scale_start_m + row_offset
-
-
-@cute.jit
-def advance_blockscaled_scale_start(
-    scale_start_m: Int32,
-    group_rows: Int32,
-    SWAP_MN: cutlass.Constexpr[bool],
-    BLOCK_SIZE_N: cutlass.Constexpr[int],
-) -> Int32:
-    if cutlass.const_expr(SWAP_MN and uses_paged_blockscaled_scale_rows(BLOCK_SIZE_N)):
-        scale_page_rows: cutlass.Constexpr[int] = ((BLOCK_SIZE_N + 127) // 128) * 128
-        return scale_start_m + (
-            (group_rows + Int32(BLOCK_SIZE_N - 1)) // Int32(BLOCK_SIZE_N)
-        ) * Int32(scale_page_rows)
-    return scale_start_m + group_rows
 
 
 def _map_remote_smem_ptr(smem_ptr, cta_rank_in_cluster):
@@ -114,611 +100,6 @@ def _map_remote_smem_ptr(smem_ptr, cta_rank_in_cluster):
 # Termination sentinel for tile_info. INT32_MAX - 1 leaves headroom for the
 # 2-CTA `tile_idx + cluster_cta_rank` read.
 _TILE_SENTINEL = 0x7FFFFFFF - 1
-
-
-class GroupedWorkTileInfo:
-    """Decoded grouped-GEMM work owned by one persistent cluster."""
-
-    def __init__(
-        self,
-        group_idx: Int32,
-        tile_m_idx: Int32,
-        tile_n_idx: Int32,
-        subtile_idx: Int32,
-        num_k_tiles: Int32,
-        m_size: Int32,
-        n_size: Int32,
-        k_size: Int32,
-        split_prefix: Int32,
-        m_tile_prefix: Int32,
-        n_tile_prefix: Int32,
-        scale_split_prefix: Int32,
-    ):
-        self.group_idx = group_idx
-        self.tile_m_idx = tile_m_idx
-        self.tile_n_idx = tile_n_idx
-        self.subtile_idx = subtile_idx
-        self.num_k_tiles = num_k_tiles
-        self.m_size = m_size
-        self.n_size = n_size
-        self.k_size = k_size
-        self.split_prefix = split_prefix
-        self.m_tile_prefix = m_tile_prefix
-        self.n_tile_prefix = n_tile_prefix
-        self.scale_split_prefix = scale_split_prefix
-
-    @property
-    def is_valid_tile(self):
-        return self.group_idx >= Int32(0)
-
-    def _values(self):
-        return (
-            self.group_idx,
-            self.tile_m_idx,
-            self.tile_n_idx,
-            self.subtile_idx,
-            self.num_k_tiles,
-            self.m_size,
-            self.n_size,
-            self.k_size,
-            self.split_prefix,
-            self.m_tile_prefix,
-            self.n_tile_prefix,
-            self.scale_split_prefix,
-        )
-
-    def __extract_mlir_values__(self) -> List[ir.Value]:
-        values: List[ir.Value] = []
-        for value in self._values():
-            values.extend(extract_mlir_values(value))
-        return values
-
-    def __new_from_mlir_values__(self, values: List[ir.Value]) -> "GroupedWorkTileInfo":
-        old_values = self._values()
-        assert len(values) == len(old_values)
-        return GroupedWorkTileInfo(
-            *[
-                new_from_mlir_values(old_value, [value])
-                for old_value, value in zip(old_values, values)
-            ]
-        )
-
-
-class GroupedMmaWorkTileInfo:
-    """Minimal grouped schedule state consumed by an MMA warp.
-
-    ``tile_n_idx`` is the group-local token tile the MMA is about to issue. The
-    paged SFB layouts pack two token tiles into one 128-row scale page, so the
-    MMA needs the tile's parity to bind the matching ``tcgen05`` SFB field.
-    """
-
-    def __init__(self, group_idx: Int32, num_k_tiles: Int32, tile_n_idx: Int32):
-        self.group_idx = group_idx
-        self.num_k_tiles = num_k_tiles
-        self.tile_n_idx = tile_n_idx
-
-    @property
-    def is_valid_tile(self):
-        return self.group_idx >= Int32(0)
-
-    def __extract_mlir_values__(self) -> List[ir.Value]:
-        return [
-            *extract_mlir_values(self.group_idx),
-            *extract_mlir_values(self.num_k_tiles),
-            *extract_mlir_values(self.tile_n_idx),
-        ]
-
-    def __new_from_mlir_values__(
-        self, values: List[ir.Value]
-    ) -> "GroupedMmaWorkTileInfo":
-        assert len(values) == 3
-        return GroupedMmaWorkTileInfo(
-            new_from_mlir_values(self.group_idx, [values[0]]),
-            new_from_mlir_values(self.num_k_tiles, [values[1]]),
-            new_from_mlir_values(self.tile_n_idx, [values[2]]),
-        )
-
-
-@cute.jit
-def _group_sizes(
-    split_sizes: cute.Tensor,
-    group_idx: Int32,
-    M: Int32,
-    N: Int32,
-    K: Int32,
-    problem_type: cutlass.Constexpr[int],
-    SWAP_MN: cutlass.Constexpr[bool],
-):
-    if cutlass.const_expr(problem_type == _WGRAD):
-        m_size, n_size, k_size = M, N, Int32(split_sizes[group_idx])
-    else:
-        m_size, n_size, k_size = Int32(split_sizes[group_idx]), N, K
-    if cutlass.const_expr(SWAP_MN):
-        return n_size, m_size, k_size
-    return m_size, n_size, k_size
-
-
-@cute.jit
-def _tile_grid(
-    m_size: Int32,
-    n_size: Int32,
-    k_size: Int32,
-    BLOCK_SIZE_M: cutlass.Constexpr[int],
-    BLOCK_SIZE_N: cutlass.Constexpr[int],
-    BLOCK_SIZE_K: cutlass.Constexpr[int],
-    FORCE_N_MAJOR: cutlass.Constexpr[bool],
-    NUM_N_CLUSTERS: cutlass.Constexpr[int],
-    SWAP_MN: cutlass.Constexpr[bool],
-):
-    num_m_tiles = (m_size + BLOCK_SIZE_M - 1) // BLOCK_SIZE_M
-    num_n_tiles = (n_size + BLOCK_SIZE_N - 1) // BLOCK_SIZE_N
-    num_k_tiles = (k_size + BLOCK_SIZE_K - 1) // BLOCK_SIZE_K
-    logical_num_m_tiles = num_m_tiles
-    logical_num_n_tiles = num_n_tiles
-    logical_m_size = m_size
-    logical_n_size = n_size
-    if cutlass.const_expr(SWAP_MN):
-        logical_num_m_tiles = num_n_tiles
-        logical_num_n_tiles = num_m_tiles
-        logical_m_size = n_size
-        logical_n_size = m_size
-
-    num_tiles = num_m_tiles * num_n_tiles
-    if cutlass.const_expr(NUM_N_CLUSTERS > 1):
-        if cutlass.const_expr(FORCE_N_MAJOR) or not (logical_m_size < logical_n_size):
-            n_tiles_per_cluster = (
-                logical_num_n_tiles + NUM_N_CLUSTERS - 1
-            ) // NUM_N_CLUSTERS
-            num_tiles = (
-                logical_num_m_tiles * n_tiles_per_cluster * Int32(NUM_N_CLUSTERS)
-            )
-    return num_m_tiles, num_n_tiles, num_k_tiles, num_tiles
-
-
-@cute.jit
-def _tile_coords(
-    tile_idx: Int32,
-    num_m_tiles: Int32,
-    num_n_tiles: Int32,
-    m_size: Int32,
-    n_size: Int32,
-    FORCE_N_MAJOR: cutlass.Constexpr[bool],
-    NUM_N_CLUSTERS: cutlass.Constexpr[int],
-    local_rank: Int32,
-    WORLD_SIZE: cutlass.Constexpr[int],
-    SWAP_MN: cutlass.Constexpr[bool],
-):
-    logical_tile_m_idx = Int32(0)
-    logical_tile_n_idx = Int32(0)
-    logical_num_m_tiles = num_m_tiles
-    logical_num_n_tiles = num_n_tiles
-    logical_m_size = m_size
-    logical_n_size = n_size
-    if cutlass.const_expr(SWAP_MN):
-        logical_num_m_tiles = num_n_tiles
-        logical_num_n_tiles = num_m_tiles
-        logical_m_size = n_size
-        logical_n_size = m_size
-
-    if cutlass.const_expr(FORCE_N_MAJOR) or not (logical_m_size < logical_n_size):
-        n_tiles_per_cluster = (
-            logical_num_n_tiles + NUM_N_CLUSTERS - 1
-        ) // NUM_N_CLUSTERS
-        cluster_tiles = logical_num_m_tiles * n_tiles_per_cluster
-        cluster_idx = tile_idx // cluster_tiles
-        within_cluster = tile_idx % cluster_tiles
-        logical_tile_m_idx = within_cluster // n_tiles_per_cluster
-        logical_tile_n_idx = (
-            cluster_idx * n_tiles_per_cluster + within_cluster % n_tiles_per_cluster
-        )
-    else:
-        logical_tile_m_idx = tile_idx % logical_num_m_tiles
-        logical_tile_n_idx = tile_idx // logical_num_m_tiles
-
-    if cutlass.const_expr(WORLD_SIZE > 1):
-        tiles_per_rank = (logical_num_m_tiles + WORLD_SIZE - 1) // WORLD_SIZE
-        m_offset = (local_rank * tiles_per_rank) % logical_num_m_tiles
-        logical_tile_m_idx = (logical_tile_m_idx + m_offset) % logical_num_m_tiles
-    if cutlass.const_expr(SWAP_MN):
-        return logical_tile_n_idx, logical_tile_m_idx
-    return logical_tile_m_idx, logical_tile_n_idx
-
-
-class GroupedProblemVisitor:
-    """Stateful linear-tile decoder with a cached current expert."""
-
-    def __init__(
-        self,
-        split_sizes: cute.Tensor,
-        M: Int32,
-        N: Int32,
-        K: Int32,
-        group_idx: Int32,
-        tile_start: Int32,
-        tile_end: Int32,
-        split_prefix: Int32,
-        m_tile_prefix: Int32,
-        n_tile_prefix: Int32,
-        scale_split_prefix: Int32,
-        m_size: Int32,
-        n_size: Int32,
-        k_size: Int32,
-        num_m_tiles: Int32,
-        num_n_tiles: Int32,
-        num_k_tiles: Int32,
-        G: cutlass.Constexpr[int],
-        problem_type: cutlass.Constexpr[int],
-        BLOCK_SIZE_M: cutlass.Constexpr[int],
-        BLOCK_SIZE_N: cutlass.Constexpr[int],
-        BLOCK_SIZE_K: cutlass.Constexpr[int],
-        FORCE_N_MAJOR: cutlass.Constexpr[bool],
-        NUM_N_CLUSTERS: cutlass.Constexpr[int],
-        local_rank: Int32,
-        WORLD_SIZE: cutlass.Constexpr[int],
-        SWAP_MN: cutlass.Constexpr[bool],
-        M_SUBTILES: cutlass.Constexpr[int],
-    ):
-        self.split_sizes = split_sizes
-        self.M = M
-        self.N = N
-        self.K = K
-        self.group_idx = group_idx
-        self.tile_start = tile_start
-        self.tile_end = tile_end
-        self.split_prefix = split_prefix
-        self.m_tile_prefix = m_tile_prefix
-        self.n_tile_prefix = n_tile_prefix
-        self.scale_split_prefix = scale_split_prefix
-        self.m_size = m_size
-        self.n_size = n_size
-        self.k_size = k_size
-        self.num_m_tiles = num_m_tiles
-        self.num_n_tiles = num_n_tiles
-        self.num_k_tiles = num_k_tiles
-        self.G = G
-        self.problem_type = problem_type
-        self.BLOCK_SIZE_M = BLOCK_SIZE_M
-        self.BLOCK_SIZE_N = BLOCK_SIZE_N
-        self.BLOCK_SIZE_K = BLOCK_SIZE_K
-        self.FORCE_N_MAJOR = FORCE_N_MAJOR
-        self.NUM_N_CLUSTERS = NUM_N_CLUSTERS
-        self.local_rank = local_rank
-        self.WORLD_SIZE = WORLD_SIZE
-        self.SWAP_MN = SWAP_MN
-        self.M_SUBTILES = M_SUBTILES
-
-    def __extract_mlir_values__(self) -> List[ir.Value]:
-        values = list(extract_mlir_values(self.split_sizes))
-        for value in (
-            self.M,
-            self.N,
-            self.K,
-            self.group_idx,
-            self.tile_start,
-            self.tile_end,
-            self.split_prefix,
-            self.m_tile_prefix,
-            self.n_tile_prefix,
-            self.scale_split_prefix,
-            self.m_size,
-            self.n_size,
-            self.k_size,
-            self.num_m_tiles,
-            self.num_n_tiles,
-            self.num_k_tiles,
-            self.local_rank,
-        ):
-            values.extend(extract_mlir_values(value))
-        return values
-
-    def __new_from_mlir_values__(
-        self, values: List[ir.Value]
-    ) -> "GroupedProblemVisitor":
-        tensor_value_count = len(extract_mlir_values(self.split_sizes))
-        split_sizes = new_from_mlir_values(
-            self.split_sizes, values[:tensor_value_count]
-        )
-        old_values = (
-            self.M,
-            self.N,
-            self.K,
-            self.group_idx,
-            self.tile_start,
-            self.tile_end,
-            self.split_prefix,
-            self.m_tile_prefix,
-            self.n_tile_prefix,
-            self.scale_split_prefix,
-            self.m_size,
-            self.n_size,
-            self.k_size,
-            self.num_m_tiles,
-            self.num_n_tiles,
-            self.num_k_tiles,
-            self.local_rank,
-        )
-        runtime_values = values[tensor_value_count:]
-        assert len(runtime_values) == len(old_values)
-        new_values = [
-            new_from_mlir_values(old_value, [value])
-            for old_value, value in zip(old_values, runtime_values)
-        ]
-        return GroupedProblemVisitor(
-            split_sizes=split_sizes,
-            M=new_values[0],
-            N=new_values[1],
-            K=new_values[2],
-            group_idx=new_values[3],
-            tile_start=new_values[4],
-            tile_end=new_values[5],
-            split_prefix=new_values[6],
-            m_tile_prefix=new_values[7],
-            n_tile_prefix=new_values[8],
-            scale_split_prefix=new_values[9],
-            m_size=new_values[10],
-            n_size=new_values[11],
-            k_size=new_values[12],
-            num_m_tiles=new_values[13],
-            num_n_tiles=new_values[14],
-            num_k_tiles=new_values[15],
-            G=self.G,
-            problem_type=self.problem_type,
-            BLOCK_SIZE_M=self.BLOCK_SIZE_M,
-            BLOCK_SIZE_N=self.BLOCK_SIZE_N,
-            BLOCK_SIZE_K=self.BLOCK_SIZE_K,
-            FORCE_N_MAJOR=self.FORCE_N_MAJOR,
-            NUM_N_CLUSTERS=self.NUM_N_CLUSTERS,
-            local_rank=new_values[16],
-            WORLD_SIZE=self.WORLD_SIZE,
-            SWAP_MN=self.SWAP_MN,
-            M_SUBTILES=self.M_SUBTILES,
-        )
-
-    @staticmethod
-    @cute.jit
-    def create(
-        split_sizes: cute.Tensor,
-        M: Int32,
-        N: Int32,
-        K: Int32,
-        G: cutlass.Constexpr[int],
-        problem_type: cutlass.Constexpr[int],
-        BLOCK_SIZE_M: cutlass.Constexpr[int],
-        BLOCK_SIZE_N: cutlass.Constexpr[int],
-        BLOCK_SIZE_K: cutlass.Constexpr[int],
-        FORCE_N_MAJOR: cutlass.Constexpr[bool],
-        NUM_N_CLUSTERS: cutlass.Constexpr[int],
-        local_rank: Int32,
-        WORLD_SIZE: cutlass.Constexpr[int],
-        SWAP_MN: cutlass.Constexpr[bool] = False,
-        M_SUBTILES: cutlass.Constexpr[int] = 1,
-    ) -> "GroupedProblemVisitor":
-        group_idx = Int32(0)
-        m_size, n_size, k_size = _group_sizes(
-            split_sizes, group_idx, M, N, K, problem_type, SWAP_MN
-        )
-        num_m_tiles, num_n_tiles, num_k_tiles, num_tiles = _tile_grid(
-            m_size,
-            n_size,
-            k_size,
-            BLOCK_SIZE_M,
-            BLOCK_SIZE_N,
-            BLOCK_SIZE_K,
-            FORCE_N_MAJOR,
-            NUM_N_CLUSTERS,
-            SWAP_MN,
-        )
-        num_tiles *= Int32(M_SUBTILES)
-        return GroupedProblemVisitor(
-            split_sizes,
-            M,
-            N,
-            K,
-            group_idx,
-            Int32(0),
-            num_tiles,
-            Int32(0),
-            Int32(0),
-            Int32(0),
-            Int32(0),
-            m_size,
-            n_size,
-            k_size,
-            num_m_tiles,
-            num_n_tiles,
-            num_k_tiles,
-            G,
-            problem_type,
-            BLOCK_SIZE_M,
-            BLOCK_SIZE_N,
-            BLOCK_SIZE_K,
-            FORCE_N_MAJOR,
-            NUM_N_CLUSTERS,
-            local_rank,
-            WORLD_SIZE,
-            SWAP_MN,
-            M_SUBTILES,
-        )
-
-    @cute.jit
-    def _advance_group_to_contain(self, tile_idx: Int32) -> None:
-        while tile_idx >= self.tile_end and self.group_idx < self.G:
-            group_rows = Int32(self.split_sizes[self.group_idx])
-            self.split_prefix += group_rows
-            self.scale_split_prefix = advance_blockscaled_scale_start(
-                self.scale_split_prefix,
-                group_rows,
-                self.SWAP_MN,
-                self.BLOCK_SIZE_N,
-            )
-            self.m_tile_prefix += self.num_m_tiles
-            self.n_tile_prefix += self.num_n_tiles
-            self.tile_start = self.tile_end
-            self.group_idx += Int32(1)
-            if self.group_idx < self.G:
-                self.m_size, self.n_size, self.k_size = _group_sizes(
-                    self.split_sizes,
-                    self.group_idx,
-                    self.M,
-                    self.N,
-                    self.K,
-                    self.problem_type,
-                    self.SWAP_MN,
-                )
-                (
-                    self.num_m_tiles,
-                    self.num_n_tiles,
-                    self.num_k_tiles,
-                    num_tiles,
-                ) = _tile_grid(
-                    self.m_size,
-                    self.n_size,
-                    self.k_size,
-                    self.BLOCK_SIZE_M,
-                    self.BLOCK_SIZE_N,
-                    self.BLOCK_SIZE_K,
-                    self.FORCE_N_MAJOR,
-                    self.NUM_N_CLUSTERS,
-                    self.SWAP_MN,
-                )
-                num_tiles *= Int32(self.M_SUBTILES)
-                self.tile_end += num_tiles
-
-    @cute.jit
-    def _work_tile_coords(self, parent_tile_idx: Int32):
-        return _tile_coords(
-            parent_tile_idx,
-            self.num_m_tiles,
-            self.num_n_tiles,
-            self.m_size,
-            self.n_size,
-            self.FORCE_N_MAJOR,
-            self.NUM_N_CLUSTERS,
-            self.local_rank,
-            self.WORLD_SIZE,
-            self.SWAP_MN,
-        )
-
-    @cute.jit
-    def get_work(self, tile_idx: Int32) -> GroupedWorkTileInfo:
-        self._advance_group_to_contain(tile_idx)
-        work = GroupedWorkTileInfo(Int32(-1), *([Int32(0)] * 11))
-        if self.group_idx < self.G and tile_idx < self.tile_end:
-            local_tile_idx = tile_idx - self.tile_start
-            parent_tile_idx = local_tile_idx // Int32(self.M_SUBTILES)
-            subtile_idx = local_tile_idx % Int32(self.M_SUBTILES)
-            tile_m_idx, tile_n_idx = self._work_tile_coords(parent_tile_idx)
-            work = GroupedWorkTileInfo(
-                self.group_idx,
-                tile_m_idx,
-                tile_n_idx,
-                subtile_idx,
-                self.num_k_tiles,
-                self.m_size,
-                self.n_size,
-                self.k_size,
-                self.split_prefix,
-                self.m_tile_prefix,
-                self.n_tile_prefix,
-                self.scale_split_prefix,
-            )
-        return work
-
-    @cute.jit
-    def get_mma_work(self, tile_idx: Int32) -> GroupedMmaWorkTileInfo:
-        self._advance_group_to_contain(tile_idx)
-        work = GroupedMmaWorkTileInfo(Int32(-1), Int32(0), Int32(0))
-        if self.group_idx < self.G and tile_idx < self.tile_end:
-            parent_tile_idx = (tile_idx - self.tile_start) // Int32(self.M_SUBTILES)
-            _, tile_n_idx = self._work_tile_coords(parent_tile_idx)
-            work = GroupedMmaWorkTileInfo(self.group_idx, self.num_k_tiles, tile_n_idx)
-        return work
-
-
-class MegaWorkTileInfo:
-    """Decoded work for one of two GEMMs interleaved per expert."""
-
-    def __init__(
-        self,
-        group_idx: Int32,
-        problem_idx: Int32,
-        tile_idx: Int32,
-        tile_m_idx: Int32,
-        tile_n_idx: Int32,
-        num_m_tiles: Int32,
-        num_n_tiles: Int32,
-        num_k_tiles: Int32,
-        m_size: Int32,
-        n_size: Int32,
-        k_size: Int32,
-        split_prefix: Int32,
-        m_tile_prefix: Int32,
-        n_tile_prefix: Int32,
-        group_tile_prefix: Int32,
-        act_tile_prefix_0: Int32,
-        act_tile_prefix_1: Int32,
-    ):
-        self.group_idx = group_idx
-        self.problem_idx = problem_idx
-        self.tile_idx = tile_idx
-        self.tile_m_idx = tile_m_idx
-        self.tile_n_idx = tile_n_idx
-        self.num_m_tiles = num_m_tiles
-        self.num_n_tiles = num_n_tiles
-        self.num_k_tiles = num_k_tiles
-        self.m_size = m_size
-        self.n_size = n_size
-        self.k_size = k_size
-        self.split_prefix = split_prefix
-        self.m_tile_prefix = m_tile_prefix
-        self.n_tile_prefix = n_tile_prefix
-        self.group_tile_prefix = group_tile_prefix
-        self.act_tile_prefix_0 = act_tile_prefix_0
-        self.act_tile_prefix_1 = act_tile_prefix_1
-
-    def _values(self):
-        return (
-            self.group_idx,
-            self.problem_idx,
-            self.tile_idx,
-            self.tile_m_idx,
-            self.tile_n_idx,
-            self.num_m_tiles,
-            self.num_n_tiles,
-            self.num_k_tiles,
-            self.m_size,
-            self.n_size,
-            self.k_size,
-            self.split_prefix,
-            self.m_tile_prefix,
-            self.n_tile_prefix,
-            self.group_tile_prefix,
-            self.act_tile_prefix_0,
-            self.act_tile_prefix_1,
-        )
-
-    @property
-    def is_valid_tile(self):
-        return self.group_idx >= Int32(0)
-
-    def __extract_mlir_values__(self) -> List[ir.Value]:
-        values: List[ir.Value] = []
-        for value in self._values():
-            values.extend(extract_mlir_values(value))
-        return values
-
-    def __new_from_mlir_values__(self, values: List[ir.Value]) -> "MegaWorkTileInfo":
-        old_values = self._values()
-        assert len(values) == len(old_values)
-        return MegaWorkTileInfo(
-            *[
-                new_from_mlir_values(old_value, [value])
-                for old_value, value in zip(old_values, values)
-            ]
-        )
-
-
-MEGA_WORK_INFO_FIELDS: int = 17
 
 
 @cute.jit
@@ -1088,194 +469,6 @@ class MegaProblemVisitor:
         return work
 
 
-class ChunkedMegaWorkTileInfo:
-    """Decoded schedule item for the chunk-pipelined forward Mega kernel."""
-
-    def __init__(
-        self,
-        group_idx: Int32,
-        problem_idx: Int32,
-        tile_idx: Int32,
-        tile_m_idx: Int32,
-        tile_n_idx: Int32,
-        num_m_tiles: Int32,
-        num_n_tiles: Int32,
-        num_k_tiles: Int32,
-        num_output_tiles: Int32,
-        m_size: Int32,
-        n_size: Int32,
-        k_size: Int32,
-        full_m_size: Int32,
-        full_n_size: Int32,
-        group_rows: Int32,
-        chunk_start: Int32,
-        split_prefix: Int32,
-        group_tile_prefix: Int32,
-        scale_split_prefix: Int32,
-        sched_chunk_idx: Int32,
-    ):
-        self.group_idx = group_idx
-        self.problem_idx = problem_idx
-        self.tile_idx = tile_idx
-        self.tile_m_idx = tile_m_idx
-        self.tile_n_idx = tile_n_idx
-        self.num_m_tiles = num_m_tiles
-        self.num_n_tiles = num_n_tiles
-        self.num_k_tiles = num_k_tiles
-        self.num_output_tiles = num_output_tiles
-        self.m_size = m_size
-        self.n_size = n_size
-        self.k_size = k_size
-        self.full_m_size = full_m_size
-        self.full_n_size = full_n_size
-        self.group_rows = group_rows
-        self.chunk_start = chunk_start
-        self.split_prefix = split_prefix
-        self.group_tile_prefix = group_tile_prefix
-        self.scale_split_prefix = scale_split_prefix
-        self.sched_chunk_idx = sched_chunk_idx
-
-    @property
-    def is_valid_tile(self):
-        return self.group_idx >= Int32(0)
-
-    def __extract_mlir_values__(self) -> List[ir.Value]:
-        values: List[ir.Value] = []
-        for value in self._values():
-            values.extend(extract_mlir_values(value))
-        return values
-
-    def _values(self):
-        return (
-            self.group_idx,
-            self.problem_idx,
-            self.tile_idx,
-            self.tile_m_idx,
-            self.tile_n_idx,
-            self.num_m_tiles,
-            self.num_n_tiles,
-            self.num_k_tiles,
-            self.num_output_tiles,
-            self.m_size,
-            self.n_size,
-            self.k_size,
-            self.full_m_size,
-            self.full_n_size,
-            self.group_rows,
-            self.chunk_start,
-            self.split_prefix,
-            self.group_tile_prefix,
-            self.scale_split_prefix,
-            self.sched_chunk_idx,
-        )
-
-    def __new_from_mlir_values__(
-        self, values: List[ir.Value]
-    ) -> "ChunkedMegaWorkTileInfo":
-        old_values = self._values()
-        assert len(values) == len(old_values)
-        return ChunkedMegaWorkTileInfo(
-            *[
-                new_from_mlir_values(old_value, [value])
-                for old_value, value in zip(old_values, values)
-            ]
-        )
-
-
-CHUNKED_MEGA_WORK_INFO_FIELD_NAMES: tuple[str, ...] = (
-    "group_idx",
-    "problem_idx",
-    "tile_idx",
-    "tile_m_idx",
-    "tile_n_idx",
-    "num_m_tiles",
-    "num_n_tiles",
-    "num_k_tiles",
-    "num_output_tiles",
-    "m_size",
-    "n_size",
-    "k_size",
-    "full_m_size",
-    "full_n_size",
-    "group_rows",
-    "chunk_start",
-    "split_prefix",
-    "group_tile_prefix",
-    "scale_split_prefix",
-    "sched_chunk_idx",
-)
-CHUNKED_MEGA_WORK_INFO_FIELDS: int = len(CHUNKED_MEGA_WORK_INFO_FIELD_NAMES)
-_CHUNKED_MEGA_WORK_INFO_FIELD_INDEX = {
-    name: index for index, name in enumerate(CHUNKED_MEGA_WORK_INFO_FIELD_NAMES)
-}
-
-
-def _chunked_mega_work_info_fields(*names: str) -> tuple[int, ...]:
-    return tuple(_CHUNKED_MEGA_WORK_INFO_FIELD_INDEX[name] for name in names)
-
-
-# Fields absent from a role tuple deserialize as zero. Every new consumer read
-# must therefore add its field here instead of relying on the full work record.
-_CHUNKED_MEGA_CONSUMER_WORK_INFO_FIELDS = _chunked_mega_work_info_fields(
-    "group_idx",
-    "problem_idx",
-    "tile_m_idx",
-    "tile_n_idx",
-    "num_m_tiles",
-    "num_n_tiles",
-    "num_k_tiles",
-    "num_output_tiles",
-    "full_n_size",
-    "chunk_start",
-    "split_prefix",
-    "group_tile_prefix",
-    "scale_split_prefix",
-    "sched_chunk_idx",
-)
-CHUNKED_MEGA_WORK_INFO_ROLE_ALL: int = 0
-CHUNKED_MEGA_WORK_INFO_ROLE_TMA_B: int = 1
-CHUNKED_MEGA_WORK_INFO_ROLE_MMA: int = 2
-CHUNKED_MEGA_WORK_INFO_ROLE_EPILOGUE: int = 3
-_CHUNKED_MEGA_TMA_B_WORK_INFO_FIELDS = _chunked_mega_work_info_fields(
-    "group_idx",
-    "problem_idx",
-    "tile_m_idx",
-    "tile_n_idx",
-    "num_k_tiles",
-    "num_output_tiles",
-    "full_n_size",
-    "chunk_start",
-    "group_tile_prefix",
-    "scale_split_prefix",
-    "sched_chunk_idx",
-)
-_CHUNKED_MEGA_MMA_WORK_INFO_FIELDS = _chunked_mega_work_info_fields(
-    "group_idx",
-    "problem_idx",
-    "tile_m_idx",
-    "tile_n_idx",
-    "num_k_tiles",
-    "num_output_tiles",
-    "group_tile_prefix",
-)
-_CHUNKED_MEGA_EPILOGUE_WORK_INFO_FIELDS = _chunked_mega_work_info_fields(
-    "group_idx",
-    "problem_idx",
-    "tile_m_idx",
-    "tile_n_idx",
-    "num_m_tiles",
-    "num_n_tiles",
-    "num_k_tiles",
-    "num_output_tiles",
-    "full_n_size",
-    "chunk_start",
-    "split_prefix",
-    "group_tile_prefix",
-    "scale_split_prefix",
-    "sched_chunk_idx",
-)
-
-
 @cute.jit
 def _load_chunked_mega_work_field(
     work_info_smem_ptr: cute.Pointer,
@@ -1299,11 +492,28 @@ def publish_chunked_mega_work_info(
     work: ChunkedMegaWorkTileInfo,
     work_info_smem_ptr: cute.Pointer,
     tile_buf: Int32,
+    native_mma_tails: cutlass.Constexpr[bool] = False,
+    gather_ptrs=None,
+    block_n: cutlass.Constexpr[int] = 0,
 ) -> None:
-    base = tile_buf * Int32(CHUNKED_MEGA_WORK_INFO_FIELDS)
+    fields: cutlass.Constexpr[int] = (
+        CHUNKED_MEGA_WORK_INFO_FIELDS - 1 + int(native_mma_tails)
+    )
+    base = tile_buf * Int32(fields)
+    if cutlass.const_expr(native_mma_tails and gather_ptrs is not None):
+        if work.is_valid_tile:
+            work.mma_n = _subtile_mma_n(
+                gather_ptrs,
+                work.full_n_size,
+                work.split_prefix,
+                work.tile_n_idx,
+                block_n,
+            )
     with cute.arch.elect_one():
         for field_idx, value in enumerate(work._values()):
-            if field_idx in _CHUNKED_MEGA_CONSUMER_WORK_INFO_FIELDS:
+            if field_idx in _CHUNKED_MEGA_CONSUMER_WORK_INFO_FIELDS or (
+                native_mma_tails and field_idx == CHUNKED_MEGA_WORK_INFO_FIELDS - 1
+            ):
                 cute.arch.store(
                     work_info_smem_ptr + base + Int32(field_idx),
                     value,
@@ -1318,12 +528,16 @@ def load_chunked_mega_work_info(
     tile_buf: Int32,
     broadcast_within_warp: cutlass.Constexpr[bool] = False,
     consumer_role: cutlass.Constexpr[int] = CHUNKED_MEGA_WORK_INFO_ROLE_ALL,
+    native_mma_tails: cutlass.Constexpr[bool] = False,
 ) -> ChunkedMegaWorkTileInfo:
     work = ChunkedMegaWorkTileInfo(
         Int32(-1), *([Int32(0)] * (CHUNKED_MEGA_WORK_INFO_FIELDS - 1))
     )
     if tile_idx < Int32(_TILE_SENTINEL):
-        base = tile_buf * Int32(CHUNKED_MEGA_WORK_INFO_FIELDS)
+        fields: cutlass.Constexpr[int] = (
+            CHUNKED_MEGA_WORK_INFO_FIELDS - 1 + int(native_mma_tails)
+        )
+        base = tile_buf * Int32(fields)
         consumer_fields = _CHUNKED_MEGA_CONSUMER_WORK_INFO_FIELDS
         if cutlass.const_expr(consumer_role == CHUNKED_MEGA_WORK_INFO_ROLE_TMA_B):
             consumer_fields = _CHUNKED_MEGA_TMA_B_WORK_INFO_FIELDS
@@ -1331,6 +545,8 @@ def load_chunked_mega_work_info(
             consumer_fields = _CHUNKED_MEGA_MMA_WORK_INFO_FIELDS
         elif cutlass.const_expr(consumer_role == CHUNKED_MEGA_WORK_INFO_ROLE_EPILOGUE):
             consumer_fields = _CHUNKED_MEGA_EPILOGUE_WORK_INFO_FIELDS
+        if cutlass.const_expr(native_mma_tails):
+            consumer_fields = (*consumer_fields, CHUNKED_MEGA_WORK_INFO_FIELDS - 1)
         if cutlass.const_expr(broadcast_within_warp):
             values = [
                 _load_chunked_mega_work_field(
@@ -1772,14 +988,16 @@ class ChunkedMegaProblemVisitor:
         )
         # Same per-rank chunk rotation as the per-group schedule; FC13 and
         # FC2 walk identical rotated orders, so the schedule index pairs
-        # them (ring slots and credits key off sched_chunk_idx).
-        chunk_offset = Int32(0)
-        if num_chunks > Int32(0):
-            chunk_offset = (
-                self.local_rank
-                * ((num_chunks + self.WORLD_SIZE - 1) // self.WORLD_SIZE)
-            ) % num_chunks
-        chunk_idx = (linear + chunk_offset) % num_chunks
+        # them (ring slots and credits key off sched_chunk_idx). At
+        # WORLD_SIZE == 1 (single rank, or rows pre-shuffled by the routing
+        # layer) the rotation compiles out and chunks walk physically.
+        chunk_idx = linear
+        if cutlass.const_expr(self.WORLD_SIZE > 1):
+            chunk_idx = linear + _chunk_offset(
+                num_chunks, self.local_rank, world_size=self.WORLD_SIZE
+            )
+            if chunk_idx >= num_chunks:
+                chunk_idx -= num_chunks
         self.sched_chunk_idx = chunk_prefix + linear
         self.chunk_start = chunk_idx * Int32(self.CHUNK_ROWS)
         chunk_rows = min(
@@ -1975,13 +1193,13 @@ class ChunkedMegaProblemVisitor:
                     # Keep this decode in sync with ``_decode_global_slot``,
                     # the cross-group schedule's constexpr-``is_fc2`` twin.
                     self.sched_chunk_idx = self.chunk_prefix + linear_chunk_idx
-                    chunk_offset = Int32(0)
-                    if num_chunks > Int32(0):
-                        chunk_offset = (
-                            self.local_rank
-                            * ((num_chunks + self.WORLD_SIZE - 1) // self.WORLD_SIZE)
-                        ) % num_chunks
-                    chunk_idx = (linear_chunk_idx + chunk_offset) % num_chunks
+                    chunk_idx = linear_chunk_idx
+                    if cutlass.const_expr(self.WORLD_SIZE > 1):
+                        chunk_idx = linear_chunk_idx + _chunk_offset(
+                            num_chunks, self.local_rank, world_size=self.WORLD_SIZE
+                        )
+                        if chunk_idx >= num_chunks:
+                            chunk_idx -= num_chunks
                     self.chunk_start = chunk_idx * Int32(self.CHUNK_ROWS)
                     chunk_rows = min(
                         Int32(self.CHUNK_ROWS),
@@ -2896,10 +2114,11 @@ def _chunk_offset(
     world_size: cutlass.Constexpr[int],
 ):
     chunk_offset = cutlass.Int32(0)
-    if num_chunks > cutlass.Int32(0):
-        chunk_offset = (
-            local_rank * ceil_div(num_chunks, cutlass.Int32(world_size))
-        ) % num_chunks
+    if cutlass.const_expr(world_size > 1):
+        if num_chunks > cutlass.Int32(0):
+            chunk_offset = (
+                local_rank * ceil_div(num_chunks, cutlass.Int32(world_size))
+            ) % num_chunks
     return chunk_offset
 
 
@@ -2923,13 +2142,17 @@ def _ring_schedule_slot(
     chunk (ring waits and credits key on it) and the ring slot's row and
     scale-row bases (callers add their within-chunk offsets).
     """
-    ring_num_chunks = ceil_div(m_size, cutlass.Int32(PIPELINE_CHUNK_ROWS))
-    ring_chunk_off = _chunk_offset(ring_num_chunks, local_rank, world_size=world_size)
     ring_phys_chunk = phys_row // cutlass.Int32(PIPELINE_CHUNK_ROWS)
-    ring_sched = (
-        ring_chunk_prefix
-        + (ring_phys_chunk - ring_chunk_off + ring_num_chunks) % ring_num_chunks
-    )
+    ring_sched = ring_chunk_prefix + ring_phys_chunk
+    if cutlass.const_expr(world_size > 1):
+        ring_num_chunks = ceil_div(m_size, cutlass.Int32(PIPELINE_CHUNK_ROWS))
+        ring_chunk_off = _chunk_offset(
+            ring_num_chunks, local_rank, world_size=world_size
+        )
+        ring_sched = (
+            ring_chunk_prefix
+            + (ring_phys_chunk - ring_chunk_off + ring_num_chunks) % ring_num_chunks
+        )
     ring_slot = ring_sched % cutlass.Int32(ACTIVATION_RING_CHUNKS)
     ring_scale_page_rows: cutlass.Constexpr[int] = ((BLOCK_SIZE_N + 127) // 128) * 128
     ring_row_base = ring_slot * cutlass.Int32(PIPELINE_CHUNK_ROWS)
@@ -3017,6 +2240,17 @@ def _subtile_coords(
 
 
 @cute.jit
+def _subtile_valid_n(
+    full_n_size,
+    subtile_n_idx,
+    BLOCK_SIZE_N: cutlass.Constexpr[int],
+):
+    return cutlass.min(
+        cutlass.Int32(BLOCK_SIZE_N), full_n_size - subtile_n_idx * BLOCK_SIZE_N
+    )
+
+
+@cute.jit
 def _subtile_is_valid(
     tile_m_idx,
     tile_n_idx,
@@ -3026,3 +2260,25 @@ def _subtile_is_valid(
     if cutlass.const_expr(SWAP_AB):
         return tile_m_idx < num_output_tiles
     return tile_n_idx < num_output_tiles
+
+
+@cute.jit
+def _subtile_mma_n(
+    gather_ptrs: cute.Tensor,
+    full_n_size: cutlass.Int32,
+    split_prefix: cutlass.Int32,
+    tile_n_idx: cutlass.Int32,
+    block_n: cutlass.Constexpr[int],
+) -> cutlass.Int32:
+    assert block_n // 16 <= 32
+    padded_n = _subtile_valid_n(full_n_size, tile_n_idx, block_n)
+    # Routing stores a dense valid prefix followed by zero pointers, so one
+    # ballot over the 16-row group leaders counts the valid groups. Every lane
+    # of the warp must call this.
+    lane = cute.arch.lane_idx()
+    valid = cutlass.Boolean(False)
+    if lane * 16 < padded_n:
+        valid = gather_ptrs[split_prefix + tile_n_idx * block_n + lane * 16] != 0
+    valid_groups = cute.arch.popc(cute.arch.vote_ballot_sync(valid))
+    # Empty padding tiles still consume every operand pipeline stage.
+    return cutlass.max(valid_groups, cutlass.Int32(1)) * 16

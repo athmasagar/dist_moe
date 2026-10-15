@@ -6,9 +6,7 @@
 
 """CuTeDSL grouped GEMM for dist_moe.
 
-Persistent, warp-specialized SM100 kernel for FPROP/DGRAD/WGRAD. The
-implementation preserves the scheduling and deterministic numerical contract
-validated by internal runtime parity.
+Persistent, warp-specialized SM100 kernel for FPROP/DGRAD/WGRAD.
 
 Several @cute.kernel / @cute.jit bodies trip C901 (cyclomatic
 complexity). They are tightly coupled per-tile state machines
@@ -27,7 +25,7 @@ import cutlass.torch as cutlass_torch
 import torch
 from cutlass.cute.runtime import from_dlpack
 
-from ._environment import num_sms_per_device
+from ._environment import l2_cache_size, num_sms_per_device
 from ._kernel_name_prefix import scoped_kernel_name_prefixes
 from .config import (  # noqa: F401
     _resolve_grouped_gemm_config,
@@ -45,11 +43,6 @@ from .grouped_gemm_kernel import (
 from .tile_scheduler import _DGRAD, _FPROP, _WGRAD
 
 # ---------------------------------------------------------------------------
-# Helper utilities (index / coordinate math).
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Kernel class. Host-side __call__ builds SharedStorage + TMA atoms and
 # launches; device-side `kernel` runs the warp-specialized loop. Layout:
 #   - 4 warp groups (epilog / MMA / TMA / idle), reqntid=256
@@ -61,7 +54,7 @@ from .tile_scheduler import _DGRAD, _FPROP, _WGRAD
 
 
 # ===========================================================================
-# Host-side launchers for the grouped-GEMM kernels.
+# Host-side launchers for the `grouped_gemm_*` API.
 # They validate inputs, allocate the persistent workspace, and dispatch the
 # cached CuTe kernel.
 # ===========================================================================
@@ -85,7 +78,8 @@ def _validate_inputs(
             f"x={x.device}, w={w.device}, split_sizes={split_sizes.device}"
         )
     if split_sizes.dtype != torch.int32:
-        # Kernel-side split-size loads use int32 values.
+        # Auto-cast int64 to int32 for the launcher's split-size contract. The
+        # kernel-side reads are int32 (cute.Int32 loads).
         split_sizes = split_sizes.to(torch.int32)
     return split_sizes
 
@@ -109,8 +103,8 @@ def _dummy_offset_cute(device: torch.device):
 # on every call (build TMA atoms, SMEM layouts, partition tensors, ...),
 # which costs ~500 ms per call even on small shapes. We use `cute.compile`
 # to JIT once and cache the resulting launchable, then call it directly.
-# Cache the compiled launchable so repeated calls avoid retracing the host-side
-# setup path.
+# The compiled-kernel cache lives at this launcher boundary
+# (`_get_or_compile_kernel`).
 _KERNEL_CACHE: dict = {}
 _COMPILED_CACHE: dict = {}
 _COMPILE_LOCK = threading.Lock()
@@ -332,6 +326,8 @@ def grouped_gemm_fprop(
         local_rank,
         num_clusters,
         stream,
+        counter_cute,
+        False,
     )
     runtime_args = (
         a_cute,
@@ -358,6 +354,7 @@ def grouped_gemm_fprop(
         local_rank,
         num_clusters,
         stream,
+        counter_cute,
     )
     cache_key = (
         config,
@@ -509,6 +506,8 @@ def grouped_gemm_dgrad(
         local_rank,
         num_clusters,
         stream,
+        counter_cute,
+        False,
     )
     runtime_args = (
         a_cute,
@@ -535,6 +534,7 @@ def grouped_gemm_dgrad(
         local_rank,
         num_clusters,
         stream,
+        counter_cute,
     )
     cache_key = (
         config,
@@ -591,6 +591,52 @@ def _validate_activation_buffer_args(
         )
 
 
+_L2_WGRAD_PANEL_FRACTION: float = 0.5
+
+
+def _wgrad_raster(
+    force_n_major: bool,
+    use_ab: bool,
+    n: int,
+    k_in: int,
+    rows: int,
+    groups: int,
+    cfg: dict,
+    num_clusters: int,
+    dtype_bytes: int,
+) -> tuple[bool, int]:
+    """Default WGRAD ``(force_n_major, num_n_clusters)``.
+
+    Every output tile streams a ``rows / groups``-deep operand panel for its
+    row block (``dy``) and column block (``x``). A raster band ``w`` tiles
+    wide keeps ``w`` panels live on its fast axis and
+    ``ceil(num_clusters / w)`` on the other. Past half of L2 those panels
+    thrash to DRAM, and under the power cap the extra DRAM traffic costs
+    clock, so pick the divisor band that keeps the fewest bytes live.
+    Activation-buffer mode has no host ``rows`` and keeps the default order.
+    """
+    if force_n_major or use_ab:
+        return force_n_major, 1
+    bm, bn = cfg["BLOCK_SIZE_M"], cfg["BLOCK_SIZE_N"]
+    m_tiles, n_tiles = -(-n // bm), -(-k_in // bn)
+    panel = -(-rows // max(groups, 1)) * dtype_bytes
+
+    def live_bytes(fast_tiles: int, fast_block: int, slow_block: int) -> int:
+        slow_tiles = -(-num_clusters // fast_tiles)
+        return (fast_tiles * fast_block + slow_tiles * slow_block) * panel
+
+    best_bytes = (
+        live_bytes(m_tiles, bm, bn) if n < k_in else live_bytes(n_tiles, bn, bm)
+    )
+    if best_bytes <= l2_cache_size() * _L2_WGRAD_PANEL_FRACTION:
+        return False, 1
+    best = 1
+    for nnc in range(2, n_tiles):
+        if n_tiles % nnc == 0 and live_bytes(n_tiles // nnc, bn, bm) < best_bytes:
+            best, best_bytes = nnc, live_bytes(n_tiles // nnc, bn, bm)
+    return best > 1, best
+
+
 def grouped_gemm_wgrad(
     dy: torch.Tensor,  # (GM, N) data tensor, OR int64[1] offset tensor when activation_buffer is set
     x: torch.Tensor,  # (GM, K_in) data tensor, OR int64[1] offset tensor when activation_buffer is set
@@ -605,14 +651,18 @@ def grouped_gemm_wgrad(
     hidden_dim_x: int | None = None,
     dtype: torch.dtype | None = None,
     force_n_major: bool = False,
-    num_n_clusters: int = 1,
+    num_n_clusters: int | None = None,
     local_rank: int = 0,
     world_size: int = 1,
     static_scheduler: bool = False,
+    conditional_execution: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Compute ``wgrad[g] = dy[g].T @ x[g]`` for each group.
 
-    Two input modes are supported:
+    ``num_n_clusters=None`` picks the raster from the operand working set
+    (``_wgrad_raster``).
+
+    Two supported storage modes:
       * Direct (``activation_buffer is None``): ``dy`` and ``x`` are real
         ``(GM, N)`` / ``(GM, K_in)`` tensors.
       * Activation-buffer fast path: ``dy`` and ``x`` are int64[1] device
@@ -678,6 +728,10 @@ def grouped_gemm_wgrad(
     cfg = grouped_gemm_configs_for_dtype(dy.dtype)[config]
     NUM_CTAS = cfg["NUM_CTAS"]
     num_clusters = max(1, num_sms // NUM_CTAS)
+    if num_n_clusters is None:
+        force_n_major, num_n_clusters = _wgrad_raster(
+            force_n_major, use_ab, N, K_in, GM, G, cfg, num_clusters, x.element_size()
+        )
 
     counter, tensormaps = _allocate_workspace(num_clusters, NUM_CTAS, x.device)
 
@@ -705,7 +759,7 @@ def grouped_gemm_wgrad(
     # GM == 0 we substitute a 1-row dummy along the contraction axis. The
     # kernel still receives GM as a runtime arg and skips the k-iter loop
     # (num_k_iters=0); the epilog writes zeros via its `if num_k_tiles == 0`
-    # branch, which defines the empty-input result.
+    # branch, matching the TLX kernel's behavior for the empty-input case.
     if GM == 0:
         a_dummy = torch.empty((N, 1), dtype=dy.dtype, device=dy.device)
         b_dummy = torch.empty((K_in, 1), dtype=x.dtype, device=x.device)
@@ -797,6 +851,10 @@ def grouped_gemm_wgrad(
         local_rank,
         num_clusters,
         stream,
+        from_dlpack(conditional_execution, assumed_align=4)
+        if conditional_execution is not None
+        else counter_cute,
+        conditional_execution is not None,
     )
     runtime_args = (
         a_cute,
@@ -823,6 +881,7 @@ def grouped_gemm_wgrad(
         local_rank,
         num_clusters,
         stream,
+        compile_args[-2],
     )
     cache_key = (
         config,
@@ -840,6 +899,7 @@ def grouped_gemm_wgrad(
         wgrad.element_size(),
         use_ab,
         output_accum,
+        conditional_execution.dtype if conditional_execution is not None else None,
     )
     compiled = _compile_or_get(
         cache_key,

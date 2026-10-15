@@ -60,6 +60,12 @@ low address                                                     high address
 ```
 
 Inference saves no backward state, so the complete virtual range is scratch.
+Block-scaled VMM inference retains GPU-planned offsets and device tensor maps.
+The device-only Mega static-view optimization is not used: fixed
+capacity-sized views over this host-first layout would place active prefixes
+in host memory even when actual received work fits HBM. VMM uses the existing
+descending packing policy instead, without another allocation or host routing
+count read.
 Without VMM, both saved activations and the complete scratch range reside in
 device HBM.
 

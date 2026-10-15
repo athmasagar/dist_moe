@@ -51,13 +51,23 @@ producer routing, host helpers, and public entries.
 
 import math
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
 import torch
-from cutlass import BFloat16, Float16, Float32, Int32, Int64, Uint8, Uint32, Uint64
+from cutlass import (
+    BFloat16,
+    Float16,
+    Float32,
+    Int16,
+    Int32,
+    Int64,
+    Uint8,
+    Uint32,
+    Uint64,
+)
 from cutlass._mlir.dialects import nvvm
 
 from ..formats import (
@@ -85,10 +95,10 @@ from ..formats import (
     SWIGLU_CLAMP_ALPHA_DEFAULT,
     SWIGLU_CLAMP_LIMIT_DEFAULT,
 )
-from . import _dsl_compat as _cute_extern  # noqa: F401
 from ._cuda_context import ensure_cuda_driver_context
 from ._jit_cache import jit_cache
 from ._kernel_name_prefix import scoped_kernel_name_prefixes
+from ._quack.cute_dsl_utils import torch2cute_dtype_map
 from ._quack_compile_utils import make_fake_stream, make_fake_tensor as fake_tensor
 from ._quant_conversion import (
     _abs_f32,
@@ -191,6 +201,7 @@ _NVFP4_RECIP_LUT_CACHE: dict[tuple[str, int | None], torch.Tensor] = {}
 
 _FP32_ZERO: cutlass.Constexpr[float] = 0.0
 _FP32_ONE: cutlass.Constexpr[float] = 1.0
+
 
 # =============================================================================
 # CuTe Helpers
@@ -582,6 +593,7 @@ class _QuantizeBlockScaledRow:
             else mX.shape[1]
         )
         scale_cols = K // self.sf_vec_size
+        q_word_cols = mQWords.shape[1]
 
         lane_group: cutlass.Constexpr[int] = self.lane_group
         groups_per_cta: cutlass.Constexpr[int] = self.num_threads // lane_group
@@ -609,6 +621,7 @@ class _QuantizeBlockScaledRow:
                         scale_col,
                         lane,
                         scale_cols,
+                        q_word_cols,
                         pid_x,
                         col_in_atom,
                         n_col_blocks,
@@ -633,6 +646,7 @@ class _QuantizeBlockScaledRow:
                     scale_col,
                     lane,
                     scale_cols,
+                    q_word_cols,
                     Int32(0),
                     Int32(0),
                     Int32(0),
@@ -654,6 +668,7 @@ class _QuantizeBlockScaledRow:
         scale_col: Int32,
         lane: Int32,
         scale_cols: Int32,
+        q_word_cols: Int32,
         col_block: Int32,
         col_in_atom: Int32,
         n_col_blocks: Int32,
@@ -684,7 +699,6 @@ class _QuantizeBlockScaledRow:
             max_abs,
             self.format_id,
             self.half_range_scale,
-            use_nvfp4_no_clip_scale=False,
         )
         if lane == Int32(0):
             scale_offset = self._get_scale_offset(
@@ -994,18 +1008,9 @@ class _QuantizeNvfp4PerTokenRow:
         )
 
     @staticmethod
-    @jit_cache
-    def compile(
-        input_dtype: type[cutlass.Numeric],
-        K: int,
-        layout_id: int,
-        producer_id: int,
-        fast_math: bool,
-        clamped: bool,
-        alpha: float,
-        limit: float,
-    ) -> object:
-        _QuantizeNvfp4PerTokenRow._validate_producer_k(K, producer_id)
+    def _fake_operands(
+        input_dtype: type[cutlass.Numeric], K: int, producer_id: int
+    ) -> tuple:
         rows = cute.sym_int()
         scale_elems = cute.sym_int()
         x = cute.runtime.make_fake_tensor(
@@ -1032,13 +1037,52 @@ class _QuantizeNvfp4PerTokenRow:
         # place instead of paying a separate strided-copy launch.
         token_scale_inv = fake_tensor(Float32, (rows,), 1, leading_dim=None)
         nvfp4_recip_lut = fake_tensor(Float32, (256,), 4)
+        return (
+            x,
+            producer_b,
+            x_words,
+            q_words,
+            scale,
+            cutlass.Int64(1),
+            token_scale_inv,
+            nvfp4_recip_lut,
+        )
+
+    @staticmethod
+    def _name_prefix(
+        input_dtype: type[cutlass.Numeric],
+        K: int,
+        layout_id: int,
+        producer_id: int,
+        fast_math: bool,
+        clamped: bool,
+        alpha: float,
+        limit: float,
+    ) -> str:
         dtype_tag = _INPUT_DTYPE_TAG[input_dtype]
         producer_tag = _PRODUCER_TAG.get(producer_id, f"prod{producer_id}")
         fastmath_tag = "_fastmath" if fast_math else ""
         clamp_tag = _build_swiglu_clamp_tag(clamped, alpha, limit)
-        name_prefix = (
+        return (
             f"_cute_quantize_{producer_tag}_{dtype_tag}_nvfp4_per_token_"
             f"{_LAYOUT_TAG[layout_id]}_k{K}{fastmath_tag}{clamp_tag}"
+        )
+
+    @staticmethod
+    @jit_cache
+    def compile(
+        input_dtype: type[cutlass.Numeric],
+        K: int,
+        layout_id: int,
+        producer_id: int,
+        fast_math: bool,
+        clamped: bool,
+        alpha: float,
+        limit: float,
+    ) -> object:
+        _QuantizeNvfp4PerTokenRow._validate_producer_k(K, producer_id)
+        name_prefix = _QuantizeNvfp4PerTokenRow._name_prefix(
+            input_dtype, K, layout_id, producer_id, fast_math, clamped, alpha, limit
         )
         with scoped_kernel_name_prefixes(
             ((_QuantizeNvfp4PerTokenRow.kernel, name_prefix),)
@@ -1054,14 +1098,7 @@ class _QuantizeNvfp4PerTokenRow:
                     alpha,
                     limit,
                 ),
-                x,
-                producer_b,
-                x_words,
-                q_words,
-                scale,
-                cutlass.Int64(1),
-                token_scale_inv,
-                nvfp4_recip_lut,
+                *_QuantizeNvfp4PerTokenRow._fake_operands(input_dtype, K, producer_id),
                 cute.runtime.make_fake_stream(use_tvm_ffi_env_stream=True),
                 options="--enable-tvm-ffi",
             )
@@ -1106,7 +1143,7 @@ class _QuantizeNvfp4PerTokenRow:
         )
 
     @cute.kernel
-    def kernel(  # noqa: C901 -- fused load/reduce/quantize control flow is trace-time
+    def kernel(
         self,
         mX: cute.Tensor,
         mProducerB: cute.Tensor,
@@ -1117,8 +1154,33 @@ class _QuantizeNvfp4PerTokenRow:
         mTokenScaleInv: cute.Tensor,
         mNvfp4RecipLut: cute.Tensor,
     ) -> None:
-        tidx, _, _ = cute.arch.thread_idx()
         row, _, _ = cute.arch.block_idx()
+        self._quantize_row(
+            mX,
+            mProducerB,
+            mXWords,
+            mQWords,
+            mScale,
+            scale_row_stride,
+            mTokenScaleInv,
+            mNvfp4RecipLut,
+            row,
+        )
+
+    @cute.jit
+    def _quantize_row(  # noqa: C901 -- fused load/reduce/quantize control flow is trace-time
+        self,
+        mX: cute.Tensor,
+        mProducerB: cute.Tensor,
+        mXWords: cute.Tensor,
+        mQWords: cute.Tensor,
+        mScale: cute.Tensor,
+        scale_row_stride: Int64,
+        mTokenScaleInv: cute.Tensor,
+        mNvfp4RecipLut: cute.Tensor,
+        row: Int32,
+    ) -> None:
+        tidx, _, _ = cute.arch.thread_idx()
         lane = tidx % Int32(self.warp_size)
         warp = cute.arch.make_warp_uniform(cute.arch.warp_idx())
 
@@ -1224,7 +1286,6 @@ class _QuantizeNvfp4PerTokenRow:
                     mNvfp4RecipLut,
                     self.input_dtype,
                     values,
-                    use_nvfp4_no_clip_scale=False,
                 )
                 _store_blockscaled_xn_words(
                     mQWords,
@@ -1248,6 +1309,195 @@ class _QuantizeNvfp4PerTokenRow:
                 else:
                     scale_offset = Int64(row) * scale_row_stride + Int64(scale_col)
                 mScale[scale_offset] = scale_byte
+
+
+class _QuantizeNvfp4PerTokenRowDecodeClear(_QuantizeNvfp4PerTokenRow):
+    """Per-token NVFP4 quantization fused with the DistMoE decode routing clear.
+
+    CTAs below ``rows`` run the parent's ``_quantize_row``, so the packed
+    outputs are bit-identical to the standalone kernel. Trailing CTAs mirror
+    ``_triton_clear_decode_routing_state`` (COPY_EXPERT_IDS): they zero the
+    routing counters and pointer arrays and publish the int16 expert IDs.
+    """
+
+    CLEAR_CTA_ELEMS = 256
+
+    @staticmethod
+    @jit_cache
+    def compile(
+        input_dtype: type[cutlass.Numeric],
+        K: int,
+        layout_id: int,
+        producer_id: int,
+        fast_math: bool,
+        clamped: bool,
+        alpha: float,
+        limit: float,
+        expert_ids_dtype: type[cutlass.Numeric],
+    ) -> object:
+        ids_tag = "i32" if expert_ids_dtype is Int32 else "i64"
+        name_prefix = (
+            _QuantizeNvfp4PerTokenRow._name_prefix(
+                input_dtype, K, layout_id, producer_id, fast_math, clamped, alpha, limit
+            )
+            + f"_decode_clear_{ids_tag}"
+        )
+
+        def array(dtype: type[cutlass.Numeric]) -> object:
+            return fake_tensor(dtype, (cute.sym_int(),), 1)
+
+        with scoped_kernel_name_prefixes(
+            ((_QuantizeNvfp4PerTokenRowDecodeClear.kernel, name_prefix),)
+        ):
+            return cute.compile(
+                _QuantizeNvfp4PerTokenRowDecodeClear(
+                    input_dtype,
+                    K,
+                    layout_id,
+                    producer_id,
+                    fast_math,
+                    clamped,
+                    alpha,
+                    limit,
+                ),
+                *_QuantizeNvfp4PerTokenRow._fake_operands(input_dtype, K, producer_id),
+                array(expert_ids_dtype),  # expert_ids
+                array(Int16),  # routing_out
+                array(Int32),  # expert_counters
+                array(Int32),  # completed_ctas
+                array(Int32),  # num_tokens_per_local_experts
+                array(Int32),  # num_tokens_per_rank
+                array(Int64),  # fwd_gather_ptrs
+                array(Int64),  # scatter_ptrs
+                array(Int32),  # workspace_0
+                array(Int32),  # workspace_1
+                cutlass.Int32(1),
+                cute.runtime.make_fake_stream(use_tvm_ffi_env_stream=True),
+                options="--enable-tvm-ffi",
+            )
+
+    @cute.jit
+    def __call__(
+        self,
+        mX: cute.Tensor,
+        mProducerB: cute.Tensor,
+        mXWords: cute.Tensor,
+        mQWords: cute.Tensor,
+        mScale: cute.Tensor,
+        scale_row_stride: Int64,
+        mTokenScaleInv: cute.Tensor,
+        mNvfp4RecipLut: cute.Tensor,
+        mExpertIds: cute.Tensor,
+        mRoutingOut: cute.Tensor,
+        mExpertCounters: cute.Tensor,
+        mCompletedCtas: cute.Tensor,
+        mTokensPerLocalExpert: cute.Tensor,
+        mTokensPerRank: cute.Tensor,
+        mFwdGatherPtrs: cute.Tensor,
+        mScatterPtrs: cute.Tensor,
+        mWorkspace0: cute.Tensor,
+        mWorkspace1: cute.Tensor,
+        num_clear_ctas: Int32,
+        stream: cuda.CUstream,
+    ) -> None:
+        assert self.CLEAR_CTA_ELEMS % self.num_threads == 0
+        assert self.can_implement(
+            mX,
+            mProducerB,
+            mXWords,
+            mQWords,
+            mScale,
+            mTokenScaleInv,
+            mNvfp4RecipLut,
+            stream,
+        )
+        self.kernel(
+            mX,
+            mProducerB,
+            mXWords,
+            mQWords,
+            mScale,
+            scale_row_stride,
+            mTokenScaleInv,
+            mNvfp4RecipLut,
+            mExpertIds,
+            mRoutingOut,
+            mExpertCounters,
+            mCompletedCtas,
+            mTokensPerLocalExpert,
+            mTokensPerRank,
+            mFwdGatherPtrs,
+            mScatterPtrs,
+            mWorkspace0,
+            mWorkspace1,
+        ).launch(
+            grid=[mXWords.shape[0] + num_clear_ctas, 1, 1],
+            block=[self.num_threads, 1, 1],
+            smem=self.reduction_slots * 4,
+            stream=stream,
+        )
+
+    @cute.kernel
+    def kernel(
+        self,
+        mX: cute.Tensor,
+        mProducerB: cute.Tensor,
+        mXWords: cute.Tensor,
+        mQWords: cute.Tensor,
+        mScale: cute.Tensor,
+        scale_row_stride: Int64,
+        mTokenScaleInv: cute.Tensor,
+        mNvfp4RecipLut: cute.Tensor,
+        mExpertIds: cute.Tensor,
+        mRoutingOut: cute.Tensor,
+        mExpertCounters: cute.Tensor,
+        mCompletedCtas: cute.Tensor,
+        mTokensPerLocalExpert: cute.Tensor,
+        mTokensPerRank: cute.Tensor,
+        mFwdGatherPtrs: cute.Tensor,
+        mScatterPtrs: cute.Tensor,
+        mWorkspace0: cute.Tensor,
+        mWorkspace1: cute.Tensor,
+    ) -> None:
+        bidx, _, _ = cute.arch.block_idx()
+        num_rows = mXWords.shape[0]
+        if bidx < num_rows:
+            self._quantize_row(
+                mX,
+                mProducerB,
+                mXWords,
+                mQWords,
+                mScale,
+                scale_row_stride,
+                mTokenScaleInv,
+                mNvfp4RecipLut,
+                bidx,
+            )
+        else:
+            tidx, _, _ = cute.arch.thread_idx()
+            base = (bidx - num_rows) * Int32(self.CLEAR_CTA_ELEMS)
+            for rep in cutlass.range_constexpr(
+                self.CLEAR_CTA_ELEMS // self.num_threads
+            ):
+                off = base + Int32(rep * self.num_threads) + tidx
+                if off < mFwdGatherPtrs.shape[0]:
+                    mFwdGatherPtrs[off] = Int64(0)
+                if off < mScatterPtrs.shape[0]:
+                    mScatterPtrs[off] = Int64(0)
+                if off < mExpertCounters.shape[0]:
+                    mExpertCounters[off] = Int32(0)
+                if off < mTokensPerLocalExpert.shape[0]:
+                    mTokensPerLocalExpert[off] = Int32(0)
+                if off < mTokensPerRank.shape[0]:
+                    mTokensPerRank[off] = Int32(0)
+                if off < mCompletedCtas.shape[0]:
+                    mCompletedCtas[off] = Int32(0)
+                if off < mWorkspace0.shape[0]:
+                    mWorkspace0[off] = Int32(0)
+                if off < mWorkspace1.shape[0]:
+                    mWorkspace1[off] = Int32(0)
+                if off < mRoutingOut.shape[0]:
+                    mRoutingOut[off] = Int16(mExpertIds[off])
 
 
 # -----------------------------------------------------------------------------
@@ -1609,7 +1859,7 @@ class _QuantizeBlockScaledRowCol:
             if cutlass.const_expr(
                 self.axis_mask == AXIS_MASK_M
                 and self.producer_id == BLOCK_SCALED_PRODUCER_ZEROCOPY_GATHER
-                and not self.is_fp4
+                and (not self.is_fp4)
             ):
                 tiles_per_cta: cutlass.Constexpr[int] = (
                     self.col1d_m_blocks * self.gather_scale_cols_per_tile
@@ -1805,7 +2055,7 @@ class _QuantizeBlockScaledRowCol:
             if cutlass.const_expr(self.axis_mask == AXIS_MASK_M):
                 if cutlass.const_expr(
                     self.producer_id == BLOCK_SCALED_PRODUCER_ZEROCOPY_GATHER
-                    and not self.is_fp4
+                    and (not self.is_fp4)
                 ):
                     self._run_gather_col_fp8_vectorized(
                         mX,
@@ -1976,7 +2226,6 @@ class _QuantizeBlockScaledRowCol:
                     self.format_id,
                     self.half_range_scale,
                     mNvfp4RecipLut,
-                    use_nvfp4_no_clip_scale=False,
                 )
             )
             # Compute the per-row clamped scaled values once; reuse the
@@ -2029,7 +2278,6 @@ class _QuantizeBlockScaledRowCol:
                     self.format_id,
                     self.half_range_scale,
                     mNvfp4RecipLut,
-                    use_nvfp4_no_clip_scale=False,
                 )
             )
             if active:
@@ -2069,7 +2317,6 @@ class _QuantizeBlockScaledRowCol:
                     self.format_id,
                     self.half_range_scale,
                     mNvfp4RecipLut,
-                    use_nvfp4_no_clip_scale=False,
                 )
             )
             if tidx < Int32(SF_VEC):
@@ -2557,7 +2804,6 @@ class _QuantizeBlockScaledRowCol:
         cols,
         col_start,
         pid_m,
-        lane,
         lane_row,
         packed_b16: cutlass.Constexpr[bool],
     ):
@@ -2730,7 +2976,6 @@ class _QuantizeBlockScaledRowCol:
                 self.format_id,
                 self.half_range_scale,
                 mNvfp4RecipLut,
-                use_nvfp4_no_clip_scale=False,
             )
         )
         self._store_row_qdata_words(
@@ -2782,7 +3027,6 @@ class _QuantizeBlockScaledRowCol:
                 self.format_id,
                 self.half_range_scale,
                 mNvfp4RecipLut,
-                use_nvfp4_no_clip_scale=False,
             )
         )
         self._store_col_scale(
@@ -2904,7 +3148,6 @@ class _QuantizeBlockScaledRowCol:
                     self.format_id,
                     self.half_range_scale,
                     mNvfp4RecipLut,
-                    use_nvfp4_no_clip_scale=False,
                 )
             )
             self._store_col_scale(
@@ -3058,7 +3301,6 @@ class _QuantizeBlockScaledRowCol:
                 cols=cols,
                 col_start=col_start,
                 pid_m=pid_m,
-                lane=lane,
                 lane_row=lane_row,
                 packed_b16=True,
             )
@@ -3136,7 +3378,6 @@ class _QuantizeBlockScaledRowCol:
                 cols=cols,
                 col_start=col_start,
                 pid_m=pid_m,
-                lane=lane,
                 lane_row=lane_row,
                 packed_b16=False,
             )
@@ -4262,8 +4503,8 @@ def _prepare_row_col_word_views(
     if (
         producer_id == BLOCK_SCALED_PRODUCER_SWIGLU_BWD_DXY
         and row_col_kernel_mode != _ROW_COL_KERNEL_MODE_SWIGLU_BWD_DXY_FP8_TILE
-        and scale_reduction_id == SCALE_REDUCTION_ONE_D
-        and source_cols == x.shape[1]
+        and (scale_reduction_id == SCALE_REDUCTION_ONE_D)
+        and (source_cols == x.shape[1])
     ):
         row_col_kernel_mode = _AXES_KERNEL_MODE_SWIGLU_BWD_DXY_F32X2_VECTOR
 
@@ -4522,9 +4763,6 @@ def _try_quantize_swiglu_fwd_fp8_tile(
             col_scale.view(torch.uint8).view(-1),
             row_scale.view(torch.uint8).view(-1),
             nvfp4_recip_lut,
-            None,
-            cutlass.Int64(0),
-            cutlass.Int64(1),
             cutlass.Int32(n_cols),
             cutlass.Int32(0),
             cutlass.Int32(1),
@@ -4852,8 +5090,14 @@ def _quantize_nvfp4_per_token(  # noqa: C901 -- producer-specific host validatio
     q_out: torch.Tensor | None = None,
     scale_out: torch.Tensor | None = None,
     token_scale_inv_out: torch.Tensor | None = None,
+    decode_clear: Any = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Quantize each activation row with a fused dynamic NVFP4 global scale."""
+    """Quantize each activation row with a fused dynamic NVFP4 global scale.
+
+    With ``decode_clear`` (identity producer only), the same launch also
+    zeroes the DistMoE decode routing state and publishes the int16 expert
+    IDs; the quantized outputs stay bit-identical to the standalone kernel.
+    """
     clamped, alpha, limit = canonical_swiglu_clamp(clamped, alpha, limit)
     is_swiglu = producer_id == BLOCK_SCALED_PRODUCER_SWIGLU_FWD
     if producer_id not in (
@@ -4928,30 +5172,47 @@ def _quantize_nvfp4_per_token(  # noqa: C901 -- producer-specific host validatio
     else:
         token_scale_inv = torch.empty((rows,), dtype=torch.float32, device=x.device)
     if rows == 0:
+        if decode_clear is not None:
+            raise ValueError("decode_clear requires at least one activation row")
         return q, scale, token_scale_inv
 
     scale_storage = _dynamic_nvfp4_scale_storage(scale_bytes)
+    compile_args = (
+        _TORCH_TO_CUTE_INPUT_DTYPE[x.dtype],
+        K,
+        SCALE_FACTOR_LAYOUT_IDS[layout],
+        producer_id,
+        fast_math,
+        clamped,
+        alpha,
+        limit,
+    )
+    operands = (
+        x,
+        producer_b,
+        q_bytes.view(torch.uint32) if is_swiglu else x.view(torch.uint32),
+        q_bytes.view(torch.uint32),
+        scale_storage,
+        cutlass.Int64(scale_bytes.stride(0)),
+        token_scale_inv,
+        get_nvfp4_recip_lut(x.device),
+    )
+    if decode_clear is None:
+        with ensure_cuda_driver_context():
+            _QuantizeNvfp4PerTokenRow.compile(*compile_args)(*operands)
+        return q, scale, token_scale_inv
 
+    if is_swiglu:
+        raise NotImplementedError("decode_clear requires the identity producer")
+    expert_ids = decode_clear.expert_ids
+    if expert_ids.numel() != decode_clear.routing_out.numel():
+        raise ValueError("decode_clear expert_ids and routing_out sizes differ")
+    clear_elems = _QuantizeNvfp4PerTokenRowDecodeClear.CLEAR_CTA_ELEMS
+    num_clear_ctas = -(-max(t.numel() for t in decode_clear[1:]) // clear_elems)
     with ensure_cuda_driver_context():
-        _QuantizeNvfp4PerTokenRow.compile(
-            _TORCH_TO_CUTE_INPUT_DTYPE[x.dtype],
-            K,
-            SCALE_FACTOR_LAYOUT_IDS[layout],
-            producer_id,
-            fast_math,
-            clamped,
-            alpha,
-            limit,
-        )(
-            x,
-            producer_b,
-            q_bytes.view(torch.uint32) if is_swiglu else x.view(torch.uint32),
-            q_bytes.view(torch.uint32),
-            scale_storage,
-            cutlass.Int64(scale_bytes.stride(0)),
-            token_scale_inv,
-            get_nvfp4_recip_lut(x.device),
-        )
+        _QuantizeNvfp4PerTokenRowDecodeClear.compile(
+            *compile_args, torch2cute_dtype_map[expert_ids.dtype]
+        )(*operands, *decode_clear, cutlass.Int32(num_clear_ctas))
     return q, scale, token_scale_inv
 
 
@@ -5062,6 +5323,7 @@ def quantize_block_scaled(  # noqa: C901 -- host validation/launch setup is form
     if format in (BlockScaledFormat.NVFP4, BlockScaledFormat.MXFP4):
         if K % 2 != 0:
             raise ValueError(f"FP4 output requires an even K dimension, got {K}")
+
     if is_zerocopy_gather:
         x_2d = x
         assert gather_dtype is not None
@@ -5325,8 +5587,8 @@ def quantize_block_scaled_axes(  # noqa: C901 -- host launch setup is format/mod
     if (
         not is_zerocopy_gather
         and grouped_shape is None
-        and producer_id == BLOCK_SCALED_PRODUCER_SWIGLU_FWD
-        and scale_reduction_id == SCALE_REDUCTION_ONE_D
+        and (producer_id == BLOCK_SCALED_PRODUCER_SWIGLU_FWD)
+        and (scale_reduction_id == SCALE_REDUCTION_ONE_D)
     ):
         specialized = _try_quantize_swiglu_fwd_fp8_tile(
             x,

@@ -22,6 +22,7 @@ import cutlass.cute as cute
 import torch
 from cutlass import const_expr, Float32
 from cutlass._mlir.dialects import llvm
+from cutlass.cute.nvgpu import cpasync
 from cutlass.cutlass_dsl import dsl_user_op, T
 
 # Row bytes each pipeline lane moves per vector access; sized for
@@ -31,6 +32,33 @@ _LANE_BYTES = 16
 _MAX_WARP_SMEM_BYTES = 32 * 1024
 # Conservative per-CTA smem ceiling (sm_100a allows ~227KB per block).
 _MAX_CTA_SMEM_BYTES = 224 * 1024
+
+
+def _make_row_tma_atom(op, m: cute.Tensor, tiler_mn):
+    """Row-tile TMA atom with the row mode pre-split into (box, tN // box).
+
+    The split (box = gcd(tN, 256), mirrored on the gmem view and the smem
+    layout - the descriptor rank follows the gmem leaf modes) fits the
+    whole (tile_m, tN) tile in one multi-dim TMA box, so each
+    ``cute.copy`` lowers to a single ``cp.async.bulk.tensor`` instead of
+    tN/box elect_one-guarded box copies whose issue cost hinges on an
+    unreliable ptxas elect-merge. Smem bytes are laid out identically.
+    Falls back to the flat (unrolled) form when the rest mode exceeds the
+    256 box cap or box does not divide N.
+    """
+    tile_m, tN = tiler_mn
+    M, N = m.shape
+    box = math.gcd(tN, 256)
+    rest = tN // box
+    if rest == 1 or rest > 256 or N % box != 0:
+        smem_layout = cute.make_ordered_layout(tiler_mn, order=(1, 0))
+    else:
+        smem_layout = cute.make_layout((tile_m, (box, rest)), stride=(tN, (1, box)))
+        m = cute.make_tensor(
+            m.iterator,
+            cute.make_layout((M, (box, N // box)), stride=(m.stride[0], (1, box))),
+        )
+    return cpasync.make_tiled_tma_atom(op, m, smem_layout, tiler_mn)
 
 
 @dsl_user_op
@@ -285,7 +313,7 @@ def _plan_grid(
     if not torch.cuda.is_available():
         raise ValueError("the small-D RMSNorm kernels require CUDA")
     props = torch.cuda.get_device_properties(torch.cuda.current_device())
-    sm_smem = getattr(props, "shared_memory_per_multiprocessor", 228 * 1024)
+    sm_smem = props.shared_memory_per_multiprocessor
     cta_smem = warps_per_cta * stages * chunk_bytes
     ctas_per_sm = max(1, min(sm_smem // cta_smem, 2048 // (warps_per_cta * 32)))
     cap = props.multi_processor_count * ctas_per_sm

@@ -555,6 +555,9 @@ class MemoryPlan:
         vmm_device_scratch_section_bytes: Mapped hot device-scratch size.
         vmm_padding_bytes: Physical bytes added for VMM alignment and PyTorch
             caching-allocator block rounding.
+        inference_operand_bytes: Device-resolved physical Mega inference
+            operand requirement. ``None`` for VMM, non-Mega execution, or a
+            plan without a resolved device/SM count.
     """
 
     balanced_recv_rows: int
@@ -580,6 +583,7 @@ class MemoryPlan:
     vmm_host_section_bytes: int | None
     vmm_device_scratch_section_bytes: int | None
     vmm_padding_bytes: int
+    inference_operand_bytes: int | None = None
 
     @property
     def uses_host_scratch(self) -> bool:
@@ -665,6 +669,11 @@ class MemoryPlan:
             f"  virtual address range: {_size(self.total_virtual_bytes)}; {recompute}",
             capacity_boundary,
         ]
+        if self.inference_operand_bytes is not None:
+            lines.append(
+                "  physical Mega inference operands: "
+                f"{_size(self.inference_operand_bytes)} (within device scratch)"
+            )
         if self.vmm_granularity_bytes is not None:
             assert self.vmm_device_prefix_bytes is not None
             assert self.vmm_host_section_bytes is not None
@@ -828,12 +837,24 @@ def _model_config(
     )
 
 
-def _bf16_compute_config(config: Config, *, wgrad: bool = False) -> str | None:
+def _bf16_compute_config(
+    config: Config,
+    *,
+    wgrad: bool = False,
+    routed_rows: int | None = None,
+    num_groups: int = 1,
+    combine_fprop: bool = False,
+) -> str | None:
     """Resolve an explicit, inference-auto, or pinned training schedule.
 
     Args:
         config: Public distributed MoE configuration.
         wgrad: Whether the caller is launching WGRAD instead of FPROP/DGRAD.
+        routed_rows: Host estimate ``T * top_k``; actual route counts remain
+            on device and are never truncated to this estimate.
+        num_groups: Local expert count used by the source's per-expert policy.
+        combine_fprop: Whether this is W2 forward combine, whose source policy
+            has a separate large-row tile threshold.
 
     Returns:
         Explicit or measured training config, or ``None`` for inference auto
@@ -843,10 +864,15 @@ def _bf16_compute_config(config: Config, *, wgrad: bool = False) -> str | None:
         return config.bf16_grouped_gemm_preset
     from .kernels.config import grouped_gemm_training_config
 
-    return grouped_gemm_training_config(wgrad=wgrad)
+    return grouped_gemm_training_config(
+        wgrad=wgrad,
+        routed_rows=routed_rows,
+        num_groups=num_groups,
+        combine_fprop=combine_fprop,
+    )
 
 
-def plan_memory(
+def plan_memory(  # noqa: C901 -- resolve one coherent activation/scratch allocation
     config: Config,
     ep_size: int,
     *,
@@ -857,8 +883,11 @@ def plan_memory(
     Args:
         config: Static distributed MoE configuration.
         ep_size: Number of expert-parallel ranks.
-        device: Optional CUDA device used to resolve exact VMM physical-section
-            alignment. Omitting it returns the logical byte requirements.
+        device: Optional CUDA device used to resolve VMM physical-section
+            alignment and the SM-dependent Mega inference operand envelope.
+            An explicit ``config.num_sms`` resolves the device-only Mega
+            envelope without a device. Without either, its envelope remains
+            unresolved; other byte requirements remain logical.
 
     Returns:
         Immutable memory plan shared by prefetch and context allocation.
@@ -930,6 +959,26 @@ def plan_memory(
             host_scratch = max(0, total_scratch - device_scratch)
         else:
             host_scratch = model_config.host_scratch_mem_size(total_factor)
+    inference_operand_bytes = None
+    if (
+        config.inference
+        and config.block_scaled is not None
+        and config.block_scaled.pipeline == "mega"
+        and config.vmm is None
+        and (device is not None or config.num_sms is not None)
+    ):
+        from ._inference_memory import _inference_operand_bytes
+
+        num_sms = config.num_sms
+        if num_sms is None:
+            num_sms = torch.cuda.get_device_properties(device).multi_processor_count
+        inference_operand_bytes = _inference_operand_bytes(
+            config,
+            ep_size=ep_size,
+            capacity_rows=model_config.max_recv_tokens,
+            num_sms=num_sms,
+        )
+        device_scratch = max(device_scratch, inference_operand_bytes)
     if config.inference:
         maximum_useful_slot_bytes = 0
         selected_slot_bytes = 0
@@ -993,6 +1042,7 @@ def plan_memory(
         vmm_host_section_bytes=None,
         vmm_device_scratch_section_bytes=None,
         vmm_padding_bytes=0,
+        inference_operand_bytes=inference_operand_bytes,
     )
     if config.vmm is not None and host_scratch > 0 and device is not None:
         return _resolve_vmm_physical_plan(plan, _resolve_cuda_device(device))
@@ -1633,6 +1683,14 @@ def create_context(  # noqa: C901
         )
     activation_buffer.scratch_capacity_factor = plan.total_scratch_capacity_factor
     activation_buffer.model_config = _model_config(config, ep_size=world_size)
+    if plan.inference_operand_bytes is not None:
+        # Static inference views reserve scratch without invoking the offset
+        # planner. Reset must retain that reservation in its peak accounting.
+        free_bytes = (
+            activation_buffer.scratch_region_size - plan.inference_operand_bytes
+        )
+        activation_buffer.peak_min_free_space.fill_(free_bytes)
+        activation_buffer.initial_peak_min_free_space.fill_(free_bytes)
     with _CONTEXT_LOCK:
         context_id = str(next(_CONTEXT_IDS))
         context = Context._create(
@@ -1883,6 +1941,7 @@ class _Bf16Autograd(torch.autograd.Function):
             swiglu_fwd,
         )
         from dist_moe.kernels.dist_grouped_gemm import (
+            _native_swiglu_fwd_config_is_compatible,
             dist_grouped_gemm_fprop_combine,
             dist_grouped_gemm_fprop_dispatch,
         )
@@ -1901,7 +1960,9 @@ class _Bf16Autograd(torch.autograd.Function):
         num_local_input_tokens = x_TD.shape[0]
         local_rank = dist.get_rank(context.group)
         routing_local_TK = _routing_ids_view(
-            buffers.routing, local_rank, topk_expert_ids_TK.shape
+            buffers.routing,
+            local_rank,
+            (topk_expert_ids_TK.shape[0], topk_expert_ids_TK.shape[1]),
         )
         routing_token_count_1 = _routing_token_count_view(
             buffers.routing,
@@ -1980,7 +2041,20 @@ class _Bf16Autograd(torch.autograd.Function):
             scratch_only=scratch_only,
         )
         estimated_num_recv_rows = max(1, num_local_input_tokens * context.top_k)
-        fprop_config = _bf16_compute_config(config)
+        fprop_config = _bf16_compute_config(
+            config, routed_rows=estimated_num_recv_rows, num_groups=w13_EFD.shape[0]
+        )
+        combine_config = _bf16_compute_config(
+            config,
+            routed_rows=estimated_num_recv_rows,
+            num_groups=w13_EFD.shape[0],
+            combine_fprop=True,
+        )
+        fused_swiglu_forward = (
+            options.swiglu_clip_stats_out_3 is None
+            and fprop_config is not None
+            and _native_swiglu_fwd_config_is_compatible(fprop_config, w2_EDF.shape[2])
+        )
 
         # 3. Retain the local input only when backward may need device-selected
         # recomputation; all other intermediates follow the planner offsets.
@@ -2013,20 +2087,27 @@ class _Bf16Autograd(torch.autograd.Function):
                 x_gathered=forward_plan.x_gathered_offset,
                 config=fprop_config,
                 estimate_recv_num_tokens=estimated_num_recv_rows,
+                swiglu_h2=forward_plan.h2_offset if fused_swiglu_forward else None,
+                swiglu_clamped=config.activation == "swiglu_clamped",
+                swiglu_alpha=config.swiglu_alpha,
+                swiglu_limit=config.swiglu_limit,
             )
-            swiglu_fwd(
-                x=forward_plan.h1_offset,
-                z=forward_plan.h2_offset,
-                clamped=config.activation == "swiglu_clamped",
-                alpha=config.swiglu_alpha,
-                limit=config.swiglu_limit,
-                activation_buffer=activation_buffer.buffer,
-                num_recv_tokens=num_recv_rows_1,
-                feature_dim=w2_EDF.shape[2],
-                dtype=w2_EDF.dtype,
-                clip_stats_out=options.swiglu_clip_stats_out_3,
-                clip_limit=options.swiglu_clip_limit,
-            )
+            # Clip observation and unsupported explicit presets retain the
+            # standalone activation; eligible dispatch emits both H1 and H2.
+            if not fused_swiglu_forward:
+                swiglu_fwd(
+                    x=forward_plan.h1_offset,
+                    z=forward_plan.h2_offset,
+                    clamped=config.activation == "swiglu_clamped",
+                    alpha=config.swiglu_alpha,
+                    limit=config.swiglu_limit,
+                    activation_buffer=activation_buffer.buffer,
+                    num_recv_tokens=num_recv_rows_1,
+                    feature_dim=w2_EDF.shape[2],
+                    dtype=w2_EDF.dtype,
+                    clip_stats_out=options.swiglu_clip_stats_out_3,
+                    clip_limit=options.swiglu_clip_limit,
+                )
             h3_MD = dist_grouped_gemm_fprop_combine(
                 x=forward_plan.h2_offset,
                 w=w2_EDF,
@@ -2035,7 +2116,7 @@ class _Bf16Autograd(torch.autograd.Function):
                 symm_mem_buffer=buffers.combine,
                 num_sms=config.num_sms,
                 activation_buffer=activation_buffer.buffer,
-                config=fprop_config,
+                config=combine_config,
                 estimate_recv_num_tokens=estimated_num_recv_rows,
             )
             h3_MD = h3_MD.view(-1, context.hidden_dim)[
@@ -2107,20 +2188,21 @@ class _Bf16Autograd(torch.autograd.Function):
         return output_TD
 
     @staticmethod
-    def backward(ctx: Any, grad_output_TD: torch.Tensor) -> tuple[Any, ...]:
+    def backward(ctx: Any, *grad_outputs: torch.Tensor) -> tuple[Any, ...]:
         """Run the eager callback-compatible backward implementation.
 
         Args:
             ctx: Autograd context populated by ``forward``.
-            grad_output_TD: Gradient of the local MoE output.
+            *grad_outputs: The single gradient of the local MoE output.
 
         Returns:
             Gradients matching every ``forward`` argument.
         """
+        (grad_output_TD,) = grad_outputs
         return _Bf16Autograd._backward_impl(ctx, grad_output_TD)
 
     @staticmethod
-    def _backward_impl(
+    def _backward_impl(  # noqa: C901 -- preserve the backward scratch and gradient ordering
         ctx: Any,
         grad_output_TD: torch.Tensor,
         *,
@@ -2209,11 +2291,15 @@ class _Bf16Autograd(torch.autograd.Function):
         from dist_moe.kernels.dist_grouped_gemm import (
             dist_grouped_gemm_dgrad_combine,
             dist_grouped_gemm_dgrad_dispatch,
+            dist_grouped_gemm_dgrad_swiglu_bwd_combine,
             dist_grouped_gemm_fprop_combine,
             dist_grouped_gemm_fprop_dispatch,
         )
         from dist_moe.kernels.grouped_gemm import (
             grouped_gemm_wgrad,
+        )
+        from dist_moe.kernels.native_combine_swiglu import (
+            native_swiglu_bwd_col_multiple,
         )
 
         # 2. Rebuild typed plan views from saved scalar offsets, then let the
@@ -2236,12 +2322,25 @@ class _Bf16Autograd(torch.autograd.Function):
             model_config=ctx.model_config,
         )
         estimated_num_recv_rows = max(1, num_local_input_tokens * context.top_k)
-        fprop_config = _bf16_compute_config(config)
-        wgrad_config = _bf16_compute_config(config, wgrad=True)
+        fprop_config = _bf16_compute_config(
+            config, routed_rows=estimated_num_recv_rows, num_groups=w13_EFD.shape[0]
+        )
+        combine_config = _bf16_compute_config(
+            config,
+            routed_rows=estimated_num_recv_rows,
+            num_groups=w13_EFD.shape[0],
+            combine_fprop=True,
+        )
+        wgrad_config = _bf16_compute_config(
+            config,
+            wgrad=True,
+            routed_rows=estimated_num_recv_rows,
+            num_groups=w13_EFD.shape[0],
+        )
         assert fprop_config is not None and wgrad_config is not None
 
-        # 3. Recompute kernels remain in the graph and use the device predicate
-        # to become no-ops when forward state was retained.
+        # 3. Recompute H1/H3 only when needed. H2 is always transient scratch,
+        # so its activation kernel runs even when H1 was saved.
         _initialize_fake_peer_scatter_output(buffers.combine)
         with record_function("dist_moe_recompute"):
             dispatch_local_TD = buffers.dispatch.hdl.get_buffer(
@@ -2272,6 +2371,8 @@ class _Bf16Autograd(torch.autograd.Function):
                 config=fprop_config,
                 estimate_recv_num_tokens=estimated_num_recv_rows,
             )
+            # H2 is always transient scratch, even when H1 was saved. Rebuild
+            # it unconditionally before W2 WGRAD, matching the internal order.
             swiglu_fwd(
                 x=backward_plan.h1_offset,
                 z=backward_plan.h2_offset,
@@ -2292,7 +2393,7 @@ class _Bf16Autograd(torch.autograd.Function):
                 num_sms=config.num_sms,
                 activation_buffer=activation_buffer.buffer,
                 conditional_execution=need_recompute,
-                config=fprop_config,
+                config=combine_config,
                 estimate_recv_num_tokens=estimated_num_recv_rows,
             )
             h3_saved_MD = h3_saved_MD.view(-1, context.hidden_dim)[
@@ -2388,29 +2489,49 @@ class _Bf16Autograd(torch.autograd.Function):
                 "w2",
                 grad_w2_EDF,
             )
-            swiglu_bwd(
-                dz=backward_plan.grad_h2_offset,
-                x=backward_plan.h1_offset,
-                dxy=backward_plan.grad_h1_offset,
-                clamped=config.activation == "swiglu_clamped",
-                alpha=config.swiglu_alpha,
-                limit=config.swiglu_limit,
-                activation_buffer=activation_buffer.buffer,
-                num_recv_tokens=num_recv_rows_1,
-                feature_dim=w2_EDF.shape[2],
-                dtype=w2_EDF.dtype,
-            )
             _initialize_fake_peer_scatter_output(buffers.dispatch)
-            grad_x_TKD = dist_grouped_gemm_dgrad_combine(
-                dy=backward_plan.grad_h1_offset,
-                w=w13_EFD,
-                num_tokens_per_local_expert=num_recv_rows_per_local_expert_E,
-                scatter_ptrs=dispatch_bwd_gather_ptrs_M,
-                symm_mem_buffer=buffers.dispatch,
-                num_sms=config.num_sms,
-                activation_buffer=activation_buffer.buffer,
-                config=fprop_config,
-            )
+            # W2 WGRAD has consumed H2 before its scratch may be reused for
+            # grad_H1. Fusion writes grad_H1 into that same planned destination.
+            if w2_EDF.shape[2] % native_swiglu_bwd_col_multiple() == 0:
+                grad_x_TKD, _ = dist_grouped_gemm_dgrad_swiglu_bwd_combine(
+                    grad_h2=backward_plan.grad_h2_offset,
+                    h1=backward_plan.h1_offset,
+                    w=w13_EFD,
+                    num_tokens_per_local_expert=num_recv_rows_per_local_expert_E,
+                    scatter_ptrs=dispatch_bwd_gather_ptrs_M,
+                    symm_mem_buffer=buffers.dispatch,
+                    grad_h1=backward_plan.grad_h1_offset,
+                    num_sms=config.num_sms,
+                    activation_buffer=activation_buffer.buffer,
+                    config=fprop_config,
+                    estimate_recv_num_tokens=estimated_num_recv_rows,
+                    swiglu_clamped=config.activation == "swiglu_clamped",
+                    swiglu_alpha=config.swiglu_alpha,
+                    swiglu_limit=config.swiglu_limit,
+                )
+            else:
+                swiglu_bwd(
+                    dz=backward_plan.grad_h2_offset,
+                    x=backward_plan.h1_offset,
+                    dxy=backward_plan.grad_h1_offset,
+                    clamped=config.activation == "swiglu_clamped",
+                    alpha=config.swiglu_alpha,
+                    limit=config.swiglu_limit,
+                    activation_buffer=activation_buffer.buffer,
+                    num_recv_tokens=num_recv_rows_1,
+                    feature_dim=w2_EDF.shape[2],
+                    dtype=w2_EDF.dtype,
+                )
+                grad_x_TKD = dist_grouped_gemm_dgrad_combine(
+                    dy=backward_plan.grad_h1_offset,
+                    w=w13_EFD,
+                    num_tokens_per_local_expert=num_recv_rows_per_local_expert_E,
+                    scatter_ptrs=dispatch_bwd_gather_ptrs_M,
+                    symm_mem_buffer=buffers.dispatch,
+                    num_sms=config.num_sms,
+                    activation_buffer=activation_buffer.buffer,
+                    config=fprop_config,
+                )
             grad_x_TKD = grad_x_TKD.view(-1, context.hidden_dim)[
                 : num_local_input_tokens * context.top_k
             ].view(num_local_input_tokens, context.top_k, context.hidden_dim)
@@ -2656,31 +2777,14 @@ def _dist_moe_custom_op_meta(
     Returns:
         Empty tensor with the output shape, dtype, and device metadata.
     """
-    del (
-        topk_expert_ids_TK,
-        topk_scores_TK,
-        w13_EFD,
-        w2_EDF,
-        rmsnorm_weight_D,
-        rmsnorm_enabled,
-        rmsnorm_eps,
-        rmsnorm_norm_output_dtype,
-        rmsnorm_output_dtype,
-        rmsnorm_require_bitwise,
-        rmsnorm_gain_center,
-        rmsnorm_use_kahan,
-        rmsnorm_recompute_rstd,
-        activation_storage,
-        activation_slot_id_1,
-        num_moe_layers_in_slot,
-        routing_storage,
-        dispatch_storage,
-        combine_storage,
-        swiglu_clip_stats_out_3,
-        swiglu_clip_limit,
-        validate_expert_ids,
-        context_id,
-    )
+    del topk_expert_ids_TK, topk_scores_TK, w13_EFD
+    del w2_EDF, rmsnorm_weight_D, rmsnorm_enabled
+    del rmsnorm_eps, rmsnorm_norm_output_dtype, rmsnorm_output_dtype
+    del rmsnorm_require_bitwise, rmsnorm_gain_center, rmsnorm_use_kahan
+    del rmsnorm_recompute_rstd, activation_storage, activation_slot_id_1
+    del num_moe_layers_in_slot, routing_storage, dispatch_storage
+    del combine_storage, swiglu_clip_stats_out_3, swiglu_clip_limit
+    del validate_expert_ids, context_id
     return torch.empty_like(x_TD)
 
 
@@ -2780,11 +2884,15 @@ def _run_registered_bf16_forward(
     postprocess_context = saved_tensors[-1]
     if postprocess_context is None:
         postprocess_context = x_TD.new_empty(0)
-    return output_TD, [
+    state_tensors = []
+    for tensor in (
         *saved_tensors[4:11],
         forward_state_6,
         postprocess_context,
-    ]
+    ):
+        assert tensor is not None
+        state_tensors.append(tensor)
+    return output_TD, state_tensors
 
 
 @torch.library.custom_op(
@@ -2908,19 +3016,10 @@ def _fake_registered_bf16_forward(
         Fake output followed by fixed-shape routing and planner tensors,
         including the six-element BF16 planner state.
     """
-    del (
-        topk_scores_TK,
-        w2_EDF,
-        rmsnorm_weight_D,
-        rmsnorm_eps,
-        rmsnorm_output_dtype,
-        rmsnorm_require_bitwise,
-        rmsnorm_gain_center,
-        rmsnorm_use_kahan,
-        activation_slot_id_1,
-        num_moe_layers_in_slot,
-        validate_expert_ids,
-    )
+    del topk_scores_TK, w2_EDF, rmsnorm_weight_D
+    del rmsnorm_eps, rmsnorm_output_dtype, rmsnorm_require_bitwise
+    del rmsnorm_gain_center, rmsnorm_use_kahan, activation_slot_id_1
+    del num_moe_layers_in_slot, validate_expert_ids
     context = _get_context(context_id)
     num_local_experts = w13_EFD.shape[0]
     world_size = context.config.num_experts // num_local_experts
@@ -3392,18 +3491,10 @@ def _bf16_backward_fake(
     Returns:
         Fake gradients for input, routing scores, w13, and w2.
     """
-    del (
-        topk_expert_ids_TK,
-        state_tensors,
-        rmsnorm_enabled,
-        rmsnorm_eps,
-        rmsnorm_norm_output_dtype,
-        rmsnorm_output_dtype,
-        rmsnorm_require_bitwise,
-        rmsnorm_use_kahan,
-        rmsnorm_recompute_rstd,
-        context_id,
-    )
+    del topk_expert_ids_TK, state_tensors, rmsnorm_enabled
+    del rmsnorm_eps, rmsnorm_norm_output_dtype, rmsnorm_output_dtype
+    del rmsnorm_require_bitwise, rmsnorm_use_kahan, rmsnorm_recompute_rstd
+    del context_id
     return (
         torch.empty_like(grad_output_TD),
         torch.empty_like(topk_scores_TK),
@@ -3433,18 +3524,10 @@ def _bf16_backward_accumulate_fake(
     context_id: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return non-WGRAD metadata for a fake accumulating BF16 backward."""
-    del (
-        topk_expert_ids_TK,
-        state_tensors,
-        rmsnorm_enabled,
-        rmsnorm_eps,
-        rmsnorm_norm_output_dtype,
-        rmsnorm_output_dtype,
-        rmsnorm_require_bitwise,
-        rmsnorm_use_kahan,
-        rmsnorm_recompute_rstd,
-        context_id,
-    )
+    del topk_expert_ids_TK, state_tensors, rmsnorm_enabled
+    del rmsnorm_eps, rmsnorm_norm_output_dtype, rmsnorm_output_dtype
+    del rmsnorm_require_bitwise, rmsnorm_use_kahan, rmsnorm_recompute_rstd
+    del context_id
     _wgrad_accumulation_destinations(
         accumulator_grad_w13_EFD,
         accumulator_grad_w2_EDF,
@@ -3712,8 +3795,9 @@ class _RegisteredBf16Autograd(torch.autograd.Function):
         return output[0]
 
     @staticmethod
-    def backward(ctx: Any, grad_output_TD: torch.Tensor) -> tuple[Any, ...]:
+    def backward(ctx: Any, *grad_outputs: torch.Tensor) -> tuple[Any, ...]:
         """Run the registered functional or accumulating BF16 backward."""
+        (grad_output_TD,) = grad_outputs
         return (*_bf16_autograd_backward(ctx, grad_output_TD, None), None, None, None)
 
 
@@ -3787,7 +3871,8 @@ def routed_experts(  # noqa: C901
             ``1 <= T <= context.max_num_local_input_tokens`` for this call.
         topk_expert_ids_TK: Contiguous CUDA int32 or int64 global expert IDs
             with shape ``[T, K]`` and values in ``[-1, num_experts)``. ``-1``
-            disables that route.
+            disables that route. Nonnegative IDs in each row must be distinct;
+            repeated ``-1`` padding is allowed. Callers enforce uniqueness.
         topk_scores_TK: Contiguous CUDA BF16 or FP32 expert weights with shape
             ``[T, K]``. Callers must use score zero for ``-1`` routes.
         w13_weight: Local BF16 gate/up weight with shape
@@ -4032,20 +4117,29 @@ def prepare_block_scaled_weight(
     config: BlockScaledConfig,
     *,
     inference: bool = False,
+    fuse_swiglu: bool = False,
     out: PreparedWeight | None = None,
 ) -> PreparedWeight:
     """Prepare caller-owned block-scaled FPROP and DGRAD operands.
 
     Args:
-        weight: Contiguous CUDA BF16 grouped weight with shape ``[G, N, K]``.
+        weight: Contiguous CUDA BF16 expert weight with shape ``[E, N, K]``.
             Use ``[E, 2F, D]`` for W13 and ``[E, D, F]`` for W2.
+            MXFP8 requires N and K divisible by128 for its blocked scale
+            orientations. NVFP4 preparation requires an even K.
         config: Block-scaled execution policy.
         inference: Whether to prepare FPROP-only inference operands. MXFP8
             training requires both FPROP and DGRAD scale orientations.
+        fuse_swiglu: Prepare W13 for fused inference SwiGLU by interleaving
+            quantized gate/up rows and their scales in groups of eight.
+            Requires ``inference=True``, ``config.pipeline="mega"`` and W13
+            shape ``[E, 2F, D]``. Do not enable this for W2. The logical source
+            weight remains unchanged; the result cannot be used for training
+            backward or the staged pipeline.
         out: Optional MXFP8 training storage to refill for the same logical
-            weight, shape, format, and device. Refill mutates and returns the
-            identical prepared owner and storage objects. It is unavailable
-            for inference and NVFP4.
+            weight, shape, format, and device. Refill preserves the identical
+            storage tensors and returns a prepared wrapper associated with
+            ``weight``. It is unavailable for inference and NVFP4.
 
     Returns:
         Prepared weight accepted by :func:`routed_experts`.
@@ -4056,4 +4150,6 @@ def prepare_block_scaled_weight(
     """
     from ._blockscaled import _prepare_blockscaled_weight as prepare
 
-    return prepare(weight, config, inference=inference, out=out)
+    return prepare(
+        weight, config, inference=inference, fuse_swiglu=fuse_swiglu, out=out
+    )

@@ -21,7 +21,7 @@ pipelined across chunks with ``cp.async.wait_group`` + ``sync_warp`` only.
 Head-sliced x is addressed per lane straight from its (T, H) strides (any H
 binds); dy, rstd, and dx are flat ``(M, ...)`` tensors.
 
-The compute geometry deliberately replicates the general backward's
+The compute geometry deliberately REPLICATES the general backward's
 Blackwell configuration for these shapes, so on Blackwell dx is **bitwise
 identical** to the reshape-copy + ``FusedRMSNormBwd`` launch it replaces:
 ``vecsize = gcd(N, 128 // max_width)`` consecutive columns per lane (16B
@@ -29,6 +29,7 @@ for pure bf16), a 32-wide butterfly ``warp_reduction`` (the general
 kernel's Blackwell ``threads_per_row = 32`` for every N this kernel
 accepts), and lanes whose columns fall beyond N contribute exact zeros —
 the same values the general kernel's predicated cp.async zfill feeds its
+reduction.
 On other archs (Hopper), whose general launch table picks a different
 threads_per_row, the trees diverge at round-off level — equally accurate,
 not bitwise across the two kernels. Per-row numerics never depend on the
@@ -52,7 +53,6 @@ import cutlass.cute as cute
 import torch
 from cutlass import const_expr, Float32
 
-from .. import _dsl_compat as _cute_extern  # noqa: F401
 from .._iket_shim import iket, iket_level
 from .._jit_cache import jit_cache
 from .._quack import copy_utils
@@ -197,7 +197,8 @@ class RMSNormSmallDBwd:
 
     @classmethod
     def can_implement(cls, dtype, dout_dtype, dx_dtype, N: int) -> bool:
-        """Return whether the operand widths and feature size are supported."""
+        """Static dispatch predicate: pure function of (N, operand dtypes,
+        use_sr), never of the input layout."""
         return (
             cls._geometry(N, dtype.width, dout_dtype.width, dx_dtype.width) is not None
         )

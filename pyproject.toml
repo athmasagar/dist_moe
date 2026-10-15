@@ -57,4 +57,5 @@ markers = [
     "gb10x: requires an NVIDIA GPU with compute capability 10.x or newer",
     "gpus_needed_1: requires at least one GPU",
     "gpus_needed_2: requires at least two GPUs",
+    "gpus_needed_4: requires at least four GPUs",
 ]

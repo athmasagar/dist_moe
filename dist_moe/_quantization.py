@@ -144,7 +144,8 @@ def _split_swiglu(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
     if x.shape[-1] % 2:
         raise ValueError("SwiGLU input width must be even")
-    return x.chunk(2, dim=-1)
+    gate, up = x.chunk(2, dim=-1)
+    return gate, up
 
 
 def swiglu_fwd_quantize(

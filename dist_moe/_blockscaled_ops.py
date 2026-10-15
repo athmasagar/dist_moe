@@ -198,6 +198,7 @@ def dist_blockscaled_grouped_gemm_fprop_dispatch(
     w_global_scale_inv: torch.Tensor | None = None,
     interleaved_fc13: bool = False,
     swiglu_fast_math: bool = False,
+    derive_pipeline_depth: bool = False,
 ) -> Any:
     """Gather+quantize A from peers, then run block-scaled FPROP GEMM.
 
@@ -231,8 +232,11 @@ def dist_blockscaled_grouped_gemm_fprop_dispatch(
         conditional_execution: Optional device recompute predicate.
         counter_storage: Pre-cleared decode counter storage.
         w_global_scale_inv: Optional reciprocal NVFP4 weight scale.
-        interleaved_fc13: Whether FC13 uses interleaved NVFP4 storage.
+        interleaved_fc13: Whether prepared FC13 rows use the inference layout.
         swiglu_fast_math: Whether the fused producer uses fast-math SwiGLU.
+        derive_pipeline_depth: Whether the source launcher derives the legal
+            staged operand and epilogue pipeline depths. False preserves the
+            supplied configuration.
 
     Returns:
         Dense grouped-GEMM output and any requested WGRAD operand.
@@ -265,6 +269,7 @@ def dist_blockscaled_grouped_gemm_fprop_dispatch(
         b_global_scale_inv=w_global_scale_inv,
         interleaved_fc13=interleaved_fc13,
         swiglu_fast_math=swiglu_fast_math,
+        derive_pipeline_depth=derive_pipeline_depth,
     )
 
 
@@ -477,6 +482,7 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_combine(
     ) = None,
     precomputed_swiglu: bool = False,
     return_row_quant: bool = False,
+    derive_pipeline_depth: bool = False,
 ) -> Any:
     """Run SwiGLU fwd + block-scaled FPROP GEMM, then scatter C to peers.
 
@@ -484,8 +490,9 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_combine(
     ``return_row_quant`` additionally returns the row-quantized ``h2`` A operand.
 
     Args:
-        h1_M2F: Dense FC13 output with shape ``[M, 2F]``, or ``None`` when
-            read from the activation buffer.
+        h1_M2F: Dense FC13 output with shape ``[M, 2F]``, or a shape-only
+            tensor when GPU offsets address the activation buffer. ``None``
+            is valid only with precomputed ``h2_quant``.
         w: Prepared FC2 FPROP weight data.
         w_scale: Prepared FC2 FPROP weight scales.
         num_tokens_per_local_expert_E: Padded rows for each local expert.
@@ -515,6 +522,9 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_combine(
         h2_quant: Optional precomputed H2 quantization.
         precomputed_swiglu: Whether ``h2_quant`` replaces SwiGLU computation.
         return_row_quant: Whether to return row-oriented H2 quantization.
+        derive_pipeline_depth: Whether the source launcher derives legal
+            staged operand and epilogue pipeline depths from the supplied
+            geometry. False preserves the supplied configuration.
 
     Returns:
         Combined output and requested saved quantized operands.
@@ -550,6 +560,7 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_combine(
         h2_quant=h2_quant,
         precomputed_swiglu=precomputed_swiglu,
         return_row_quant=return_row_quant,
+        derive_pipeline_depth=derive_pipeline_depth,
     )
 
 
@@ -581,6 +592,7 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_dispatch_combine(
     blockscaled_dispatch: bool = False,
     return_h2_wgrad_quant: bool = True,
     activation_buffer: torch.Tensor | None = None,
+    operand_storage: torch.Tensor | None = None,
     activation_offsets: torch.Tensor | None = None,
     conditional_execution: torch.Tensor | None = None,
     counter_storage: torch.Tensor | None = None,
@@ -588,16 +600,23 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_dispatch_combine(
     w2_global_scale_inv: torch.Tensor | None = None,
     interleaved_fc13: bool = False,
     return_row_quant: bool = False,
+    derive_pipeline_depth: bool = False,
+    auto_inference_tuning: bool = False,
+    estimate_recv_num_tokens: int | None = None,
+    pre_shuffled_rows: bool = False,
 ) -> Any:
     """Run fused block-scaled dispatch, FC13, SwiGLU quant, FC2, and combine.
 
-    ``counter_storage`` must be zeroed earlier on the launch stream.
+    Supplied ``counter_storage`` must be zeroed earlier on the launch stream.
+    Static inference storage without supplied counters uses source preparation
+    to clear them, or one stream-ordered zero for host tensor maps.
     ``return_row_quant`` appends the row-quantized ``x_gathered`` and ``h2``
     A operands to the result tuple.
 
     Args:
-        w13: Prepared fused gate/up FPROP weight data.
-        w13_scale: Prepared W13 FPROP scales.
+        w13: Prepared gate/up weight data. Training rows concatenate the gate
+            and up projections; interleaved inference rows use groups of eight.
+        w13_scale: Prepared W13 scales with the same logical row permutation.
         w2: Prepared down-projection FPROP weight data.
         w2_scale: Prepared W2 FPROP scales.
         num_tokens_per_local_expert_E: Padded rows for each local expert.
@@ -621,14 +640,37 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_dispatch_combine(
         return_x_wgrad_quant: Whether to return column-oriented dispatched X.
         blockscaled_dispatch: Whether dispatch input is already quantized.
         return_h2_wgrad_quant: Whether to return column-oriented H2.
-        activation_buffer: Optional activation buffer.
-        activation_offsets: Optional device-side activation-buffer offsets.
+        activation_buffer: Optional context-owned CUDA byte arena paired with
+            ``activation_offsets``. GPU-offset-backed operands require device
+            tensor maps; this retains the VMM inference storage path without
+            introducing a new physical mapping.
+        operand_storage: Optional context-owned, 128-byte-aligned CUDA uint8
+            vector for same-format Mega MXFP8/NVFP4 inference. Concat binds
+            full dense H1; interleaved W13 binds its descriptor-only H1. The source
+            physical layout creates disjoint views inside this allocation and
+            rejects an insufficient bound before launch. Views are overwritten
+            by later calls; this storage is distinct from GPU-offset-backed
+            training/VMM operands and never saves backward state. Static views
+            retain the source automatic tensor-map selection and are mutually
+            exclusive with ``activation_buffer``.
+        activation_offsets: Planned device int64 byte offsets paired with
+            ``activation_buffer``; omitted for static ``operand_storage``.
         conditional_execution: Optional device recompute predicate.
-        counter_storage: Pre-cleared decode counter storage.
+        counter_storage: Optional pre-cleared counters. With ``operand_storage``,
+            this must be its named counters view; otherwise the source launcher
+            clears that view using its ordinary preparation path.
         w13_global_scale_inv: Optional reciprocal NVFP4 W13 scale.
         w2_global_scale_inv: Optional reciprocal NVFP4 W2 scale.
-        interleaved_fc13: Whether FC13 uses interleaved NVFP4 storage.
+        interleaved_fc13: Whether FC13 data/scales use prepared inference rows.
         return_row_quant: Whether to return row-oriented activation quants.
+        derive_pipeline_depth: Whether source policy derives legal pipeline depth.
+            False preserves the supplied configuration.
+        auto_inference_tuning: Whether source inference finalization is enabled.
+        estimate_recv_num_tokens: Host estimate of actual rows routed to this
+            rank, not padded ``num_out_tokens`` capacity. Forwarded directly for
+            source schedule selection without reading device routing metadata.
+        pre_shuffled_rows: Whether routing already uses the source schedule
+            rotation, so the kernel must not rotate it again.
 
     Returns:
         Combined output and requested saved quantized operands.
@@ -642,18 +684,22 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_dispatch_combine(
     from .kernels import chunked_mega_blockscaled_grouped_gemm as mod
 
     kernel_config = None if config is None else dict(config)
-    chunk_rows = 512
+    chunk_rows: int | None = 512
     if kernel_config is not None:
         explicit_chunk_rows = "PIPELINE_CHUNK_ROWS" in kernel_config
-        chunk_rows = int(kernel_config.pop("PIPELINE_CHUNK_ROWS", chunk_rows))
-        token_tile = int(kernel_config["BLOCK_SIZE_N"])
-        if chunk_rows % token_tile != 0:
-            if explicit_chunk_rows:
-                raise ValueError(
-                    "PIPELINE_CHUNK_ROWS must be divisible by BLOCK_SIZE_N; "
-                    f"got PIPELINE_CHUNK_ROWS={chunk_rows}, BLOCK_SIZE_N={token_tile}"
-                )
-            chunk_rows = math.lcm(128, token_tile)
+        configured_chunk_rows = kernel_config.pop("PIPELINE_CHUNK_ROWS", chunk_rows)
+        chunk_rows = (
+            None if configured_chunk_rows is None else int(configured_chunk_rows)
+        )
+        if "BLOCK_SIZE_N" in kernel_config:
+            token_tile = int(kernel_config["BLOCK_SIZE_N"])
+            if chunk_rows is not None and chunk_rows % token_tile != 0:
+                if explicit_chunk_rows and not derive_pipeline_depth:
+                    raise ValueError(
+                        "PIPELINE_CHUNK_ROWS must be divisible by BLOCK_SIZE_N; "
+                        f"got PIPELINE_CHUNK_ROWS={chunk_rows}, BLOCK_SIZE_N={token_tile}"
+                    )
+                chunk_rows = math.lcm(128, token_tile)
     return mod.chunked_mega_blockscaled_grouped_gemm_fprop_swiglu_fwd(
         w13=w13,
         w13_scale=_view_flat_scale(w13_scale, "w13_scale"),
@@ -679,6 +725,7 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_dispatch_combine(
         blockscaled_dispatch=blockscaled_dispatch,
         return_h2_wgrad_quant=return_h2_wgrad_quant,
         activation_buffer=activation_buffer,
+        operand_storage=operand_storage,
         activation_offsets=activation_offsets,
         conditional_execution=conditional_execution,
         counter_storage=counter_storage,
@@ -686,6 +733,10 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_dispatch_combine(
         w2_global_scale_inv=w2_global_scale_inv,
         interleaved_fc13=interleaved_fc13,
         return_row_quant=return_row_quant,
+        derive_pipeline_depth=derive_pipeline_depth,
+        auto_inference_tuning=auto_inference_tuning,
+        estimate_recv_num_tokens=estimate_recv_num_tokens,
+        pre_shuffled_rows=pre_shuffled_rows,
     )
 
 

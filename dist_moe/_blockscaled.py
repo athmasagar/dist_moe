@@ -45,7 +45,7 @@ from ._blockscaled_ops import (
     dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_combine,
     dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_dispatch_combine,
 )
-from ._blockscaled_weight import BlockscaledWeightSpec
+from ._blockscaled_weight import _interleave_w13_rows, BlockscaledWeightSpec
 from ._buffers import (
     _CommunicationBuffers,
     _initialize_fake_peer_scatter_output,
@@ -63,6 +63,7 @@ from ._execution import (
     _weak_parameter_ref,
     _wgrad_accumulation_destinations,
     _WgradDestination,
+    WgradPostprocessFn,
 )
 from ._postprocess import (
     _ExpertsOutputPostprocess,
@@ -105,10 +106,8 @@ from .kernels.blockscaled_quantize import (
     _quantize_nvfp4_per_token,
     quantize_block_scaled,
 )
-from .kernels.config import (
-    BLOCKSCALED_DISPATCH_DIM_ALIGNMENT,
-    uses_paged_blockscaled_scale_rows,
-)
+from .kernels.config import BLOCKSCALED_DISPATCH_DIM_ALIGNMENT
+from .kernels.inference_config import _inference_routing_multiple
 
 if TYPE_CHECKING:
     from ._execution import (
@@ -118,7 +117,6 @@ if TYPE_CHECKING:
     )
     from .api import BlockScaledConfig, Context
 
-WgradPostprocessFn = Callable[[str, torch.Tensor], torch.Tensor | None]
 _PREPARED_WEIGHT_OPERAND_COUNT = 6
 _PREPARED_WEIGHT_PAIR_COUNT = 2 * _PREPARED_WEIGHT_OPERAND_COUNT
 _SAVED_WEIGHT_STATE_COUNT = 5
@@ -139,18 +137,24 @@ _BACKWARD_PLAN_STATE = slice(16, 21)
 _BACKWARD_NON_WEIGHT_STATE = slice(10, None)
 
 
+@torch.library.custom_op("dist_moe::prepare_nvfp4_weight", mutates_args=())
 def _prepare_nvfp4_weight_operands(
     weight_ENK: torch.Tensor,
+    fuse_swiglu: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Quantize grouped NVFP4 weights with the bundled Triton quantizer.
 
     Args:
         weight_ENK: Native grouped weight with expert, output, and input axes.
+        fuse_swiglu: Interleave W13 qdata and natural scale rows for fused
+            inference after quantization, preserving canonical scale groups.
 
     Returns:
         Packed qdata ``[E, N, K / 2]``, blocked scales, per-expert global
         scales ``[E]``, and their reciprocals ``[E]``.
     """
+    if weight_ENK.ndim != 3 or weight_ENK.shape[-1] % 2:
+        raise ValueError("NVFP4 preparation requires grouped weights with even K")
     from .kernels.triton_quantization.blockscaled_quantize import (
         quantize_block_scaled,
     )
@@ -174,11 +178,53 @@ def _prepare_nvfp4_weight_operands(
     qdata_ENQ, scale_RB = quantize_block_scaled(
         weight_ENK,
         format_id=BlockScaledFormatId.NVFP4.value,
-        layout_id=ScaleFactorLayoutId.CUBLAS_BLOCKED.value,
+        layout_id=(
+            ScaleFactorLayoutId.NATURAL.value
+            if fuse_swiglu
+            else ScaleFactorLayoutId.CUBLAS_BLOCKED.value
+        ),
         is_a=False,
         global_scale=global_scale_EN,
     )
+    if fuse_swiglu:
+        from .kernels.scale_factor_layout import natural_to_cublas_blocked
+
+        qdata_ENQ = _interleave_w13_rows(qdata_ENQ)
+        scale_ENB = scale_RB.view(*weight_ENK.shape[:2], -1)
+        scale_ENB = _interleave_w13_rows(scale_ENB)
+        scale_RB = natural_to_cublas_blocked(scale_ENB, is_a=False)
     return qdata_ENQ, scale_RB, global_scale_E, torch.reciprocal(global_scale_E)
+
+
+@_prepare_nvfp4_weight_operands.register_fake
+def _prepare_nvfp4_weight_fake(
+    weight_ENK: torch.Tensor,
+    fuse_swiglu: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Describe inference operands without running quantization on fake data.
+
+    Args:
+        weight_ENK: Grouped BF16 weight with shape ``[E, N, K]``.
+        fuse_swiglu: Whether the prepared W13 rows are interleaved.
+
+    Returns:
+        Packed qdata, padded blocked scales and two per-expert FP32 scales.
+    """
+    if weight_ENK.ndim != 3 or weight_ENK.shape[-1] % 2:
+        raise ValueError("NVFP4 preparation requires grouped weights with even K")
+    experts, rows, cols = weight_ENK.shape
+    return (
+        weight_ENK.new_empty((experts, rows, cols // 2), dtype=torch.float4_e2m1fn_x2),
+        weight_ENK.new_empty(
+            (
+                experts * ((rows + 127) // 128) * 128,
+                (((cols + 15) // 16 + 3) // 4) * 4,
+            ),
+            dtype=torch.float8_e4m3fn,
+        ),
+        weight_ENK.new_empty((experts,), dtype=torch.float32),
+        weight_ENK.new_empty((experts,), dtype=torch.float32),
+    )
 
 
 def _kernel_format(format: BlockScaledFormat) -> Any:
@@ -512,6 +558,9 @@ class _BlockscaledConfig:
     format: BlockScaledFormat
     fast_math: bool = False
     mega: bool = False
+    interleaved_fc13: bool = False
+    routing_capacity: int | None = None
+    static_inference_storage: bool = False
 
     @property
     def policy(self) -> _FusedBlockscaledFormatPolicy:
@@ -634,7 +683,7 @@ def _async_blockscaled_col_quant_placeholder(
     rows: int,
     dim: int,
     cfg: _BlockscaledConfig,
-) -> _QuantPair:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Create column-quantized placeholder views into the activation buffer.
 
     Args:
@@ -751,6 +800,7 @@ def _prepare_blockscaled_weight_impl(
     cfg: _BlockscaledConfig,
     *,
     use_row_1d_quantization: bool = False,
+    fuse_swiglu: bool = False,
 ) -> _BlockscaledWeight:
     """Quantize one native MXFP8 weight for FPROP and DGRAD.
 
@@ -758,6 +808,8 @@ def _prepare_blockscaled_weight_impl(
         w: Grouped native expert weight.
         cfg: Active block-scaled format.
         use_row_1d_quantization: Whether only the inference orientation is needed.
+        fuse_swiglu: Interleave W13 quantized rows and natural scales for the
+            fused inference kernel; never transpose the BF16 source.
 
     Returns:
         Prepared kernel operands.
@@ -772,12 +824,29 @@ def _prepare_blockscaled_weight_impl(
         )
     _, _, sf_vec_size = block_scaled_format_constants(cfg.format)
     if use_row_1d_quantization:
-        w_q_rowmajor, w_scale_rowmajor = quantize_for_format(
-            w,
-            cfg.format,
-            block_size=((1, sf_vec_size),),
-            layout=dist_bs_gemm.DEFAULT_LAYOUT,
-        )
+        if fuse_swiglu:
+            from .formats import resolve_half_range_scale
+            from .kernels.scale_factor_layout import natural_to_cublas_blocked
+
+            w_q_rowmajor, w_scale_rowmajor = quantize_block_scaled(
+                w,
+                format=cfg.format,
+                layout=ScaleFactorLayout.NATURAL,
+                half_range_scale=resolve_half_range_scale(cfg.format, None),
+            )
+            w_q_rowmajor = _interleave_w13_rows(w_q_rowmajor)
+            w_scale_ENB = w_scale_rowmajor.view(*w.shape[:2], -1)
+            w_scale_ENB = _interleave_w13_rows(w_scale_ENB)
+            w_scale_rowmajor = natural_to_cublas_blocked(w_scale_ENB, is_a=False)
+        else:
+            w_q_rowmajor, w_scale_rowmajor = quantize_for_format(
+                w,
+                cfg.format,
+                block_size=((1, sf_vec_size),),
+                layout=dist_bs_gemm.DEFAULT_LAYOUT,
+            )
+        assert isinstance(w_q_rowmajor, torch.Tensor)
+        assert isinstance(w_scale_rowmajor, torch.Tensor)
         return _BlockscaledWeight(
             w_native=w,
             w_q_fprop=w_q_rowmajor,
@@ -795,7 +864,11 @@ def _prepare_blockscaled_weight_impl(
         block_size=((sf_vec_size, sf_vec_size),),
         layout=dist_bs_gemm.DEFAULT_LAYOUT,
     )
+    assert isinstance(w_q_rowmajor, torch.Tensor)
+    assert isinstance(w_scale_rowmajor, torch.Tensor)
+    assert isinstance(w_scale_colmajor, torch.Tensor)
     if cfg.format in FP4_FORMATS:
+        assert isinstance(w_q_colmajor, torch.Tensor)
         w_q_dgrad = w_q_colmajor.transpose(1, 2)
     else:
         w_q_dgrad = w_q_rowmajor
@@ -1093,16 +1166,12 @@ def _routing_m_multiple(
     """
     del estimated_rows, num_local_experts, fc13_output_dim, fc2_output_dim
     del num_sms, enable_host_tensormaps
-    config = compute.config or {}
-    if inference_mode and (
-        compute.blockscaled.mega or bool(config.get("SWAP_AB", False))
-    ):
-        token_tile = int(config.get("BLOCK_SIZE_N", dist_bs_gemm.DEFAULT_M_MULTIPLE_OF))
-        if (
-            uses_paged_blockscaled_scale_rows(token_tile)
-            or token_tile > dist_bs_gemm.DEFAULT_M_MULTIPLE_OF
-        ):
-            return token_tile
+    # Staged offset-backed scratch retains the source's 128-row routing
+    # contract; its paged GEMM launch multiple is resolved separately.
+    if inference_mode and compute.blockscaled.mega and compute.config is not None:
+        return _inference_routing_multiple(
+            compute.config, mega=compute.blockscaled.mega
+        )
     return dist_bs_gemm.DEFAULT_M_MULTIPLE_OF
 
 
@@ -1237,7 +1306,7 @@ class _BlockScaledAutograd(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(
+    def forward(  # noqa: C901 -- keep the expert pipeline and its storage lifecycle together
         ctx: Any,
         x_TD: torch.Tensor,
         topk_expert_ids_TK: torch.Tensor,
@@ -1344,6 +1413,12 @@ class _BlockScaledAutograd(torch.autograd.Function):
         # Prepared operands remain caller-owned; dynamic operands are retained
         # or regenerated according to the backward recomputation contract.
         input_dtype = x_TD.dtype
+        auto_inference_tuning = inference_mode and config is None
+        static_inference_storage = (
+            inference_mode
+            and blockscaled_cfg.mega
+            and blockscaled_cfg.static_inference_storage
+        )
         assert activation_slot_id_1 is not None
         assert num_moe_layers_in_slot is not None
         num_local_experts = _num_local_experts(num_experts, comm_group)
@@ -1354,6 +1429,28 @@ class _BlockScaledAutograd(torch.autograd.Function):
             inference_mode=inference_mode,
             save_for_backward=save_for_backward,
         )
+        # Compact decode tuning assumes the Mega inference layout. Staged
+        # offset-backed execution retains the asynchronous source defaults.
+        if inference_mode and blockscaled_cfg.mega:
+            from .kernels._environment import num_sms_per_device
+            from .kernels.inference_config import _blockscaled_inference_config
+
+            num_sms = num_sms if num_sms is not None else num_sms_per_device()
+            config = _blockscaled_inference_config(
+                format=_kernel_format(blockscaled_cfg.format),
+                num_tokens=num_tokens,
+                topk=topk,
+                num_local_experts=num_local_experts,
+                hidden_dim=x_TD.shape[1],
+                intermediate_dim=w2_weight.shape[-1],
+                num_sms=num_sms,
+                routing_capacity=blockscaled_cfg.routing_capacity,
+                mega=blockscaled_cfg.mega,
+                interleaved_fc13=blockscaled_cfg.interleaved_fc13,
+                config=config,
+                input_dtype=input_dtype,
+            )
+            compute = replace(compute, config=config)
         blockscaled_dispatch = compute.uses_blockscaled_dispatch(
             inference_mode=inference_mode
         )
@@ -1431,7 +1528,9 @@ class _BlockScaledAutograd(torch.autograd.Function):
         # Copy expert_ids to routing buffer (always int16; copy_ casts).
         local_rank = dist.get_rank(comm_group)
         local_routing_buffer = _routing_ids_view(
-            routing_buffer, local_rank, topk_expert_ids_TK.shape
+            routing_buffer,
+            local_rank,
+            (topk_expert_ids_TK.shape[0], topk_expert_ids_TK.shape[1]),
         )
         routing_token_count_1 = _routing_token_count_view(
             routing_buffer,
@@ -1477,7 +1576,7 @@ class _BlockScaledAutograd(torch.autograd.Function):
         # receive capacity; no host decision depends on the routed row count.
         hidden_dim = x_TD.shape[1]
         intermediate_dim = w2_compute_EDF.shape[2]
-        routing_m_multiple = _routing_m_multiple(compute)
+        routing_m_multiple = _routing_m_multiple(compute, inference_mode=inference_mode)
         routing_world_size = dist.get_world_size(comm_group)
         local_expert_count = w13_compute_EFD.shape[0]
         scratch_imbalance_factor = (
@@ -1498,7 +1597,9 @@ class _BlockScaledAutograd(torch.autograd.Function):
             num_local_experts=local_expert_count,
             routing_world_size=routing_world_size,
             routing_m_multiple=routing_m_multiple,
-            max_num_recv_tokens=_async_max_num_recv_tokens(
+            max_num_recv_tokens=blockscaled_cfg.routing_capacity
+            if inference_mode
+            else _async_max_num_recv_tokens(
                 blockscaled_training=not inference_mode,
                 world_size=routing_world_size,
                 num_tokens=num_tokens,
@@ -1523,6 +1624,9 @@ class _BlockScaledAutograd(torch.autograd.Function):
                 generate_bwd_gather_ptrs=save_for_backward,
                 use_low_latency=inference_mode,
                 max_num_recv_tokens=model_config.max_recv_tokens,
+                pointer_capacity_multiple_of=(
+                    128 if inference_mode and blockscaled_cfg.mega else 1
+                ),
             )
 
             num_tokens_per_local_expert_E = routing.num_tokens_per_local_experts
@@ -1530,43 +1634,46 @@ class _BlockScaledAutograd(torch.autograd.Function):
             dispatch_fwd_gather_ptrs = routing.fwd_gather_ptrs
             combine_scatter_ptrs = routing.scatter_ptrs
 
-        # 4. Device-side offsets select activation-buffer storage or recomputation while
-        # preserving one fixed CUDA-graph topology.
-        with record_function("moe_forward_plan"):
-            # Clone num_recv_tokens to avoid in-place modification issues when routing
-            # is called again (e.g., in backward or in the next forward call)
-            num_recv_tokens = routing.num_tokens_per_rank[
-                local_rank : local_rank + 1
-            ].clone()
-            buffer_capacity = activation_buffer.buffer.numel()
-            capacity_num_activation_slots = (
-                0 if inference_mode else activation_buffer.num_activation_slots
-            )
-            # Validate buffer capacity before planning
-            validate_buffer_capacity(
-                buffer_size=buffer_capacity,
-                model_config=model_config,
-                num_activation_slots=capacity_num_activation_slots,
-            )
-            num_recv_tokens_per_rank_snapshot = (
-                torch.empty_like(routing.num_tokens_per_rank)
-                if save_for_backward
-                else None
-            )
-            forward_plan = get_forward_plan(
-                num_recv_tokens=num_recv_tokens,
-                num_recv_tokens_per_rank=routing.num_tokens_per_rank,
-                buffer_status=activation_buffer,
-                model_config=model_config,
-                activation_slot_id_1=activation_slot_id_1,
-                num_moe_layers_in_slot=num_moe_layers_in_slot,
-                inference_mode=inference_mode,
-                num_recv_tokens_per_rank_snapshot=num_recv_tokens_per_rank_snapshot,
-                scratch_only=not save_for_backward,
-            )
+        # 4. Static inference binds scratch directly. Training and VMM retain
+        # device-side offsets and the existing recomputation/placement policy.
+        forward_plan = None
+        num_recv_tokens = None
+        num_recv_tokens_per_rank_snapshot = None
+        if not static_inference_storage:
+            with record_function("moe_forward_plan"):
+                # Backward must retain this call's count even when later
+                # routing reuses its metadata storage.
+                num_recv_tokens = routing.num_tokens_per_rank[
+                    local_rank : local_rank + 1
+                ].clone()
+                buffer_capacity = activation_buffer.buffer.numel()
+                capacity_num_activation_slots = (
+                    0 if inference_mode else activation_buffer.num_activation_slots
+                )
+                validate_buffer_capacity(
+                    buffer_size=buffer_capacity,
+                    model_config=model_config,
+                    num_activation_slots=capacity_num_activation_slots,
+                )
+                num_recv_tokens_per_rank_snapshot = (
+                    torch.empty_like(routing.num_tokens_per_rank)
+                    if save_for_backward
+                    else None
+                )
+                forward_plan = get_forward_plan(
+                    num_recv_tokens=num_recv_tokens,
+                    num_recv_tokens_per_rank=routing.num_tokens_per_rank,
+                    buffer_status=activation_buffer,
+                    model_config=model_config,
+                    activation_slot_id_1=activation_slot_id_1,
+                    num_moe_layers_in_slot=num_moe_layers_in_slot,
+                    inference_mode=inference_mode,
+                    num_recv_tokens_per_rank_snapshot=num_recv_tokens_per_rank_snapshot,
+                    scratch_only=not save_for_backward,
+                )
 
         if save_for_backward:
-            assert forward_plan.blockscaled is not None
+            assert forward_plan is not None and forward_plan.blockscaled is not None
             recompute_condition = forward_plan.blockscaled.recompute_condition
             # Dispatch was already published before routing. This local-only
             # copy retains it when backward will recompute the layer.
@@ -1582,8 +1689,18 @@ class _BlockScaledAutograd(torch.autograd.Function):
         _initialize_fake_peer_scatter_output(combine_buffer)
         with record_function("moe_forward_main"):
             if blockscaled_cfg is not None:
-                assert forward_plan.blockscaled is not None
+                blockscaled_forward_plan = None
+                if not static_inference_storage:
+                    assert (
+                        forward_plan is not None
+                        and forward_plan.blockscaled is not None
+                    )
+                    blockscaled_forward_plan = forward_plan.blockscaled
                 capacity_rows = model_config.max_recv_tokens
+                if inference_mode and blockscaled_cfg.mega:
+                    # Descriptor/tile allocation is 128-aligned; routing's
+                    # logical padded-row overflow bound remains unchanged.
+                    capacity_rows = (capacity_rows + 127) // 128 * 128
                 if blockscaled_cfg.mega:
                     mega_result = (
                         dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_dispatch_combine(
@@ -1609,7 +1726,8 @@ class _BlockScaledAutograd(torch.autograd.Function):
                             num_sms=num_sms,
                             sync_peers=False,
                             config=config,
-                            m_multiple_of=dist_bs_gemm.DEFAULT_M_MULTIPLE_OF,
+                            m_multiple_of=routing_m_multiple
+                            or dist_bs_gemm.DEFAULT_M_MULTIPLE_OF,
                             swiglu_fast_math=blockscaled_cfg.fast_math,
                             swiglu_clamped=activation == _SWIGLU_CLAMPED,
                             swiglu_alpha=swiglu_alpha,
@@ -1617,12 +1735,40 @@ class _BlockScaledAutograd(torch.autograd.Function):
                             return_x_wgrad_quant=save_col_quant,
                             blockscaled_dispatch=blockscaled_dispatch,
                             return_h2_wgrad_quant=save_col_quant,
-                            activation_buffer=activation_buffer.buffer,
-                            activation_offsets=forward_plan.blockscaled.mega_offsets,
+                            activation_buffer=(
+                                None
+                                if static_inference_storage
+                                else activation_buffer.buffer
+                            ),
+                            operand_storage=(
+                                activation_buffer.buffer
+                                if static_inference_storage
+                                else None
+                            ),
+                            activation_offsets=(
+                                None
+                                if blockscaled_forward_plan is None
+                                else blockscaled_forward_plan.mega_offsets
+                            ),
+                            interleaved_fc13=blockscaled_cfg.interleaved_fc13,
+                            estimate_recv_num_tokens=min(
+                                num_tokens * topk, capacity_rows
+                            ),
+                            derive_pipeline_depth=auto_inference_tuning,
+                            auto_inference_tuning=auto_inference_tuning,
                         )
                     )
                     h3_MD = mega_result[0]
                 else:
+                    assert (
+                        forward_plan is not None
+                        and forward_plan.blockscaled is not None
+                    )
+                    gemm_m_multiple = (
+                        _inference_routing_multiple(config, mega=False)
+                        if inference_mode and config is not None
+                        else dist_bs_gemm.DEFAULT_M_MULTIPLE_OF
+                    )
                     dist_blockscaled_grouped_gemm_fprop_dispatch(
                         x=x_TD,
                         w=w13_handle.blockscaled.w_q_fprop,
@@ -1639,12 +1785,13 @@ class _BlockScaledAutograd(torch.autograd.Function):
                         sync_peers=False,
                         copy_inputs=False,
                         config=config,
-                        m_multiple_of=dist_bs_gemm.DEFAULT_M_MULTIPLE_OF,
+                        m_multiple_of=gemm_m_multiple,
                         return_wgrad_quant=save_col_quant,
                         blockscaled_dispatch=blockscaled_dispatch,
                         activation_buffer=activation_buffer.buffer,
                         activation_offsets=forward_plan.blockscaled.dispatch_offsets,
                         w_global_scale_inv=(w13_handle.blockscaled.w_global_scale_inv),
+                        derive_pipeline_depth=auto_inference_tuning,
                     )
                     h1_placeholder = _activation_buffer_placeholder(
                         activation_buffer.buffer,
@@ -1665,7 +1812,7 @@ class _BlockScaledAutograd(torch.autograd.Function):
                             num_sms=num_sms,
                             sync_peers=False,
                             config=config,
-                            m_multiple_of=dist_bs_gemm.DEFAULT_M_MULTIPLE_OF,
+                            m_multiple_of=gemm_m_multiple,
                             num_output_tokens=num_tokens,
                             return_wgrad_quant=save_col_quant,
                             swiglu_fast_math=blockscaled_cfg.fast_math,
@@ -1678,12 +1825,15 @@ class _BlockScaledAutograd(torch.autograd.Function):
                             w_global_scale_inv=(
                                 w2_handle.blockscaled.w_global_scale_inv
                             ),
+                            derive_pipeline_depth=auto_inference_tuning,
                         )
                     )
                     # Training also emits the column-quantized WGRAD operand;
                     # inference returns only the combined output tensor.
                     h3_MD = combine_result[0] if save_col_quant else combine_result
 
+        w13_handle_tensors = None
+        w2_handle_tensors = None
         if save_for_backward:
             w13_handle_tensors = _weight_handle_tensors(
                 w13_handle,
@@ -1699,9 +1849,12 @@ class _BlockScaledAutograd(torch.autograd.Function):
         # and save only the tensor state required by backward.
         with record_function("moe_postprocess"):
             _ep_barrier(combine_buffer)
-            recompute_condition = _postprocess_save_condition(
-                forward_plan,
-                save_for_backward=save_for_backward,
+            recompute_condition = (
+                _postprocess_save_condition(
+                    forward_plan, save_for_backward=save_for_backward
+                )
+                if forward_plan is not None
+                else None
             )
             (
                 output_TD,
@@ -1736,6 +1889,9 @@ class _BlockScaledAutograd(torch.autograd.Function):
             ctx.activation_buffer = activation_buffer
 
             assert num_recv_tokens_per_rank_snapshot is not None
+            assert num_recv_tokens is not None
+            assert w13_handle_tensors is not None and w2_handle_tensors is not None
+            assert forward_plan is not None
             assert forward_plan.blockscaled is not None
 
             ctx.save_for_backward(
@@ -1773,17 +1929,18 @@ class _BlockScaledAutograd(torch.autograd.Function):
     @staticmethod
     def backward(
         ctx: Any,
-        grad_output_TD: torch.Tensor,
+        *grad_outputs: torch.Tensor,
     ) -> tuple[Any, ...]:
         """Run the eager callback-compatible backward implementation.
 
         Args:
             ctx: Autograd context populated by :meth:`forward`.
-            grad_output_TD: Gradient of the combined output with shape ``[T, D]``.
+            *grad_outputs: The single combined-output gradient with shape ``[T, D]``.
 
         Returns:
             Gradients aligned with the forward arguments.
         """
+        (grad_output_TD,) = grad_outputs
         return _BlockScaledAutograd._backward_impl(ctx, grad_output_TD)
 
     @staticmethod
@@ -1804,7 +1961,7 @@ class _BlockScaledAutograd(torch.autograd.Function):
             Gradients aligned with the forward arguments.
         """
         config = ctx.config
-        blockscaled_cfg = ctx.blockscaled_cfg
+        blockscaled_cfg: _BlockscaledConfig = ctx.blockscaled_cfg
         compute, _ = _async_resolve_compute(
             config=config,
             blockscaled_cfg=blockscaled_cfg,
@@ -1935,6 +2092,7 @@ class _BlockScaledAutograd(torch.autograd.Function):
                 recompute_condition=recompute_condition,
             ),
         )
+        assert forward_plan.blockscaled is not None
         conditional_recompute = forward_plan.blockscaled.recompute_condition
 
         with record_function("moe_backward_plan"):
@@ -2689,50 +2847,73 @@ def _run_blockscaled_eager(
     )
 
 
+def _validate_mxfp8_weight_shape(weight: torch.Tensor) -> None:
+    """Validate the source quantizer's grouped weight geometry from metadata.
+
+    Args:
+        weight: Grouped weight; checking shape never reads tensor contents.
+
+    Raises:
+        ValueError: If the grouped output/input dimensions cannot form complete
+            128-value blocked-scale atoms in both orientations.
+    """
+    if weight.ndim != 3:
+        raise ValueError("MXFP8 weight preparation requires grouped 3D weights")
+    if weight.shape[-2] % 128 or weight.shape[-1] % 128:
+        raise ValueError("MXFP8 weight dimensions must be divisible by 128")
+
+
 @torch.library.custom_op(
     "dist_moe::prepare_mxfp8_weight",
     mutates_args=(),
 )
 def _prepare_mxfp8_weight_op(
     weight: torch.Tensor,
+    inference: bool = False,
+    fuse_swiglu: bool = False,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
 ]:
-    """Prepare both MXFP8 weight orientations behind a traceable op.
+    """Prepare MXFP8 operands behind one eager/fake/tracing boundary.
 
     Args:
         weight: Grouped BF16 expert weight.
+        inference: Prepare only the forward quantization orientation.
+        fuse_swiglu: Interleave inference W13 rows after quantization.
 
     Returns:
-        Shared qdata, FPROP scales, and DGRAD scales.
+        Qdata, FPROP scales, and DGRAD scales (empty for inference).
 
     Raises:
         ValueError: If ``weight`` is not a supported grouped shape.
     """
-    if weight.ndim != 3:
-        raise ValueError("MXFP8 weight preparation requires grouped 3D weights")
-    if weight.shape[-2] % 32 or weight.shape[-1] % 32:
-        raise ValueError("MXFP8 weight dimensions must be divisible by 32")
+    _validate_mxfp8_weight_shape(weight)
     cfg = _BlockscaledConfig(
         format=BlockScaledFormat.MXFP8_E4M3,
         fast_math=False,
         mega=False,
     )
-    prepared = _prepare_blockscaled_weight_impl(weight, cfg)
+    prepared = _prepare_blockscaled_weight_impl(
+        weight, cfg, use_row_1d_quantization=inference, fuse_swiglu=fuse_swiglu
+    )
     if prepared.w_q_dgrad is not prepared.w_q_fprop:
         raise RuntimeError("MXFP8 FPROP and DGRAD must share qdata storage")
     return (
         prepared.w_q_fprop,
         prepared.w_scale_fprop,
-        prepared.w_scale_dgrad,
+        weight.new_empty((0,), dtype=torch.float8_e8m0fnu)
+        if inference
+        else prepared.w_scale_dgrad,
     )
 
 
 @_prepare_mxfp8_weight_op.register_fake
 def _prepare_mxfp8_weight_fake(
     weight: torch.Tensor,
+    inference: bool = False,
+    fuse_swiglu: bool = False,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -2742,6 +2923,8 @@ def _prepare_mxfp8_weight_fake(
 
     Args:
         weight: Fake grouped BF16 expert weight.
+        inference: Whether backward scale storage is absent.
+        fuse_swiglu: Whether W13 rows have interleaved inference order.
 
     Returns:
         Fake shared qdata, FPROP scales, and DGRAD scales.
@@ -2749,32 +2932,38 @@ def _prepare_mxfp8_weight_fake(
     Raises:
         ValueError: If ``weight`` is not a grouped three-dimensional tensor.
     """
-    if weight.ndim != 3:
-        raise ValueError("MXFP8 weight preparation requires grouped 3D weights")
+    _validate_mxfp8_weight_shape(weight)
     groups, rows, cols = weight.shape
-    if rows % 32 or cols % 32:
-        raise ValueError("MXFP8 weight dimensions must be divisible by 32")
     qdata = torch.empty_like(weight, dtype=torch.float8_e4m3fn)
     return (
         qdata,
         torch.empty(
-            (groups * rows, cols // 32),
+            (
+                groups * ((rows + 127) // 128) * 128,
+                ((cols // 32 + 3) // 4) * 4,
+            ),
             dtype=torch.float8_e8m0fnu,
             device=weight.device,
         ),
-        torch.empty(
-            (groups * cols, rows // 32),
+        weight.new_empty((0,), dtype=torch.float8_e8m0fnu)
+        if inference
+        else torch.empty(
+            (
+                groups * ((cols + 127) // 128) * 128,
+                ((rows // 32 + 3) // 4) * 4,
+            ),
             dtype=torch.float8_e8m0fnu,
             device=weight.device,
         ),
     )
 
 
-def _prepare_blockscaled_weight(
+def _prepare_blockscaled_weight(  # noqa: C901 -- preparation modes share one ownership contract
     weight: torch.Tensor,
     config: BlockScaledConfig,
     *,
     inference: bool = False,
+    fuse_swiglu: bool = False,
     out: PreparedWeight | None = None,
 ) -> PreparedWeight:
     """Prepare caller-owned FPROP and DGRAD operands for async DistMoE.
@@ -2783,6 +2972,8 @@ def _prepare_blockscaled_weight(
         weight: Grouped native expert weight.
         config: Block-scaled execution policy.
         inference: Whether the prepared result may omit DGRAD operands.
+        fuse_swiglu: Prepare interleaved W13 qdata/scales for Mega inference
+            only. W2 and training retain their canonical row order.
         out: Optional MXFP8 training storage to refill for the same shape and
             format. Refill is unavailable for inference and NVFP4.
 
@@ -2790,16 +2981,22 @@ def _prepare_blockscaled_weight(
         Prepared weight accepted by :func:`_run_blockscaled`.
 
     Raises:
-        ValueError: If ``out`` is incompatible with MXFP8 training refill.
+        ValueError: If weight metadata, inference layout, or ``out`` violates
+            the selected format or MXFP8 training refill contract.
     """
     from ._execution import PreparedWeight
 
     kernel_format = _kernel_block_scaled_format(config.format)
-    cfg = _BlockscaledConfig(
-        format=kernel_format,
-        fast_math=config.fast_math,
-        mega=config.pipeline == "mega",
-    )
+    if weight.ndim != 3 or weight.dtype != torch.bfloat16:
+        raise ValueError("weight must be grouped BF16 with shape [E, N, K]")
+    if not weight.is_cuda or not weight.is_contiguous():
+        raise ValueError("weight must be contiguous CUDA storage")
+    if fuse_swiglu and not inference:
+        raise ValueError("fuse_swiglu requires inference=True")
+    if fuse_swiglu and config.pipeline != "mega":
+        raise ValueError("fuse_swiglu requires the Mega inference pipeline")
+    if fuse_swiglu and weight.shape[1] % 16:
+        raise ValueError("fused inference W13 requires F divisible by eight")
     if out is not None:
         if inference or kernel_format != BlockScaledFormat.MXFP8_E4M3:
             raise ValueError("caller-owned refill supports MXFP8 training weights")
@@ -2824,7 +3021,7 @@ def _prepare_blockscaled_weight(
                 scale_RB,
                 global_scale_E,
                 global_scale_inv_E,
-            ) = _prepare_nvfp4_weight_operands(weight)
+            ) = _prepare_nvfp4_weight_operands(weight, fuse_swiglu=fuse_swiglu)
         return PreparedWeight._create(
             source=weight,
             format=config.format,
@@ -2834,38 +3031,24 @@ def _prepare_blockscaled_weight(
             dgrad_scale=None,
             global_scale=global_scale_E,
             global_scale_inv=global_scale_inv_E,
+            interleaved_fc13=fuse_swiglu,
         )
-    if kernel_format is BlockScaledFormat.MXFP8_E4M3 and not inference:
+    if kernel_format is BlockScaledFormat.MXFP8_E4M3:
         with torch.no_grad():
-            qdata, scale_fprop, scale_dgrad = _prepare_mxfp8_weight_op(weight)
+            qdata, scale_fprop, scale_dgrad = _prepare_mxfp8_weight_op(
+                weight, inference=inference, fuse_swiglu=fuse_swiglu
+            )
         return PreparedWeight._create(
             source=weight,
             format=config.format,
             fprop_data=qdata,
             fprop_scale=scale_fprop,
-            dgrad_data=qdata,
-            dgrad_scale=scale_dgrad,
+            dgrad_data=None if inference else qdata,
+            dgrad_scale=None if inference else scale_dgrad,
             global_scale=None,
+            interleaved_fc13=fuse_swiglu,
         )
-    prepared = _prepare_blockscaled_weight_impl(
-        weight,
-        cfg,
-        use_row_1d_quantization=inference,
-    )
-    return PreparedWeight._create(
-        source=weight,
-        format=config.format,
-        fprop_data=prepared.w_q_fprop,
-        fprop_scale=prepared.w_scale_fprop,
-        dgrad_data=None if inference else prepared.w_q_dgrad,
-        dgrad_scale=None if inference else prepared.w_scale_dgrad,
-        global_scale=(
-            None
-            if prepared.w_global_scale_inv is None
-            else torch.reciprocal(prepared.w_global_scale_inv)
-        ),
-        global_scale_inv=prepared.w_global_scale_inv,
-    )
+    raise ValueError(f"unsupported prepared-weight format: {config.format}")
 
 
 def _empty_private_state(reference: torch.Tensor) -> torch.Tensor:
@@ -2907,10 +3090,14 @@ def _forward_weight_state(
         start : start + _SAVED_WEIGHT_STATE_COUNT
     ]
     assert q_fprop is not None and scale_fprop is not None and scale_dgrad is not None
+    if format in FP4_FORMATS:
+        assert q_dgrad is not None
+    else:
+        q_dgrad = _empty_private_state(reference)
     return (
         q_fprop,
         scale_fprop,
-        q_dgrad if format in FP4_FORMATS else _empty_private_state(reference),
+        q_dgrad,
         scale_dgrad,
         global_scale_inv
         if global_scale_inv is not None
@@ -2972,6 +3159,8 @@ def _blockscaled_compute_config(
         format=_kernel_block_scaled_format(policy.format),
         fast_math=policy.fast_math,
         mega=policy.pipeline == "mega",
+        static_inference_storage=context.config.inference
+        and context.config.vmm is None,
     )
     config = (
         None
@@ -3015,19 +3204,27 @@ def _pack_block_scaled_backward_state(
             format,
         ),
     )
-    packed_offsets = torch.cat(tuple(saved[index] for index in _FORWARD_OFFSET_INDICES))
+    offsets = []
+    for index in _FORWARD_OFFSET_INDICES:
+        offset = saved[index]
+        assert offset is not None
+        offsets.append(offset)
+    packed_offsets = torch.cat(offsets)
     postprocess_context = saved[_FORWARD_POSTPROCESS_CONTEXT]
     if postprocess_context is None:
         postprocess_context = _empty_private_state(reference)
-    return [
-        *weights,
+    state = list(weights)
+    for tensor in (
         *saved[_FORWARD_ROUTING_STATE],
         saved[_FORWARD_NEED_RECOMPUTE],
         packed_offsets,
         saved[_FORWARD_ACTIVATION_OFFSETS],
         saved[_FORWARD_RECOMPUTE_CONDITION],
         postprocess_context,
-    ]
+    ):
+        assert tensor is not None
+        state.append(tensor)
+    return state
 
 
 def _block_scaled_forward_metadata(
@@ -3106,7 +3303,7 @@ def _block_scaled_forward_metadata(
 
 
 def _run_async_forward(
-    kernel_ctx: object,
+    kernel_ctx: _KernelAutogradContext,
     x_TD: torch.Tensor,
     topk_expert_ids_TK: torch.Tensor,
     topk_scores_TK: torch.Tensor,
@@ -3119,6 +3316,7 @@ def _run_async_forward(
     num_moe_layers_in_slot: int,
     save_for_backward: bool,
     validate_expert_ids: bool,
+    interleaved_fc13: bool = False,
 ) -> torch.Tensor:
     """Invoke the asynchronous forward implementation.
 
@@ -3136,6 +3334,7 @@ def _run_async_forward(
         num_moe_layers_in_slot: Static MoE-layer depth of the selected slot.
         save_for_backward: Whether this invocation has a backward consumer.
         validate_expert_ids: Whether publication validates expert-ID bounds.
+        interleaved_fc13: Explicit inference-only prepared W13 layout.
 
     Returns:
         Local combined expert output with shape ``[T, D]``.
@@ -3143,6 +3342,19 @@ def _run_async_forward(
     activation_buffer = context.activation_buffer
     assert activation_buffer is not None
     blockscaled_cfg, config = _blockscaled_compute_config(context)
+    if interleaved_fc13 and (
+        not context.config.inference or not blockscaled_cfg.mega or save_for_backward
+    ):
+        raise ValueError("interleaved W13 requires forward-only Mega inference")
+    blockscaled_cfg = replace(
+        blockscaled_cfg,
+        interleaved_fc13=interleaved_fc13,
+        routing_capacity=(
+            context.memory_plan.total_scratch_capacity_rows
+            if context.config.inference and context.memory_plan is not None
+            else None
+        ),
+    )
     (
         w13_q_fprop,
         w13_scale_fprop,
@@ -3228,6 +3440,7 @@ def _block_scaled_forward_op(
     save_for_backward: bool,
     validate_expert_ids: bool,
     context_id: str,
+    interleaved_fc13: bool = False,
 ) -> tuple[torch.Tensor, list[torch.Tensor]]:
     """Run async MXFP8 forward and expose fixed-shape backward metadata.
 
@@ -3252,6 +3465,7 @@ def _block_scaled_forward_op(
         save_for_backward: Whether this invocation has a backward consumer.
         validate_expert_ids: Whether publication validates expert-ID bounds.
         context_id: Registered DistMoE context identifier.
+        interleaved_fc13: Whether prepared W13 has fused inference row order.
 
     Returns:
         The local output and fixed-shape private backward state.
@@ -3298,6 +3512,7 @@ def _block_scaled_forward_op(
         num_moe_layers_in_slot,
         save_for_backward,
         validate_expert_ids,
+        interleaved_fc13,
     )
     if not save_for_backward:
         return output_TD, _block_scaled_forward_metadata(
@@ -3358,6 +3573,7 @@ def _block_scaled_forward_fake(
     save_for_backward: bool,
     validate_expert_ids: bool,
     context_id: str,
+    interleaved_fc13: bool = False,
 ) -> tuple[torch.Tensor, list[torch.Tensor]]:
     """Return fake async-forward outputs without reading tensor data.
 
@@ -3382,22 +3598,15 @@ def _block_scaled_forward_fake(
         save_for_backward: Whether the fixed state has a backward consumer.
         validate_expert_ids: Debug validation policy, unused by fake execution.
         context_id: Registered DistMoE context identifier.
+        interleaved_fc13: Static prepared inference layout, unused by metadata.
 
     Returns:
         Fake output and fixed-shape private backward state.
     """
-    del (
-        topk_scores_TK,
-        rmsnorm_weight_D,
-        rmsnorm_eps,
-        rmsnorm_output_dtype,
-        rmsnorm_require_bitwise,
-        rmsnorm_gain_center,
-        rmsnorm_use_kahan,
-        activation_slot_id_1,
-        num_moe_layers_in_slot,
-        validate_expert_ids,
-    )
+    del topk_scores_TK, rmsnorm_weight_D, rmsnorm_eps
+    del rmsnorm_output_dtype, rmsnorm_require_bitwise, rmsnorm_gain_center
+    del rmsnorm_use_kahan, activation_slot_id_1, num_moe_layers_in_slot
+    del validate_expert_ids, interleaved_fc13
     return torch.empty_like(x_TD), _block_scaled_forward_metadata(
         x_TD,
         topk_expert_ids_TK,
@@ -3499,10 +3708,11 @@ def _run_block_scaled_registered_backward(
         topk_expert_ids_TK=topk_expert_ids_TK,
         topk_scores_TK=topk_scores_TK,
     )
-    weights = list(state[_BACKWARD_WEIGHT_STATE])
+    weights: list[torch.Tensor | None] = list(state[_BACKWARD_WEIGHT_STATE])
     if kernel_format not in FP4_FORMATS:
         weights[2] = weights[0]
         weights[7] = weights[5]
+    assert weights[4] is not None and weights[9] is not None
     weights[4] = _optional_state(weights[4])
     weights[9] = _optional_state(weights[9])
 
@@ -3725,18 +3935,10 @@ def _block_scaled_backward_fake(
     Returns:
         Fake gradients for activations, routing scores, ``w13``, and ``w2``.
     """
-    del (
-        topk_expert_ids_TK,
-        state,
-        rmsnorm_enabled,
-        rmsnorm_eps,
-        rmsnorm_norm_output_dtype,
-        rmsnorm_output_dtype,
-        rmsnorm_require_bitwise,
-        rmsnorm_use_kahan,
-        rmsnorm_recompute_rstd,
-        context_id,
-    )
+    del topk_expert_ids_TK, state, rmsnorm_enabled
+    del rmsnorm_eps, rmsnorm_norm_output_dtype, rmsnorm_output_dtype
+    del rmsnorm_require_bitwise, rmsnorm_use_kahan, rmsnorm_recompute_rstd
+    del context_id
     return (
         torch.empty_like(grad_output_TD),
         torch.empty_like(topk_scores_TK),
@@ -3766,18 +3968,10 @@ def _block_scaled_backward_accumulate_fake(
     context_id: str,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return non-WGRAD metadata for a fake accumulating backward."""
-    del (
-        topk_expert_ids_TK,
-        state,
-        rmsnorm_enabled,
-        rmsnorm_eps,
-        rmsnorm_norm_output_dtype,
-        rmsnorm_output_dtype,
-        rmsnorm_require_bitwise,
-        rmsnorm_use_kahan,
-        rmsnorm_recompute_rstd,
-        context_id,
-    )
+    del topk_expert_ids_TK, state, rmsnorm_enabled
+    del rmsnorm_eps, rmsnorm_norm_output_dtype, rmsnorm_output_dtype
+    del rmsnorm_require_bitwise, rmsnorm_use_kahan, rmsnorm_recompute_rstd
+    del context_id
     _wgrad_accumulation_destinations(
         accumulator_grad_w13_EFD,
         accumulator_grad_w2_EDF,
@@ -3792,7 +3986,7 @@ _block_scaled_backward_op.register_effect(torch.library.EffectType.ORDERED)
 
 
 def _block_scaled_setup_context(
-    ctx: object,
+    ctx: Any,
     inputs: tuple[object, ...],
     output: tuple[torch.Tensor, list[torch.Tensor]],
     *,
@@ -3828,7 +4022,9 @@ def _block_scaled_setup_context(
         _save_for_backward,
         _validate_expert_ids,
         context_id,
+        _interleaved_fc13,
     ) = inputs
+    assert isinstance(w13_EFD, torch.Tensor) and isinstance(w2_EDF, torch.Tensor)
     assert isinstance(prepared, list)
     _result, state = output
     resolved = _resolve_block_scaled_weight_state(
@@ -3843,6 +4039,7 @@ def _block_scaled_setup_context(
     ctx.rmsnorm_require_bitwise = rmsnorm_require_bitwise
     ctx.rmsnorm_use_kahan = rmsnorm_use_kahan
     ctx.rmsnorm_recompute_rstd = rmsnorm_recompute_rstd
+    ctx.wgrad_output_dtype = w13_EFD.dtype
     ctx.inplace_wgrad_accum = False
     ctx.set_materialize_grads(False)
     if mark_state_non_differentiable:
@@ -3914,7 +4111,7 @@ def _resolve_block_scaled_weight_state(
 
 
 def _block_scaled_autograd_backward(
-    ctx: object,
+    ctx: Any,
     grad_output_TD: torch.Tensor,
     unused_state_gradients: list[torch.Tensor | None] | None,
 ) -> tuple[torch.Tensor | None, ...]:
@@ -3947,7 +4144,7 @@ def _block_scaled_autograd_backward(
         )
         wgrad_output_dtype = wgrad_destinations[0].dtype
     else:
-        wgrad_output_dtype = context.config.wgrad_dtype or w13_EFD.dtype
+        wgrad_output_dtype = context.config.wgrad_dtype or ctx.wgrad_output_dtype
     registered_args = (
         topk_expert_ids_TK,
         topk_scores_TK,
@@ -4008,6 +4205,7 @@ def _block_scaled_autograd_backward(
         None,  # save_for_backward
         None,  # validate_expert_ids
         None,  # context_id
+        None,  # interleaved_fc13
     )
 
 
@@ -4030,7 +4228,7 @@ class _RegisteredBlockScaledAutograd(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        ctx: object,
+        ctx: Any,
         x_TD: torch.Tensor,
         topk_expert_ids_TK: torch.Tensor,
         topk_scores_TK: torch.Tensor,
@@ -4106,6 +4304,7 @@ class _RegisteredBlockScaledAutograd(torch.autograd.Function):
             True,
             options.validate_expert_ids,
             context_id,
+            False,  # Training retains concatenated W13 and DGRAD operands.
         )
         output = _block_scaled_forward_op(*forward_args)
         _block_scaled_setup_context(
@@ -4114,6 +4313,8 @@ class _RegisteredBlockScaledAutograd(torch.autograd.Function):
             output,
             mark_state_non_differentiable=False,
         )
+        # Prepared FP8 storage must not replace the logical BF16 WGRAD dtype.
+        ctx.wgrad_output_dtype = w13_EFD.dtype
         ctx.inplace_wgrad_accum = options.inplace_wgrad_accum
         if options.inplace_wgrad_accum:
             wgrad_parameter_owners = options.wgrad_parameter_owners
@@ -4131,22 +4332,23 @@ class _RegisteredBlockScaledAutograd(torch.autograd.Function):
 
     @staticmethod
     def backward(
-        ctx: object,
-        grad_output_TD: torch.Tensor,
+        ctx: Any,
+        *grad_outputs: torch.Tensor,
     ) -> tuple[torch.Tensor | None, ...]:
         """Return activation, router-score, and logical-weight gradients.
 
         Args:
             ctx: Autograd context populated by ``forward``.
-            grad_output_TD: Gradient of the combined expert output.
+            *grad_outputs: The single combined expert-output gradient.
 
         Returns:
             Gradients aligned with the forward arguments.
         """
+        (grad_output_TD,) = grad_outputs
         return _block_scaled_autograd_backward(ctx, grad_output_TD, None)
 
 
-def _run_blockscaled(
+def _run_blockscaled(  # noqa: C901 -- validate and dispatch one public execution contract
     x_TD: torch.Tensor,
     topk_expert_ids_TK: torch.Tensor,
     topk_scores_TK: torch.Tensor,
@@ -4186,6 +4388,13 @@ def _run_blockscaled(
 
     prepared_w13 = w13_weight if isinstance(w13_weight, PreparedWeight) else None
     prepared_w2 = w2_weight if isinstance(w2_weight, PreparedWeight) else None
+    interleaved_fc13 = prepared_w13 is not None and prepared_w13._interleaved_fc13
+    if prepared_w2 is not None and prepared_w2._interleaved_fc13:
+        raise ValueError("interleaved prepared W13 cannot be used as W2")
+    if interleaved_fc13 and (save_for_backward or not context.config.inference):
+        raise ValueError("interleaved W13 requires an inference-only context")
+    if interleaved_fc13 and policy.pipeline != "mega":
+        raise ValueError("interleaved W13 requires the Mega inference pipeline")
     source_w13_EFD = prepared_w13.source if prepared_w13 is not None else w13_weight
     source_w2_EDF = prepared_w2.source if prepared_w2 is not None else w2_weight
     assert isinstance(source_w13_EFD, torch.Tensor)
@@ -4250,6 +4459,7 @@ def _run_blockscaled(
             save_for_backward,
             options.validate_expert_ids,
             context.context_id,
+            interleaved_fc13,
         )
         return output_TD
     if tracing:
@@ -4283,6 +4493,15 @@ def _run_blockscaled(
         )
 
     blockscaled_cfg, kernel_config = _blockscaled_compute_config(context)
+    blockscaled_cfg = replace(
+        blockscaled_cfg,
+        interleaved_fc13=interleaved_fc13,
+        routing_capacity=(
+            context.memory_plan.total_scratch_capacity_rows
+            if context.config.inference and context.memory_plan is not None
+            else None
+        ),
+    )
     return _run_blockscaled_eager(
         x_TD=x_TD,
         topk_expert_ids_TK=topk_expert_ids_TK,

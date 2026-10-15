@@ -85,6 +85,12 @@ and packs only that padded requirement into the activation buffer. The capacity
 factor sets the maximum scratch bound; it does not replace dynamic activation
 packing.
 
+The staged asynchronous path keeps 128-row expert padding and its ordinary
+source launch selection. A paged expert override may use narrower GEMM token
+tiles, but the complete scratch extent still meets the 128-row SwiGLU
+quantizer contract. Compact automatic decode selection applies to Mega
+inference, whose operand layout supports that routing policy.
+
 `dist_moe.BlockScaledKernelConfig` is an expert-only override for the final CuTe
 launch parameters. Leave `kernel_config=None` for the production shape-aware
 presets. When supplying it, every field must describe one complete tuned
@@ -221,6 +227,33 @@ inference weights contain FPROP qdata and scales only; DGRAD fields are absent.
 Dynamic BF16 weights are also accepted and quantized for the call. Supplying
 tensors that require gradients to an inference context is rejected.
 
+Supported Mega inference can use `prepare_block_scaled_weight(..., inference=True,
+fuse_swiglu=True)` for W13. This quantizes canonical BF16 weights before
+interleaving their qdata and natural scale rows in groups of eight. W2 remains
+ordinary forward preparation. The inference kernel then emits SwiGLU directly
+and may select compact decode or scheduler-relay policies using its shape and
+capacity. The context owns the complete physical operand layout; no separate
+activation allocation or host read of route counts is needed. The option is
+not accepted by the staged pipeline or a training context. Default preparation
+remains concatenated, and training refill still preserves quantized storage.
+
+Device-only Mega inference binds aligned static scratch views and skips the
+unused per-call `get_forward_plan()` launch and received-count clone. Routing
+still produces GPU counts and pointers for the expert kernels. Tensor-map
+selection remains internal: source admission uses host maps when the geometry
+permits and otherwise builds device maps. Static views do not imply host maps.
+
+Staged inference and every VMM-configured inference context retain the
+GPU-offset scratch planner; VMM operands use device tensor maps. A VMM context
+keeps that contract even when an operand happens to lie in a device-backed
+section. There is no public storage selector or per-operand VMM mapping policy.
+For offset-backed G8, the source requires ordinary shape/topology admission
+and excludes compact decode, explicit scheduler relay, and activation rings.
+Automatic relay is ineligible with these offsets, and native tails are
+normalized off by the source. Mega inference alone does not guarantee every
+G8/VMM combination is supported; no static subview or per-operand remapping is
+used to bypass those limits.
+
 <a id="understand-the-graph-boundary"></a>
 ## Understand the graph boundary
 
@@ -253,8 +286,10 @@ specialization.
 2. Training publishes BF16 `x` rows to symmetric dispatch HBM.
 3. `dist_dispatch_routing()` produces padded per-expert row counts and GPU
    gather/scatter pointers.
-4. `get_forward_plan()` assigns activation offsets and decides whether later
-   backward will use saved column operands or recompute them.
+4. Planner-backed execution uses `get_forward_plan()` to assign activation
+   offsets and select saved or scratch operands. Device-only Mega inference
+   binds the preplanned static scratch views instead, without the unused plan
+   launch or received-count clone.
 5. The chosen staged or Mega pipeline executes with the same route order and
    activation ownership.
 6. The selected post-expert stage consumes the BF16 W2 combine output. The
@@ -273,6 +308,9 @@ The staged pipeline realizes the running example in two distributed compute
 launches. First it gathers `A, C, B, D` into rank 0's expert-major order while
 quantizing the W13 operands. Then it transforms the local W13 results through
 SwiGLU and W2 and scatters each route result back to its source rank.
+
+The staged and Mega tables below describe training and its saved-state policy.
+Inference retains no backward state and uses the scratch-binding split above.
 
 | Order | API or kernel | Reads | Writes | Residency and save policy | Synchronization |
 | ---: | --- | --- | --- | --- | --- |
@@ -317,7 +355,7 @@ the same static `swiglu_alpha` and `swiglu_limit` values.
 ## Follow the Mega forward
 
 `chunked_mega_blockscaled_grouped_gemm_fprop_swiglu_fwd()` fuses W13, SwiGLU,
-W2, and combine publication into one chunked pipeline. It produces the same
+W2, and combine publication into one chunked pipeline. Training produces the same
 logical BF16 output and the same planner-owned saved state. Mega is a launch
 topology choice, not a different quantization or memory API.
 
@@ -430,5 +468,7 @@ rank-local scratch:
 ```
 
 The context's virtual addresses remain stable under CUDA graph capture.
-Device-side offsets decide which physical bytes a launch uses; no dynamically
-sized PyTorch activation tensor is returned to autograd.
+Planner-backed paths use device-side offsets to select the bytes a launch
+uses. Device-only Mega inference uses its static views and automatic tensor-map
+selection. No dynamically sized PyTorch activation tensor is returned to
+autograd.

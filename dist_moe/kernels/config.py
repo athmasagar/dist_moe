@@ -115,10 +115,10 @@ _MXFP4_STAGED_COMPACT_MIN_FEATURE_WAVES = 48
 
 # Measured tuning table: MXFP4/A8W4 inference-fprop (N, K) shapes where the
 # static tile scheduler beats the dynamic one (4-7% at 4K-64K tokens/rank for
-# the (12288, 3072) T6-class fc2). This is deliberately NOT a ratio rule:
-# (14336, 3584) (T7 fc2) has the exact same N == 4 * K proportions and
+# the (12288, 3072) contraction-class fc2). This is deliberately NOT a ratio rule:
+# (14336, 3584) (larger contraction fc2) has the exact same N == 4 * K proportions and
 # measures 3-7% *slower* static for MXFP4 in isolated A/Bs (9,111.8 vs
-# 9,753.1 us at 16K tokens/rank), as does every T5 shape under the former
+# 9,753.1 us at 16K tokens/rank), as does every square shape under the former
 # N >= K rule (3-10%). A K-size threshold fails too: a paired sweep over
 # hypothetical N == 4 * K shapes at 16K tokens/rank measured static 7-13%
 # slower at every K in {2048, 2560, 3328, 3584, 4096} - including Ks smaller
@@ -1076,6 +1076,7 @@ GROUPED_GEMM_CONFIGS.update(
 
 _TRAINING_FPROP_DGRAD_CONFIG = "training_2cta2mma_bm512_bn256"
 _TRAINING_WGRAD_CONFIG = "training_2cta1mma_bm256_bn256"
+_TRAINING_LARGE_BATCH_WGRAD_CONFIG = "training_wgrad_2cta2mma_bm512_bn256"
 GROUPED_GEMM_CONFIGS.update(
     {
         _TRAINING_FPROP_DGRAD_CONFIG: {
@@ -1085,6 +1086,20 @@ GROUPED_GEMM_CONFIGS.update(
             "BLOCK_SIZE_N": 256,
             "BLOCK_SIZE_K": 64,
             "NUM_SMEM_BUFFERS": 4,
+            "NUM_TMEM_BUFFERS": 1,
+            "NUM_TILE_BUFFERS": 2,
+            "EPILOGUE_SUBTILE": 4,
+        },
+        # The single accumulator buffer leaves the epilogue exposed; a second
+        # C stage overlaps its TMA stores with the next tile's first atom.
+        _TRAINING_LARGE_BATCH_WGRAD_CONFIG: {
+            "NUM_CTAS": 2,
+            "NUM_MMAS": 2,
+            "BLOCK_SIZE_M": 512,
+            "BLOCK_SIZE_N": 256,
+            "BLOCK_SIZE_K": 64,
+            "NUM_SMEM_BUFFERS": 4,
+            "NUM_C_STAGES": 2,
             "NUM_TMEM_BUFFERS": 1,
             "NUM_TILE_BUFFERS": 2,
             "EPILOGUE_SUBTILE": 4,
@@ -1108,8 +1123,52 @@ DEFAULT_FP32_GROUPED_GEMM_CONFIG = "2cta1mma_bm256_bn256"
 DEFAULT_GROUPED_GEMM_WGRAD_CONFIG = "2cta1mma_bm256_bn256"
 
 
-def grouped_gemm_training_config(*, wgrad: bool = False) -> str:
-    return _TRAINING_WGRAD_CONFIG if wgrad else _TRAINING_FPROP_DGRAD_CONFIG
+# At or below this many routed rows per rank (tokens * topk), native training
+# runs the BM256 tile for every GEMM instead of BM512. Measured end-to-end on
+# GB200 EP4 fwd+bwd with 4 and 32 local experts (square and contraction shapes): BM256
+# FPROP/DGRAD is 3-21% faster at <=8192 rows and 1.5-4% slower at >=16384
+# rows; GB300 EP4 WGRAD follows the same split.
+_TRAINING_SMALL_BATCH_MAX_ROUTED_ROWS = 8192
+# FPROP/DGRAD M tiles span one local expert's rows, so below one BM512 tile of
+# rows per expert every tile runs partly empty. GB300 EP4 E256 fwd+bwd at 256
+# rows per expert: BM256 FPROP/DGRAD is 27-34% faster; at 512 BM512 still wins.
+# WGRAD tiles span the weight dims; rows per expert only set their K loop.
+_TRAINING_LARGE_BATCH_BLOCK_M = GROUPED_GEMM_CONFIGS[_TRAINING_FPROP_DGRAD_CONFIG][
+    "BLOCK_SIZE_M"
+]
+# The FC2 combine FPROP runs BM256 with two TMEM buffers from this many routed
+# rows per local expert. GB300 GALA (D=9216, I=2304) 8-layer EP8-64, both tiles
+# alternating in one job: 16384 rows -1.2..-2.1%; 2048-8192 rows +5..+9%.
+_COMBINE_FPROP_BM256_MIN_ROWS_PER_GROUP = 16384
+
+
+def grouped_gemm_training_config(
+    *,
+    wgrad: bool = False,
+    routed_rows: int | None = None,
+    num_groups: int = 1,
+    combine_fprop: bool = False,
+) -> str:
+    """Native training config name.
+
+    `routed_rows` is the expected routed rows per rank (tokens * topk), spread
+    over `num_groups` local experts; `None` keeps the large-batch tiles.
+    `combine_fprop` selects the FC2 combine FPROP tile.
+    """
+    if routed_rows is not None and (
+        routed_rows <= _TRAINING_SMALL_BATCH_MAX_ROUTED_ROWS
+        or (not wgrad and routed_rows < num_groups * _TRAINING_LARGE_BATCH_BLOCK_M)
+    ):
+        return _TRAINING_WGRAD_CONFIG
+    if wgrad:
+        return _TRAINING_LARGE_BATCH_WGRAD_CONFIG
+    if (
+        combine_fprop
+        and routed_rows is not None
+        and routed_rows >= num_groups * _COMBINE_FPROP_BM256_MIN_ROWS_PER_GROUP
+    ):
+        return _TRAINING_WGRAD_CONFIG
+    return _TRAINING_FPROP_DGRAD_CONFIG
 
 
 def registered_grouped_gemm_config_name(config: dict[str, int]) -> str:
@@ -1481,6 +1540,41 @@ def _blockscaled_inference_feature_candidates(
     return candidates
 
 
+def narrow_blockscaled_inference_token_tile(
+    config: dict[str, int | bool],
+    *,
+    weight_bits: int,
+    num_tokens_per_expert: int,
+    hidden_dim: int,
+    intermediate_dim: int,
+    num_local_experts: int,
+    num_sms: int | None,
+) -> dict[str, int | bool]:
+    """Trade token reuse for independent accumulators on short packed-weight grids."""
+    if (
+        weight_bits != 4
+        or not config.get("NATIVE_MMA_TAILS", False)
+        or int(config["BLOCK_SIZE_N"]) <= 128
+        or num_sms is None
+    ):
+        return config
+    feature_tiles = min(
+        _ceil_div(hidden_dim, int(config["BLOCK_SIZE_M"])),
+        _ceil_div(2 * intermediate_dim, int(config["BLOCK_SIZE_M"])),
+    )
+    token_tiles = _ceil_div(num_tokens_per_expert, int(config["BLOCK_SIZE_N"]))
+    clusters = max(num_sms // int(config["NUM_CTAS"]), 1)
+    if feature_tiles * token_tiles * num_local_experts >= 2 * clusters:
+        return config
+    return {
+        **config,
+        "BLOCK_SIZE_N": 128,
+        "MMA_ATOM_N": 128,
+        "OVERLAPPING_ACCUM": False,
+        "PIPELINE_CHUNK_ROWS": 128,
+    }
+
+
 def _blockscaled_inference_wave_cost(
     block_m: int,
     *,
@@ -1579,15 +1673,47 @@ def _blockscaled_inference_feature_tile(
                 "compact staged tiles require a single MMA atom along "
                 f"the feature axis; got num_ctas={num_ctas}"
             )
-    return _select_blockscaled_inference_feature_tile(
-        candidates,
-        token_tiles=_ceil_div(num_tokens_per_expert, token_tile),
-        hidden_dim=hidden_dim,
-        intermediate_dim=intermediate_dim,
-        num_local_experts=num_local_experts,
-        num_clusters=max(num_sms // num_ctas, 1),
+    wave_args = {
+        "token_tiles": _ceil_div(num_tokens_per_expert, token_tile),
+        "hidden_dim": hidden_dim,
+        "intermediate_dim": intermediate_dim,
+        "num_local_experts": num_local_experts,
+        "num_clusters": max(num_sms // num_ctas, 1),
+    }
+    selection_args = dict(
+        **wave_args,
         prefer_deeper_pipeline=prefer_deeper_pipeline,
         prioritize_pipeline_depth=prioritize_pipeline_depth,
+    )
+    selected = _select_blockscaled_inference_feature_tile(candidates, **selection_args)
+    if (
+        estimate_blockscaled_tmem_cols(
+            block_m=selected,
+            block_n=token_tile,
+            num_mmas=selected // (num_ctas * 128),
+            num_tmem_buffers=2,
+        )
+        <= SM100_TMEM_COLS
+    ):
+        return selected
+    selected_cost = _blockscaled_inference_wave_cost(selected, **wave_args)[0]
+    buffered_ties = [
+        candidate
+        for candidate in candidates
+        if _blockscaled_inference_wave_cost(candidate[0], **wave_args)[0]
+        == selected_cost
+        and estimate_blockscaled_tmem_cols(
+            block_m=candidate[0],
+            block_n=token_tile,
+            num_mmas=candidate[0] // (num_ctas * 128),
+            num_tmem_buffers=2,
+        )
+        <= SM100_TMEM_COLS
+    ]
+    return (
+        _select_blockscaled_inference_feature_tile(buffered_ties, **selection_args)
+        if buffered_ties
+        else selected
     )
 
 
@@ -1606,24 +1732,17 @@ def derive_blockscaled_inference_geometry(
     prefer_deeper_pipeline: bool = False,
     pipeline_depth_widths: tuple[int, int] | None = None,
     max_token_tile: int | None = None,
-    use_mxfp4_mega_tile_buckets: bool = False,
+    routing_capacity: int | None = None,
 ) -> dict[str, int | bool]:
     """Apply compact inference tile geometry once."""
     config = dict(seed)
     if num_tokens_per_expert is None or num_tokens_per_expert <= 0:
         return config
 
-    if use_mxfp4_mega_tile_buckets:
-        if num_tokens_per_expert <= 32:
-            token_tile = 32
-        elif num_tokens_per_expert <= 64:
-            token_tile = 64
-        else:
-            token_tile = 128
-    else:
-        token_tile = min(256, _align_up(num_tokens_per_expert, 32))
-        if format_name == "nvfp4":
-            token_tile = max(64, token_tile)
+    token_tile = min(256, _align_up(num_tokens_per_expert, 32))
+    # Leave headroom for routing imbalance before a second tile rereads weights.
+    if format_name == "nvfp4" and staged:
+        token_tile = max(64, token_tile)
     if max_token_tile is not None:
         token_tile = min(token_tile, max_token_tile)
     if staged:
@@ -1635,6 +1754,24 @@ def derive_blockscaled_inference_geometry(
             intermediate_dim=intermediate_dim,
             num_local_experts=num_local_experts,
             num_sms=num_sms,
+        )
+
+    if routing_capacity is not None and routing_capacity % token_tile:
+        minimum = 64 if format_name == "nvfp4" and staged else 32
+        maximum = min(256, max_token_tile if max_token_tile is not None else 256)
+        candidates = [
+            width
+            for width in range(minimum, maximum + 1, 32)
+            if routing_capacity % width == 0
+        ]
+        if not candidates:
+            raise ValueError("no supported token tile divides the routing capacity")
+        token_tile = min(
+            candidates,
+            key=lambda width: (
+                _ceil_div(num_tokens_per_expert, width),
+                _ceil_div(num_tokens_per_expert, width) * width,
+            ),
         )
 
     config["BLOCK_SIZE_N"] = token_tile
@@ -1671,6 +1808,32 @@ def derive_blockscaled_inference_geometry(
         )
         config["BLOCK_SIZE_M"] = feature_tile
         config["NUM_MMAS"] = feature_tile // (num_ctas * 128)
+        feature_tiles = min(
+            _ceil_div(hidden_dim, feature_tile),
+            _ceil_div(2 * intermediate_dim, feature_tile),
+        )
+        token_tiles = _ceil_div(num_tokens_per_expert, token_tile)
+        if (
+            not staged
+            and token_tile > 128
+            and feature_tiles * token_tiles * num_local_experts
+            < max(num_sms // num_ctas, 1)
+        ):
+            return derive_blockscaled_inference_geometry(
+                seed,
+                format_name=format_name,
+                staged=staged,
+                num_tokens_per_expert=num_tokens_per_expert,
+                hidden_dim=hidden_dim,
+                intermediate_dim=intermediate_dim,
+                num_local_experts=num_local_experts,
+                num_sms=num_sms,
+                retune_config=retune_config,
+                prefer_deeper_pipeline=prefer_deeper_pipeline,
+                pipeline_depth_widths=pipeline_depth_widths,
+                max_token_tile=128,
+                routing_capacity=routing_capacity,
+            )
 
     return config
 
@@ -1857,7 +2020,8 @@ def derive_blockscaled_grouped_gemm_config(
         # K-tile producer/MMA loop unroll factor. Empirically tuned per
         # production config: u=1 wins on high-SMEM/OV paths (P0) and on
         # the no-swap NVFP4 K<N path (P2); u=2 is the default elsewhere.
-        # See ``BlockScaledKnobs`` in ``blockscaled_grouped_gemm.py``.
+        # See ``BlockScaledKnobs`` in
+        # ``blockscaled_grouped_gemm.py``.
         "KLOOP_UNROLL": kloop_unroll,
     }
 

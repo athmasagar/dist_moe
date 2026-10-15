@@ -7,8 +7,7 @@
 """CuTeDSL distributed grouped GEMM for dist_moe.
 
 Persistent, warp-specialized SM100 kernel for FPROP/DGRAD dispatch and combine.
-The implementation preserves the distributed grouped-GEMM scheduling and
-deterministic numerical contract validated by internal runtime parity.
+The deterministic numerical contract is validated by runtime parity.
 
 CuTe grouped-GEMM launchers never synchronize expert-parallel peers. The
 autograd orchestration layer owns the barriers that order dispatch publication
@@ -31,8 +30,14 @@ from cutlass.cute.runtime import from_dlpack
 from .._activation_buffer_planner_kernel import (
     MEMORY_ALIGNMENT as _ACTIVATION_BUFFER_ALIGNMENT,
 )
+from ..formats import (
+    canonical_swiglu_clamp,
+    SWIGLU_CLAMP_ALPHA_DEFAULT,
+    SWIGLU_CLAMP_LIMIT_DEFAULT,
+)
 from ._environment import l2_cache_size, num_sms_per_device
 from ._grouped_gemm_config import (
+    NATIVE_SWIGLU_EMIT_H1_GROUP_SIZE,
     NATIVE_SWIGLU_EPILOGUE_TILE_N_MULTIPLE,
 )
 from .config import (  # noqa: F401
@@ -45,9 +50,11 @@ from .config import (  # noqa: F401
     _SWAP_AB_CONFIG_SUFFIX,
     _swap_ab_inference_config,
     _use_deep_prefill_pipeline,
+    DEFAULT_GROUPED_GEMM_WGRAD_CONFIG,
     derive_auto_grouped_gemm_swap_ab_fprop_config,
     GROUPED_GEMM_CONFIGS,
     grouped_gemm_epilogue_tile_is_compatible,
+    grouped_gemm_epilogue_tile_n,
     grouped_gemm_training_config,
     registered_grouped_gemm_config_name,
     resolve_routing_m_multiple,
@@ -60,7 +67,7 @@ from .config import (  # noqa: F401
 #
 # * `_ACTIVATION_BUFFER_ALIGNMENT` — sub-allocations inside the shared
 #   activation buffer are aligned to this by the routing planner
-#   (`_activation_buffer_planner_kernel.MEMORY_ALIGNMENT`). Per-
+#   (`triton/dist_moe/activation_buffer_planner_kernel.MEMORY_ALIGNMENT`). Per-
 #   group pointer arithmetic `base + accumulated_M * stride * elem_size`
 #   preserves this alignment as long as `stride * elem_size` is a
 #   multiple of it (true for typical hidden dims: bf16 × 64 = 128, etc.).
@@ -73,6 +80,7 @@ from .config import (  # noqa: F401
 #   offset_bytes)` — so 16 is the smallest alignment we can rely on
 #   without inspecting the slice math. Used for tensor descriptors
 #   that are NOT served from `activation_buffer`.
+from .dispatch_quant import _gather_k_segments
 from .dist_grouped_gemm_kernel import (
     DistGroupedGemmKernel,
 )
@@ -84,7 +92,12 @@ from .grouped_gemm import (
     _DGRAD,
     _FPROP,
     _torch_layout_signature,
+    _validate_activation_buffer_args,
     _validate_inputs,
+    _WGRAD,
+)
+from .native_combine_swiglu import (
+    native_swiglu_bwd_col_multiple,
 )
 
 _PYTORCH_ALLOCATOR_MIN_ALIGNMENT: int = 16
@@ -106,6 +119,7 @@ def _padding_row(
     numel: int,
     zero: bool,
 ) -> torch.Tensor:
+    """Return a cached padding source/sink without retaining capture storage."""
     key = (device, dtype, numel)
     row = cache.get(key)
     if row is None:
@@ -125,6 +139,58 @@ def _get_num_n_clusters(n: int, k: int, dtype_bytes: int) -> int:
     l2_budget = int(l2_cache_size() * _L2_B_BUDGET_FRACTION)
     total_b_bytes = n * k * dtype_bytes
     return max((total_b_bytes + l2_budget - 1) // l2_budget, 1)
+
+
+def _native_swiglu_fwd_config_is_compatible(config: str, intermediate_dim: int) -> bool:
+    """Return whether a native config can emit natural h1 and SwiGLU h2.
+
+    The retained producer requires 32 gate/up columns per half-subtile and
+    128 rows per CTA MMA atom. This only classifies the source geometry;
+    it does not select a replacement config or collect clip counters.
+    """
+    cfg, swap_ab = _dist_grouped_gemm_config(config)
+    return (
+        intermediate_dim > 0
+        and intermediate_dim % NATIVE_SWIGLU_EMIT_H1_GROUP_SIZE == 0
+        and not swap_ab
+        and grouped_gemm_epilogue_tile_n(cfg) == 2 * NATIVE_SWIGLU_EMIT_H1_GROUP_SIZE
+        and cfg["BLOCK_SIZE_M"] == 128 * cfg["NUM_CTAS"] * cfg["NUM_MMAS"]
+    )
+
+
+# Plain COMBINE FPROP sends each output element to a peer after 2*K FLOPs.
+# Up to K=3072 that NVLink stream rivals the MMA, and N-fastest order spends a
+# wave on a couple of M tiles, i.e. on few destinations' rows; 4-tile N bands
+# spread it over clusters/4 M tiles (-8..-16% at K 1792/3072). At K=4096 the
+# MMA dominates and bands only lose locality (+1..+4% at 4096x4096). Above
+# EP8, K=3072 bands lose end to end (contraction inference: 1-2% at 8K/32K
+# tokens/rank, 14% at EP64 64K).
+_COMBINE_N_BAND_MAX_K: int = 3072
+_COMBINE_N_BAND_MAX_K_ABOVE_EP8: int = 2048
+_COMBINE_N_BAND_TILES: int = 4
+
+
+def _get_combine_fprop_num_n_clusters(
+    n: int, k: int, block_n: int, world_size: int
+) -> int:
+    """Choose the retained output-bound COMBINE FPROP N-band schedule."""
+    num_n_tiles = (n + block_n - 1) // block_n
+    if world_size <= 8:
+        max_k = _COMBINE_N_BAND_MAX_K
+    else:
+        max_k = _COMBINE_N_BAND_MAX_K_ABOVE_EP8
+    if k > max_k:
+        return 1
+    # Ragged bands would pad the tile grid with idle slots.
+    band = next(
+        (
+            b
+            for b in range(_COMBINE_N_BAND_TILES, num_n_tiles + 1)
+            if num_n_tiles % b == 0
+        ),
+        num_n_tiles,
+    )
+    return num_n_tiles // band
 
 
 # Cross-CTA memory ops semantics (issued inline at callsites):
@@ -161,7 +227,18 @@ def _get_dist_kernel(
     host_a_tensormap: bool,
     has_padding_sentinels: bool,
     swap_ab: bool,
+    gather_k_segments: int,
+    schedule_rotation: bool = True,
+    swiglu_clamped: bool = False,
+    swiglu_alpha: float = SWIGLU_CLAMP_ALPHA_DEFAULT,
+    swiglu_limit: float = SWIGLU_CLAMP_LIMIT_DEFAULT,
+    swiglu_emit_h2: bool = False,
+    swiglu_emit_h1: bool = False,
 ) -> DistGroupedGemmKernel:
+    """Return a cached kernel with the exact scheduling and SwiGLU controls."""
+    swiglu_clamped, swiglu_alpha, swiglu_limit = canonical_swiglu_clamp(
+        swiglu_clamped, swiglu_alpha, swiglu_limit
+    )
     key = (
         config_name,
         problem_type,
@@ -174,6 +251,13 @@ def _get_dist_kernel(
         host_a_tensormap,
         has_padding_sentinels,
         swap_ab,
+        gather_k_segments,
+        schedule_rotation,
+        swiglu_clamped,
+        swiglu_alpha,
+        swiglu_limit,
+        swiglu_emit_h2,
+        swiglu_emit_h1,
     )
     obj = _DIST_KERNEL_CACHE.get(key)
     if obj is None:
@@ -189,6 +273,13 @@ def _get_dist_kernel(
             host_a_tensormap=host_a_tensormap,
             has_padding_sentinels=has_padding_sentinels,
             swap_ab=swap_ab,
+            schedule_rotation=schedule_rotation,
+            swiglu_clamped=swiglu_clamped,
+            swiglu_alpha=swiglu_alpha,
+            swiglu_limit=swiglu_limit,
+            swiglu_emit_h2=swiglu_emit_h2,
+            swiglu_emit_h1=swiglu_emit_h1,
+            gather_k_segments=gather_k_segments,
         )
         _DIST_KERNEL_CACHE[key] = obj
     return obj
@@ -197,6 +288,7 @@ def _get_dist_kernel(
 def _counter_workspace_splits(
     *, kernel_m: int, block_m: int, num_groups: int
 ) -> tuple[int, int, int]:
+    """Return counter lengths for the maximum grouped M-tile grid."""
     max_m_tiles = ((kernel_m + block_m - 1) // block_m) + num_groups
     return 1, 1, max_m_tiles
 
@@ -215,6 +307,7 @@ def _native_mega_counter_storage_splits(
     intermediate_dim: int,
     config: str,
 ) -> tuple[int, int]:
+    """Return primary and secondary counter lengths for native Mega."""
     cfg, _ = _dist_grouped_gemm_config(config)
     primary_splits = _counter_workspace_splits(
         kernel_m=rows,
@@ -253,6 +346,7 @@ def _allocate_counter_workspace(
     device: torch.device,
     precleared_counter_storage: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Build counters or validate routing-owned precleared counter storage."""
     splits = _counter_workspace_splits(
         kernel_m=kernel_m,
         block_m=block_m,
@@ -307,8 +401,19 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
     secondary_weight: torch.Tensor | None = None,
     secondary_ready_counter: torch.Tensor | None = None,
     secondary_ready_feature_tiles: int | None = None,
-    groups_override: int | None = None,
-    weight_borrow_launch: tuple | None = None,
+    pre_shuffled_rows: bool = False,
+    # COMBINE_SWIGLU_BWD: `x` is the grad_h1 output the kernel fills from
+    # grad_h2 (GM, I) and h1 (GM, 2I) before its TMA loads read it;
+    # `swiglu_emit_h2` then overwrites grad_h2 with swiglu_fwd(h1).
+    swiglu_dz: torch.Tensor | None = None,
+    swiglu_h1: torch.Tensor | None = None,
+    swiglu_clamped: bool = False,
+    swiglu_alpha: float = SWIGLU_CLAMP_ALPHA_DEFAULT,
+    swiglu_limit: float = SWIGLU_CLAMP_LIMIT_DEFAULT,
+    swiglu_emit_h2: bool = False,
+    # DISPATCH_SWIGLU_FWD from natural (unswizzled) W13: also write the
+    # natural h1 into `y` and return `(y, x_gathered)`.
+    swiglu_emit_h1: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Fused-kernel impl: launches DistGroupedGemmKernel directly.
 
@@ -332,9 +437,21 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
         DistGroupedGemmKernel.DISPATCH,
         DistGroupedGemmKernel.COMBINE,
         DistGroupedGemmKernel.DISPATCH_SWIGLU_FWD,
+        DistGroupedGemmKernel.COMBINE_SWIGLU_BWD,
     ):
         raise ValueError(f"unsupported mode={mode}")
+    use_fused_swiglu_bwd = mode == DistGroupedGemmKernel.COMBINE_SWIGLU_BWD
+    if use_fused_swiglu_bwd != (swiglu_dz is not None and swiglu_h1 is not None):
+        raise ValueError("COMBINE_SWIGLU_BWD requires exactly swiglu_dz and swiglu_h1")
+    if use_fused_swiglu_bwd and kernel_override is not None:
+        raise ValueError("COMBINE_SWIGLU_BWD does not support a kernel override")
     use_fused_swiglu_dispatch = mode == DistGroupedGemmKernel.DISPATCH_SWIGLU_FWD
+    if swiglu_emit_h1 and (
+        not use_fused_swiglu_dispatch or kernel_override is not None
+    ):
+        raise ValueError(
+            "swiglu_emit_h1 requires DISPATCH_SWIGLU_FWD without a secondary GEMM"
+        )
     is_dispatch = mode in (
         DistGroupedGemmKernel.DISPATCH,
         DistGroupedGemmKernel.DISPATCH_SWIGLU_FWD,
@@ -355,10 +472,6 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
     if use_secondary_gemm and use_activation_buffer:
         raise ValueError("secondary grouped GEMM does not support activation_buffer")
     G, N, K = w.shape
-    if groups_override is not None:
-        # Expert borrow: the trailing groups' weights are streamed in-kernel,
-        # so the local table has fewer rows than the compiled group count.
-        G = int(groups_override)
     in_dim = K if problem_type == _FPROP else N
     out_dim = N if problem_type == _FPROP else K
     # CONTRACT: dim must be multiple of 8 (b16 vectorized 16-byte
@@ -396,8 +509,11 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
                 swiglu_output.dtype != torch.int64
                 or swiglu_output.shape != (1,)
                 or swiglu_output.device != x.device
+                or not swiglu_output.is_contiguous()
             ):
-                raise ValueError("swiglu_output must be an int64[1] tensor on x.device")
+                raise ValueError(
+                    "swiglu_output must be a contiguous int64[1] tensor on x.device"
+                )
         elif (
             swiglu_output.shape != (num_out_tokens, N // 2)
             or swiglu_output.dtype != w.dtype
@@ -434,6 +550,21 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
                 and x_gathered.dtype == torch.int64
                 and x_gathered.shape == (1,)
             ), "x_gathered must be int64[1] offset tensor in activation_buffer mode"
+            if swiglu_emit_h1:
+                _validate_activation_buffer_args(activation_buffer, y, x_gathered)
+                if (
+                    activation_buffer.dtype != torch.uint8
+                    or activation_buffer.ndim != 1
+                    or not activation_buffer.is_contiguous()
+                    or activation_buffer.data_ptr() % _ACTIVATION_BUFFER_ALIGNMENT != 0
+                    or activation_buffer.device != w.device
+                ):
+                    raise ValueError(
+                        "fused native forward requires aligned contiguous uint8 "
+                        "activation storage on w.device"
+                    )
+                if not y.is_contiguous() or not x_gathered.is_contiguous():
+                    raise ValueError("fused native forward requires contiguous offsets")
             output_offset_t = y
             gathered_offset_t = x_gathered
             # Kernel-M upper bound from buffer capacity; split_sizes
@@ -505,10 +636,28 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
 
     if y is None:
         y = torch.empty((kernel_M, out_dim), dtype=a_input.dtype, device=a_input.device)
+    elif swiglu_emit_h1 and (
+        y.shape != (kernel_M, out_dim)
+        or not y.is_contiguous()
+        or y.data_ptr() % 32 != 0
+    ):
+        raise ValueError(
+            f"swiglu_emit_h1 requires a contiguous, 32-byte aligned y of shape "
+            f"({kernel_M}, {out_dim})"
+        )
+    if swiglu_emit_h1 and out_dim % (2 * NATIVE_SWIGLU_EMIT_H1_GROUP_SIZE) != 0:
+        raise ValueError(
+            f"swiglu_emit_h1 requires N divisible by "
+            f"{2 * NATIVE_SWIGLU_EMIT_H1_GROUP_SIZE}; got {out_dim}"
+        )
 
     if num_sms is None:
         num_sms = num_sms_per_device()
     override_swap_ab = bool(kernel_override and kernel_override.SWAP_AB)
+    if swiglu_emit_h1 and config is None:
+        config = grouped_gemm_training_config(
+            routed_rows=estimate_recv_num_tokens, num_groups=G
+        )
     config = _resolve_dist_grouped_gemm_config(
         config=config,
         kernel_M=kernel_M,
@@ -519,7 +668,7 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
         estimate_recv_num_tokens=estimate_recv_num_tokens,
         epilogue_tile_n_multiple=(
             NATIVE_SWIGLU_EPILOGUE_TILE_N_MULTIPLE
-            if use_fused_swiglu_dispatch
+            if use_fused_swiglu_dispatch and not swiglu_emit_h1
             else None
         ),
         swap_ab=override_swap_ab,
@@ -532,6 +681,14 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
     )
     if swap_ab and use_activation_buffer:
         raise ValueError("distributed SWAP_AB does not support activation_buffer")
+    if swiglu_emit_h1 and not _native_swiglu_fwd_config_is_compatible(
+        config, out_dim // 2
+    ):
+        raise ValueError(
+            "swiglu_emit_h1 requires a non-swapped config with 128 rows per CTA "
+            f"MMA atom and {2 * NATIVE_SWIGLU_EMIT_H1_GROUP_SIZE}-column epilogue "
+            f"subtiles; got {config!r}"
+        )
     token_tile = int(cfg["BLOCK_SIZE_N"])
     if (
         swap_ab
@@ -580,15 +737,20 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
         counter=counter,
     )
 
-    # COMBINE must NOT use N-major remap: scatter is fused into epilog
-    # and the TMEM tile order must match the per-row scatter pointer
-    # table (FORCE_N_MAJOR=False, NUM_N_CLUSTERS=1).
-    force_n_major = is_dispatch
-    num_n_clusters = (
-        _get_num_n_clusters(int(out_dim), int(in_dim), a_input.element_size())
-        if force_n_major
-        else 1
-    )
+    # Fused SwiGLU-bwd COMBINE runs N-major so the first wave waits on fewer
+    # producer M-tiles (-7% at D12288 with 8K rows/expert). Plain COMBINE keeps
+    # the per-group shape heuristic, with N bands for output-bound FPROP.
+    force_n_major = is_dispatch or use_fused_swiglu_bwd
+    if force_n_major:
+        num_n_clusters = _get_num_n_clusters(
+            int(out_dim), int(in_dim), a_input.element_size()
+        )
+    elif problem_type == _FPROP and not swap_ab:
+        num_n_clusters = _get_combine_fprop_num_n_clusters(
+            int(out_dim), int(in_dim), int(cfg["BLOCK_SIZE_N"]), world_size
+        )
+    else:
+        num_n_clusters = 1
     if kernel_override is None:
         kernel = _get_dist_kernel(
             config_name=config,
@@ -602,6 +764,13 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
             host_a_tensormap=host_a_tensormap,
             has_padding_sentinels=has_padding_sentinels,
             swap_ab=swap_ab,
+            gather_k_segments=_gather_k_segments(int(out_dim)) if is_dispatch else 1,
+            schedule_rotation=not pre_shuffled_rows,
+            swiglu_clamped=swiglu_clamped,
+            swiglu_alpha=swiglu_alpha,
+            swiglu_limit=swiglu_limit,
+            swiglu_emit_h2=swiglu_emit_h2,
+            swiglu_emit_h1=swiglu_emit_h1,
         )
     else:
         kernel = kernel_override
@@ -681,7 +850,10 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
         # This branch is compile-time dead, but CuTe still requires a rank-2
         # int32 tensor with the same compile/runtime layout.
         h2_words = counter.view(1, 1)
-    h2_words_cute = from_dlpack(h2_words, assumed_align=16)
+    # Int64 row stride: the h2 store's Int32 row * (N // 4) can pass 2**31.
+    h2_words_cute = from_dlpack(h2_words, assumed_align=16).mark_layout_dynamic(
+        leading_dim=1
+    )
     peer_ptrs_cute = from_dlpack(peer_ptrs.detach(), assumed_align=8)
     scatter_ptrs_cute = from_dlpack(
         (scatter_ptrs if scatter_ptrs is not None else peer_ptrs).detach(),
@@ -776,6 +948,33 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
         cond_tensor = counter
     cond_cute = from_dlpack(cond_tensor, assumed_align=4)
 
+    if use_fused_swiglu_bwd:
+        assert swiglu_dz is not None and swiglu_h1 is not None
+        swiglu_args = (
+            cutlass.Int64(0 if use_activation_buffer else swiglu_dz.data_ptr()),
+            cutlass.Int64(0 if use_activation_buffer else swiglu_h1.data_ptr()),
+            cutlass.Int32(
+                in_dim // 2 if use_activation_buffer else swiglu_dz.stride(0)
+            ),
+            cutlass.Int32(in_dim if use_activation_buffer else swiglu_h1.stride(0)),
+        )
+    else:
+        swiglu_args = (
+            cutlass.Int64(0),
+            cutlass.Int64(0),
+            cutlass.Int32(0),
+            cutlass.Int32(0),
+        )
+
+    swiglu_dz_offsets_cute = from_dlpack(
+        swiglu_dz if use_fused_swiglu_bwd and use_activation_buffer else dummy_offset,
+        assumed_align=8,
+    )
+    swiglu_h1_offsets_cute = from_dlpack(
+        swiglu_h1 if use_fused_swiglu_bwd and use_activation_buffer else dummy_offset,
+        assumed_align=8,
+    )
+
     # CORRECTNESS: with activation_buffer, `x` may be an int64[1] offset
     # tensor; reading elem from it would give 8 instead of the actual A
     # dtype size and break TMA stride math. Read from `a_input` instead.
@@ -804,15 +1003,17 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
         # The chunked native Mega bakes its cross-group lead window into the
         # traced schedule; launches differing only in the window must not
         # share a compiled binary.
-        getattr(kernel, "GLOBAL_LEAD_CHUNKS", 0),
+        kernel.GLOBAL_LEAD_CHUNKS,
         secondary_layout_key,
         _torch_layout_signature(h2_words),
         "fused",
-        *(
-            ("weight_borrow", getattr(kernel, "WEIGHT_BORROW_SLOTS", 0))
-            if weight_borrow_launch is not None
-            else ()
-        ),
+        pre_shuffled_rows,
+        kernel.swiglu_clamped,
+        kernel.swiglu_alpha,
+        kernel.swiglu_limit,
+        kernel.swiglu_emit_h2,
+        kernel.swiglu_emit_h1,
+        kernel.GATHER_K_SEGMENTS,
     )
     # Kernel-logical axes depend on problem_type:
     #   FPROP: out=N_w, in=K_w    → kernel (kernel_M, N_w, K_w)
@@ -862,10 +1063,12 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
         use_activation_buffer,
         cond_cute,
         use_conditional_execution,
+        *swiglu_args,
+        swiglu_dz_offsets_cute,
+        swiglu_h1_offsets_cute,
         num_clusters,
         stream,
         *secondary_compile_args,
-        *(weight_borrow_launch if weight_borrow_launch is not None else ()),
     )
     # Runtime args: drop constexpr (elem_size_bytes_a/b/c, G,
     # use_activation_buffer, use_conditional_execution) — baked into the
@@ -903,10 +1106,12 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
         input_offsets_cute,
         swiglu_output_offsets_cute,
         cond_cute,
+        *swiglu_args,
+        swiglu_dz_offsets_cute,
+        swiglu_h1_offsets_cute,
         num_clusters,
         stream,
         *secondary_runtime_args,
-        *(weight_borrow_launch if weight_borrow_launch is not None else ()),
     )
     prefix_target = (
         DistGroupedGemmKernel.dispatch_kernel
@@ -930,11 +1135,11 @@ def _fused_dist_grouped_gemm_impl(  # noqa: C901
         # DISPATCH, return the original offset tensors (caller dereferences
         # them post-kernel). The internal y / x_gathered are buffer views
         # that don't survive the launcher boundary.
-        if use_fused_swiglu_dispatch:
+        if use_fused_swiglu_dispatch and not swiglu_emit_h1:
             assert swiglu_output is not None
             return swiglu_output, gathered_offset_t
         return output_offset_t, gathered_offset_t
-    if use_fused_swiglu_dispatch:
+    if use_fused_swiglu_dispatch and not swiglu_emit_h1:
         assert swiglu_output is not None
         return swiglu_output, x_gathered
     return y, x_gathered
@@ -959,10 +1164,22 @@ def dist_grouped_gemm_fprop_dispatch(
     static_scheduler: bool = False,
     precleared_counter_storage: torch.Tensor | None = None,
     m_multiple_of: int | None = None,
+    pre_shuffled_rows: bool = False,
+    swiglu_h2: torch.Tensor | None = None,
+    swiglu_fast_math: bool = False,
+    swiglu_clamped: bool = False,
+    swiglu_alpha: float = SWIGLU_CLAMP_ALPHA_DEFAULT,
+    swiglu_limit: float = SWIGLU_CLAMP_LIMIT_DEFAULT,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Distributed grouped GEMM fprop dispatch: gather A from peers, GEMM.
 
     `local_rank` and `world_size` are derived from `symm_mem_buffer.hdl`.
+
+    `swiglu_h2` ([num_out_tokens, N/2]) additionally receives `swiglu_fwd(y)`
+    from the retained epilogue with the same activation flags. W13 and y
+    remain in natural `[gate; up]` order. Fusion requires N/2 divisible by
+    32, a non-swapped config, 64-column epilogue subtiles and 128 rows per
+    CTA MMA atom. No clip counters or Python callbacks are run here.
 
     When `activation_buffer` is provided, `y` and `x_gathered` must be
     int64[1] device tensors holding byte offsets into the buffer (kernel
@@ -970,9 +1187,18 @@ def dist_grouped_gemm_fprop_dispatch(
     symm-mem and barrier the EP group before this launch. Addresses must
     be 128-byte aligned.
 
+    In that mode `swiglu_h2` is also an int64[1] device byte offset. Existing
+    context storage supplies all three disjoint packed destinations: y has
+    width N, swiglu_h2 has width N/2, and x_gathered has width K. Only the
+    rows described by num_tokens_per_local_expert are written. The caller
+    keeps standalone SwiGLU when clip counters are required; this launcher
+    never silently substitutes another variant. Weight and expert-output
+    processing remain outside this boundary.
+
     Returns: (y_out, x_out), or the original (y_offset, x_gathered_offset)
     tensors when activation_buffer is provided.
     """
+    emit_swiglu = swiglu_h2 is not None
     return _fused_dist_grouped_gemm_impl(
         x=x,
         w=w,
@@ -981,7 +1207,11 @@ def dist_grouped_gemm_fprop_dispatch(
         num_out_tokens=num_out_tokens,
         symm_mem_buffer=symm_mem_buffer,
         problem_type=_FPROP,
-        mode=DistGroupedGemmKernel.DISPATCH,
+        mode=(
+            DistGroupedGemmKernel.DISPATCH_SWIGLU_FWD
+            if emit_swiglu
+            else DistGroupedGemmKernel.DISPATCH
+        ),
         num_sms=num_sms,
         y=y,
         x_gathered=x_gathered,
@@ -990,9 +1220,20 @@ def dist_grouped_gemm_fprop_dispatch(
         conditional_execution=conditional_execution,
         estimate_recv_num_tokens=estimate_recv_num_tokens,
         static_scheduler=static_scheduler,
-        name_prefix="_cute_dist_grouped_gemm_dispatch_fprop",
+        name_prefix=(
+            "_cute_dist_grouped_gemm_dispatch_fprop_emit_swiglu_fwd"
+            if emit_swiglu
+            else "_cute_dist_grouped_gemm_dispatch_fprop"
+        ),
+        pre_shuffled_rows=pre_shuffled_rows,
         precleared_counter_storage=precleared_counter_storage,
         m_multiple_of=m_multiple_of,
+        swiglu_output=swiglu_h2,
+        swiglu_emit_h1=emit_swiglu,
+        swiglu_fast_math=emit_swiglu and swiglu_fast_math,
+        swiglu_clamped=emit_swiglu and swiglu_clamped,
+        swiglu_alpha=swiglu_alpha,
+        swiglu_limit=swiglu_limit,
     )
 
 
@@ -1015,6 +1256,7 @@ def dist_grouped_gemm_fprop_swiglu_fwd_dispatch(
     precleared_counter_storage: torch.Tensor | None = None,
     swiglu_fast_math: bool = False,
     m_multiple_of: int | None = None,
+    pre_shuffled_rows: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Gather, run swizzled FC13, and write compact SwiGLU output."""
     return _fused_dist_grouped_gemm_impl(
@@ -1033,11 +1275,167 @@ def dist_grouped_gemm_fprop_swiglu_fwd_dispatch(
         activation_buffer=activation_buffer,
         estimate_recv_num_tokens=estimate_recv_num_tokens,
         name_prefix="_cute_dist_grouped_gemm_dispatch_fprop_swiglu_fwd",
+        pre_shuffled_rows=pre_shuffled_rows,
         swiglu_output=h2,
         swiglu_fast_math=swiglu_fast_math,
         precleared_counter_storage=precleared_counter_storage,
         m_multiple_of=m_multiple_of,
     )
+
+
+def dist_grouped_gemm_wgrad_dispatch(
+    dy: torch.Tensor,
+    x: torch.Tensor,
+    split_sizes: torch.Tensor,
+    gather_ptrs: torch.Tensor,
+    symm_mem_buffer,
+    *,
+    wgrad: torch.Tensor,
+    hidden_dim_dy: int,
+    hidden_dim_x: int,
+    dtype: torch.dtype,
+    output_accum: bool = False,
+    num_sms: int | None = None,
+    config: str = DEFAULT_GROUPED_GEMM_WGRAD_CONFIG,
+    activation_buffer: torch.Tensor | None = None,
+    conditional_execution: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Dispatch BF16 input columns into transient scratch while computing WGRAD."""
+    assert dtype == torch.bfloat16
+    assert hidden_dim_dy % 64 == 0 and hidden_dim_x % 64 == 0
+    use_ab = activation_buffer is not None
+    dummy_offset = gather_ptrs[:1]
+    dy_offset, x_offset = (dy, x) if use_ab else (dummy_offset, dummy_offset)
+    if activation_buffer is not None:
+        _validate_activation_buffer_args(activation_buffer, dy, x)
+        dy = activation_buffer.view(dtype)[:hidden_dim_dy].view(1, hidden_dim_dy)
+        x = activation_buffer.view(dtype)[:hidden_dim_x].view(1, hidden_dim_x)
+    split_sizes = _validate_inputs(x, dy, split_sizes)
+    assert dy.stride(1) == x.stride(1) == 1
+    assert dy.stride(0) * dtype.itemsize % _ACTIVATION_BUFFER_ALIGNMENT == 0
+    assert x.stride(0) * dtype.itemsize % _ACTIVATION_BUFFER_ALIGNMENT == 0
+    groups = split_sizes.numel()
+    cfg = GROUPED_GEMM_CONFIGS[config]
+    num_sms = num_sms if num_sms is not None else num_sms_per_device()
+    clusters = max(1, num_sms // cfg["NUM_CTAS"])
+    num_n_clusters = (hidden_dim_x + cfg["BLOCK_SIZE_N"] - 1) // cfg["BLOCK_SIZE_N"]
+    kernel = DistGroupedGemmKernel(
+        cfg,
+        _WGRAD,
+        DistGroupedGemmKernel.DISPATCH,
+        world_size=symm_mem_buffer.hdl.world_size,
+        num_n_clusters=num_n_clusters,
+        has_padding_sentinels=True,
+        output_accum=output_accum,
+    )
+    counter, tensormaps = _allocate_workspace(clusters, cfg["NUM_CTAS"], dy.device)
+    gather_counter = torch.zeros_like(counter)
+    ready = torch.zeros(
+        groups
+        * ((hidden_dim_x + kernel.AG_BLOCK_SIZE_K - 1) // kernel.AG_BLOCK_SIZE_K),
+        dtype=torch.int32,
+        device=dy.device,
+    )
+    padding = _padding_row(
+        _PADDING_SOURCE_CACHE,
+        device=dy.device,
+        dtype=dtype,
+        numel=hidden_dim_x,
+        zero=True,
+    )
+    if dy.shape[0] == 0:
+        dy = torch.empty((1, hidden_dim_dy), dtype=dtype, device=dy.device)
+        x = torch.empty((1, hidden_dim_x), dtype=dtype, device=x.device)
+    a = dy.t().detach().unsqueeze(-1)
+    b = x.t().detach().unsqueeze(-1)
+    c = wgrad[0].detach().unsqueeze(-1)
+    tensors = (
+        from_dlpack(a, assumed_align=16).mark_layout_dynamic(leading_dim=0),
+        from_dlpack(b, assumed_align=16).mark_layout_dynamic(leading_dim=0),
+        from_dlpack(c, assumed_align=16).mark_layout_dynamic(leading_dim=1),
+        from_dlpack(split_sizes.detach(), assumed_align=4),
+        from_dlpack(counter, assumed_align=4),
+        from_dlpack(gather_counter, assumed_align=4),
+        from_dlpack(ready, assumed_align=4),
+        from_dlpack(counter.view(1, 1), assumed_align=4),
+        from_dlpack(gather_ptrs.detach(), assumed_align=8),
+        from_dlpack(gather_ptrs.detach(), assumed_align=8),
+        from_dlpack(tensormaps, assumed_align=8),
+    )
+    ptrs = (
+        padding.data_ptr(),
+        dy.data_ptr(),
+        x.data_ptr(),
+        wgrad.data_ptr(),
+        dy.stride(1),
+        dy.stride(0),
+        x.stride(1),
+        x.stride(0),
+        wgrad.stride(1),
+        wgrad.stride(2),
+    )
+    dims = (hidden_dim_dy, hidden_dim_x, 0, symm_mem_buffer.hdl.rank)
+    offsets = (
+        activation_buffer.data_ptr() if activation_buffer is not None else 0,
+        cutlass.Int64(activation_buffer.nbytes if activation_buffer is not None else 0),
+        from_dlpack(dy_offset.detach(), assumed_align=8),
+        from_dlpack(x_offset.detach(), assumed_align=8),
+        from_dlpack(dummy_offset, assumed_align=8),
+        from_dlpack(dummy_offset, assumed_align=8),
+    )
+    cond = from_dlpack(
+        conditional_execution if conditional_execution is not None else counter,
+        assumed_align=4,
+    )
+    tail = (
+        from_dlpack(dummy_offset, assumed_align=8),
+        cutlass.Int64(0),
+        None,  # WGRAD does not use borrowed DGRAD's SR metadata.
+        cutlass.Int64(0),
+        cutlass.Int64(0),
+        cutlass.Int32(0),
+        cutlass.Int32(0),
+        clusters,
+        cutlass_torch.current_stream(),
+    )
+    compile_args = (
+        *tensors,
+        *ptrs,
+        dtype.itemsize,
+        dtype.itemsize,
+        wgrad.element_size(),
+        groups,
+        *dims,
+        *offsets,
+        use_ab,
+        cond,
+        conditional_execution is not None,
+        *tail,
+        *([None] * 13),
+    )
+    runtime_args = (*tensors, *ptrs, *dims, *offsets, cond, *tail)
+    cache_key = (
+        "wgrad_dispatch",
+        conditional_execution.dtype if conditional_execution is not None else None,
+        config,
+        groups,
+        symm_mem_buffer.hdl.world_size,
+        use_ab,
+        output_accum,
+        num_n_clusters,
+        _torch_layout_signature(a),
+        _torch_layout_signature(b),
+        _torch_layout_signature(c),
+    )
+    compiled = _compile_or_get(
+        cache_key,
+        kernel,
+        *compile_args,
+        name_prefix="_cute_dist_grouped_gemm_wgrad_dispatch",
+        prefix_target=DistGroupedGemmKernel.dispatch_kernel,
+    )
+    compiled(*runtime_args)
+    return wgrad
 
 
 def dist_grouped_gemm_dgrad_dispatch(
@@ -1056,8 +1454,7 @@ def dist_grouped_gemm_dgrad_dispatch(
     conditional_execution: torch.Tensor | None = None,
     static_scheduler: bool = False,
     has_padding_sentinels: bool = False,
-    groups_override: int | None = None,
-    weight_borrow_launch: tuple | None = None,
+    pre_shuffled_rows: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Distributed grouped GEMM dgrad dispatch: gather dy, GEMM → dx.
 
@@ -1087,6 +1484,7 @@ def dist_grouped_gemm_dgrad_dispatch(
         conditional_execution=conditional_execution,
         static_scheduler=static_scheduler,
         name_prefix="_cute_dist_grouped_gemm_dispatch_dgrad",
+        pre_shuffled_rows=pre_shuffled_rows,
         has_padding_sentinels=has_padding_sentinels,
     )
 
@@ -1112,6 +1510,7 @@ def dist_grouped_gemm_fprop_combine(
     static_scheduler: bool = False,
     precleared_counter_storage: torch.Tensor | None = None,
     m_multiple_of: int | None = None,
+    pre_shuffled_rows: bool = False,
 ) -> torch.Tensor:
     """Distributed grouped GEMM forward combine: fused GEMM + scatter.
 
@@ -1150,6 +1549,7 @@ def dist_grouped_gemm_fprop_combine(
         estimate_recv_num_tokens=estimate_recv_num_tokens,
         static_scheduler=static_scheduler,
         name_prefix="_cute_dist_grouped_gemm_combine_fprop",
+        pre_shuffled_rows=pre_shuffled_rows,
         precleared_counter_storage=precleared_counter_storage,
         m_multiple_of=m_multiple_of,
     )
@@ -1169,6 +1569,7 @@ def dist_grouped_gemm_dgrad_combine(
     conditional_execution: torch.Tensor | None = None,
     static_scheduler: bool = False,
     has_padding_sentinels: bool = False,
+    pre_shuffled_rows: bool = False,
 ) -> torch.Tensor:
     """Distributed grouped GEMM dgrad combine: fused dgrad GEMM + scatter.
 
@@ -1201,6 +1602,132 @@ def dist_grouped_gemm_dgrad_combine(
         conditional_execution=conditional_execution,
         static_scheduler=static_scheduler,
         name_prefix="_cute_dist_grouped_gemm_combine_dgrad",
+        pre_shuffled_rows=pre_shuffled_rows,
         has_padding_sentinels=has_padding_sentinels,
     )
     return symm_mem_buffer.local()
+
+
+def dist_grouped_gemm_dgrad_swiglu_bwd_combine(  # noqa: C901 -- source fused launch and storage validation
+    grad_h2: torch.Tensor,  # (GM, I)
+    h1: torch.Tensor,  # (GM, 2I) = [x | y]
+    w: torch.Tensor,  # (G, 2I, K)
+    num_tokens_per_local_expert: torch.Tensor,
+    scatter_ptrs: torch.Tensor,  # int64[GM] — per-row peer-rank dx pointers
+    symm_mem_buffer,
+    *,
+    swiglu_fast_math: bool = False,
+    swiglu_clamped: bool = False,
+    swiglu_alpha: float = SWIGLU_CLAMP_ALPHA_DEFAULT,
+    swiglu_limit: float = SWIGLU_CLAMP_LIMIT_DEFAULT,
+    num_sms: int | None = None,
+    config: str | None = None,
+    static_scheduler: bool = False,
+    has_padding_sentinels: bool = False,
+    pre_shuffled_rows: bool = False,
+    emit_h2: bool = False,
+    grad_h1: torch.Tensor | None = None,
+    activation_buffer: torch.Tensor | None = None,
+    conditional_execution: torch.Tensor | None = None,
+    estimate_recv_num_tokens: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """`dist_grouped_gemm_dgrad_combine` of ``grad_h1 = swiglu_bwd(grad_h2,
+    h1)``, with the SwiGLU backward computed in-kernel per activation tile.
+
+    Only the first ``sum(num_tokens_per_local_expert)`` rows of the returned
+    grad_h1 are written. Returns ``(combine_buffer, grad_h1)``. ``emit_h2``
+    overwrites those rows of grad_h2 with ``swiglu_fwd(h1)``.
+
+    With ``activation_buffer``, grad_h2, h1 and grad_h1 must be contiguous
+    device int64[1] byte offsets into its aligned, context-owned uint8 storage.
+    The returned grad_h1 is that original offset tensor, not a dense view.
+    Rows are packed in expert order with widths I, 2I and 2I respectively;
+    the kernel reads the row count from num_tokens_per_local_expert. The
+    planner owns disjoint input/output ranges and their lifetimes. In
+    particular, W2 WGRAD must finish before an h2/grad_h1 alias is overwritten.
+    No output allocation or host offset read occurs in this mode.
+    """
+    if scatter_ptrs.dtype != torch.int64:
+        raise TypeError("scatter_ptrs must be int64")
+    if not scatter_ptrs.is_cuda or scatter_ptrs.device != grad_h2.device:
+        raise ValueError("scatter_ptrs must be on grad_h2.device")
+    intermediate = w.shape[1] // 2
+    if w.shape[1] != 2 * intermediate:
+        raise ValueError("w must have an even SwiGLU output dimension")
+    col_multiple = native_swiglu_bwd_col_multiple()
+    if intermediate % col_multiple != 0:
+        raise ValueError(
+            f"fused SwiGLU-bwd combine requires I ({intermediate}) divisible "
+            f"by {col_multiple}"
+        )
+    if activation_buffer is not None:
+        if grad_h1 is None:
+            raise ValueError("activation_buffer requires a planned grad_h1 offset")
+        _validate_activation_buffer_args(activation_buffer, grad_h2, h1)
+        _validate_activation_buffer_args(activation_buffer, grad_h1, h1)
+        if (
+            activation_buffer.dtype != torch.uint8
+            or activation_buffer.ndim != 1
+            or not activation_buffer.is_contiguous()
+            or activation_buffer.data_ptr() % _ACTIVATION_BUFFER_ALIGNMENT != 0
+        ):
+            raise ValueError(
+                "activation_buffer must be aligned contiguous uint8 storage"
+            )
+        for name, offset in (("grad_h2", grad_h2), ("h1", h1), ("grad_h1", grad_h1)):
+            if offset.shape != (1,) or not offset.is_contiguous():
+                raise ValueError(f"{name} must be a contiguous int64[1] byte offset")
+        if activation_buffer.device != w.device:
+            raise ValueError("activation_buffer and w must share a device")
+        GM = None
+    else:
+        GM = grad_h2.shape[0]
+        if grad_h2.shape != (GM, intermediate) or h1.shape != (GM, 2 * intermediate):
+            raise ValueError(
+                f"shape mismatch: grad_h2={tuple(grad_h2.shape)} "
+                f"h1={tuple(h1.shape)} w={tuple(w.shape)}"
+            )
+        if grad_h1 is None:
+            grad_h1 = torch.empty(
+                (GM, 2 * intermediate), dtype=w.dtype, device=w.device
+            )
+        if grad_h1.shape != (GM, 2 * intermediate):
+            raise ValueError("grad_h1 must match the h1 shape")
+        for name, t in (("grad_h2", grad_h2), ("h1", h1), ("grad_h1", grad_h1)):
+            if t.dtype != w.dtype or t.device != w.device:
+                raise ValueError(f"{name} must share w dtype/device")
+            if (
+                t.stride(1) != 1
+                or (t.stride(0) * t.element_size()) % 16 != 0
+                or t.data_ptr() % 16 != 0
+            ):
+                raise ValueError(f"{name} must be row-major with 16-byte aligned rows")
+    _fused_dist_grouped_gemm_impl(
+        x=grad_h1,
+        w=w,
+        num_tokens_per_local_expert=num_tokens_per_local_expert,
+        peer_ptrs=scatter_ptrs,
+        num_out_tokens=GM,
+        symm_mem_buffer=symm_mem_buffer,
+        problem_type=_DGRAD,
+        mode=DistGroupedGemmKernel.COMBINE_SWIGLU_BWD,
+        num_sms=num_sms,
+        y=None,
+        x_gathered=None,
+        config=config,
+        static_scheduler=static_scheduler,
+        name_prefix="_cute_dist_grouped_gemm_combine_dgrad_swiglu_bwd",
+        activation_buffer=activation_buffer,
+        conditional_execution=conditional_execution,
+        estimate_recv_num_tokens=estimate_recv_num_tokens,
+        swiglu_fast_math=swiglu_fast_math,
+        pre_shuffled_rows=pre_shuffled_rows,
+        has_padding_sentinels=has_padding_sentinels,
+        swiglu_dz=grad_h2,
+        swiglu_h1=h1,
+        swiglu_clamped=swiglu_clamped,
+        swiglu_alpha=swiglu_alpha,
+        swiglu_limit=swiglu_limit,
+        swiglu_emit_h2=emit_h2,
+    )
+    return symm_mem_buffer.local(), grad_h1

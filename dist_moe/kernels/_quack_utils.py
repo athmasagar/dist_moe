@@ -2,6 +2,8 @@
 # Licensed under the Apache License, Version 2.0.
 # Modified by Meta Platforms, Inc.
 
+from typing import Optional
+
 import cutlass
 import cutlass.cute as cute
 from cutlass import const_expr, Float32, Int32
@@ -80,3 +82,25 @@ def make_vector(elem_type, *values, loc=None, ip=None):
             ip=ip,
         )
     return vec
+
+
+@cute.jit
+def fill_oob(
+    tXsX: cute.Tensor, tXpX: Optional[cute.Tensor], fill_value: cute.Numeric
+) -> None:
+    """Fill out-of-bounds values in shared memory tensor.
+
+    Args:
+        tXsX: Shared memory tensor to fill
+        tXpX: Predicate tensor indicating valid elements
+        fill_value: Value to fill OOB locations with
+    """
+    tXrX_fill = cute.make_rmem_tensor_like(tXsX[(None, 0), None, 0])
+    tXrX_fill.fill(fill_value)
+    for rest_v in cutlass.range_constexpr(tXsX.shape[0][1]):
+        for rest_k in cutlass.range_constexpr(tXsX.shape[2]):
+            if const_expr(tXpX is not None):
+                if not tXpX[rest_v, 0, rest_k]:
+                    cute.autovec_copy(tXrX_fill, tXsX[(None, rest_v), None, rest_k])
+            else:
+                cute.autovec_copy(tXrX_fill, tXsX[(None, rest_v), None, rest_k])

@@ -17,11 +17,23 @@ import cutlass.cute as cute
 import cutlass.utils as utils
 import cutlass.utils.blackwell_helpers as sm100_utils
 import torch
-from cutlass._mlir.dialects import llvm
 from cutlass.cute.nvgpu import cpasync, tcgen05
 from cutlass.cutlass_dsl import dsl_user_op
 
+from ._dsl_compat import thread_exit
+from .blockscaled_quantization_common import device_trap
 from .config import blockscaled_epilogue_subtile_divisor
+from .grouped_gemm_tiles import (
+    native_mma_tile,
+    release_acc,
+    split_atom_accum,
+    split_atom_mma_tile,
+)
+from .swiglu_fragment import (
+    interleaved_fc13_view,
+    store_swiglu_h2_fragment,
+    store_swiglu_h2_from_h1,
+)
 from .tile_scheduler import (
     _DGRAD,
     _FPROP,
@@ -44,9 +56,12 @@ def _tmem_ld_wide_fragment_nvvm_broken() -> bool:
     compiles in the plain grouped GEMM but fails in the fused dist kernels,
     while a 128-register form (`16x256b.x32`) fails even in the plain one.
     32-register forms compile everywhere, so `_cap_tmem_ld_repetition` tiles
-    every wider load into 32-register instructions. CuTeDSL 4.7.1 and 4.8.0
-    lower the wide loads, but ptxas then exceeds the dist kernels' 168-register
-    epilogue budget, so only the device gates the cap."""
+    every wider load into 32-register instructions. Verified on
+    nvidia-cutlass-dsl 4.6.1; 4.4.2 compiles all variants, so the workaround
+    is gated on both the DSL version and the device."""
+    version = str(getattr(cutlass, "__version__", ""))
+    if not version.startswith("4.6"):
+        return False
     if not torch.cuda.is_available():
         return False
     return torch.cuda.get_device_capability()[0] == 10
@@ -66,7 +81,11 @@ _TMEM_LD_REGS_PER_REPETITION: dict[type, int] = {
 _TMEM_LD_MAX_REGS_PER_THREAD: int = 32
 
 
-def _capped_tmem_ld_repetition(op: object) -> tcgen05.Repetition | None:
+def _capped_tmem_ld_repetition(
+    op: object,
+    *,
+    max_regs_per_thread: int = _TMEM_LD_MAX_REGS_PER_THREAD,
+) -> tcgen05.Repetition | None:
     """The repetition to substitute for ``op``'s, or ``None`` to keep it.
 
     Caps one load instruction at 32 registers per thread (see
@@ -79,7 +98,7 @@ def _capped_tmem_ld_repetition(op: object) -> tcgen05.Repetition | None:
     regs_per_repetition = _TMEM_LD_REGS_PER_REPETITION.get(type(op))
     if repeat is None or regs_per_repetition is None:
         return None
-    max_repetition = _TMEM_LD_MAX_REGS_PER_THREAD // regs_per_repetition
+    max_repetition = max_regs_per_thread // regs_per_repetition
     if repeat.value <= max_repetition:
         return None
     return tcgen05.Repetition(max_repetition)
@@ -88,18 +107,23 @@ def _capped_tmem_ld_repetition(op: object) -> tcgen05.Repetition | None:
 def _cap_tmem_ld_repetition(
     copy_atom: cute.CopyAtom,
     acc_dtype: type[cutlass.Numeric],
+    *,
+    max_regs_per_thread: int | None = None,
 ) -> cute.CopyAtom:
     """Cap affected TMEM loads at 32 registers per thread per instruction.
 
-    Wider loads fail to compile on Blackwell with every supported CuTeDSL
-    release. ``make_tmem_copy`` tiles the narrowed atom across the same logical
-    epilogue tile, so capping costs extra atoms rather than epilogue passes.
-    Other architectures retain the original atom.
+    CuTeDSL 4.6.x cannot lower wider loads on Blackwell. A caller may also
+    supply its fixed fragment budget: fused native epilogues retain values
+    across stores and SwiGLU and must fit their warpgroup register allocation.
+    ``make_tmem_copy`` tiles the narrowed atom across the same logical epilogue
+    tile, without adding epilogue passes or changing numerical operations.
     """
-    if not _tmem_ld_wide_fragment_nvvm_broken():
-        return copy_atom
+    if max_regs_per_thread is None:
+        if not _tmem_ld_wide_fragment_nvvm_broken():
+            return copy_atom
+        max_regs_per_thread = _TMEM_LD_MAX_REGS_PER_THREAD
     op = copy_atom.op
-    capped = _capped_tmem_ld_repetition(op)
+    capped = _capped_tmem_ld_repetition(op, max_regs_per_thread=max_regs_per_thread)
     if capped is None:
         return copy_atom
     return cute.make_copy_atom(type(op)(capped, pack=op.pack), acc_dtype)
@@ -124,21 +148,6 @@ def _explicit_epilogue_tile_shape(
     tile_m = min(cta_m, 32 * warp_m)
     tile_n = cta_n // epilogue_divisor
     return tile_m, tile_n, warp_m, warp_n
-
-
-@dsl_user_op
-def _activation_offset_device_trap(*, loc=None, ip=None) -> None:
-    llvm.inline_asm(
-        None,
-        [],
-        "trap;",
-        "",
-        has_side_effects=True,
-        is_align_stack=False,
-        asm_dialect=llvm.AsmDialect.AD_ATT,
-        loc=loc,
-        ip=ip,
-    )
 
 
 @cute.jit
@@ -170,7 +179,7 @@ def _require_valid_activation_buffer_range(
                 byte_extent,
                 activation_buffer_size_bytes,
             )
-        _activation_offset_device_trap()
+        device_trap()
 
 
 @cute.jit
@@ -451,6 +460,16 @@ class GroupedGemmKernel:
     """Persistent SM100 grouped GEMM (FPROP/DGRAD/WGRAD). __call__ takes
     torch tensors + a config dict and launches the device kernel."""
 
+    TMEM_LOAD_MAX_REGS_PER_THREAD: int | None = None
+    # K segments the dist DISPATCH gather signals separately per M-tile.
+    GATHER_K_SEGMENTS: int = 1
+    # Block size of the rotated dist schedule's source-segment interleave
+    # (`_interleave_m_tile_idx`); 0 keeps the plain rotation.
+    M_TILE_INTERLEAVE: int = 0
+    # Rotate each M tile's N-band order (`_tile_coords` DIAG_N_BANDS). Every
+    # warp role must decode tiles with the same value.
+    DIAG_N_BANDS: bool = False
+
     def __init__(
         self,
         config: dict,
@@ -462,6 +481,7 @@ class GroupedGemmKernel:
         static_scheduler: bool = False,
         host_a_tensormap: bool = False,
         swap_ab: bool = False,
+        schedule_rotation: bool = True,
     ):
         if swap_ab and problem_type != _FPROP:
             raise ValueError("SWAP_AB is currently supported for FPROP only")
@@ -471,6 +491,10 @@ class GroupedGemmKernel:
         self.force_n_major = force_n_major
         self.num_n_clusters = num_n_clusters
         self.world_size = world_size
+        # Constexpr world size seeding the schedule rotation. 1 when the
+        # routing layer pre-shuffled the rows (rotation compiles out) or
+        # on a single rank.
+        self.schedule_world_size = world_size if schedule_rotation else 1
         self.STATIC_SCHEDULER = static_scheduler
         self.SWAP_AB = swap_ab
         self.host_a_tensormap = host_a_tensormap and not swap_ab
@@ -490,6 +514,13 @@ class GroupedGemmKernel:
         self.NUM_CTAS: int = c["NUM_CTAS"]
         self.NUM_TILE_CTA_BARS: int = 2 if self.NUM_CTAS == 2 else 0
         self.EPILOGUE_SUBTILE: int = c.get("EPILOGUE_SUBTILE", 0)  # 0 = auto
+        self.SPLIT_ATOM_ACCUM: bool = split_atom_accum(
+            self.NUM_TMEM_BUFFERS, self.NUM_MMAS
+        )
+        # One tmem_full / tmem_empty pair per accumulator hand-off unit.
+        self.NUM_ACC_BARRIERS: int = (
+            self.NUM_MMAS if self.SPLIT_ATOM_ACCUM else self.NUM_TMEM_BUFFERS
+        )
 
         self.cta_group = (
             tcgen05.CtaGroup.TWO if self.NUM_CTAS == 2 else tcgen05.CtaGroup.ONE
@@ -508,7 +539,6 @@ class GroupedGemmKernel:
     # must be called after _setup_attributes.
     def _make_shared_storage(self, a_dtype, b_dtype, c_dtype, G: int):
         NUM_SMEM = self.NUM_SMEM_BUFFERS
-        NUM_TMEM = self.NUM_TMEM_BUFFERS
         NUM_TILE = self.NUM_TILE_BUFFERS
         NUM_CTAS = self.NUM_CTAS
 
@@ -521,8 +551,8 @@ class GroupedGemmKernel:
         # per kk (atom-along-M lives inside one cute.gemm call).
         n_smem_empty = NUM_SMEM
         n_smem_full = NUM_SMEM
-        n_tmem_full = NUM_TMEM
-        n_tmem_empty = NUM_TMEM
+        n_tmem_full = self.NUM_ACC_BARRIERS
+        n_tmem_empty = self.NUM_ACC_BARRIERS
         n_tile_consumer = NUM_TILE
         n_tile_producer = NUM_TILE
         n_tile_cta_bar = 2 if NUM_CTAS == 2 else 0  # 2-CTA only
@@ -588,7 +618,7 @@ class GroupedGemmKernel:
         tensormaps: cute.Tensor,
         # ---- Per-tensor base ptrs + strides as scalars (no per-launch
         #      device tensors). Per-group offsets computed inside producer
-        #      and epilogue bodies through device-side accumulators.
+        #      and epilog bodies via TLX-style accumulators.
         a_base_ptr: cutlass.Int64,
         b_base_ptr: cutlass.Int64,
         c_base_ptr: cutlass.Int64,
@@ -601,7 +631,7 @@ class GroupedGemmKernel:
         elem_size_bytes_a: cutlass.Constexpr[int],
         elem_size_bytes_b: cutlass.Constexpr[int],
         elem_size_bytes_c: cutlass.Constexpr[int],
-        # ---- Activation-buffer offset (device-resident; no D2H sync) -------
+        # ---- Activation-buffer offset (TLX-style; no D2H sync) ------------
         # When `use_activation_buffer` is True, the kernel loads two int64
         # byte offsets from device tensors `a_offset_tensor` /
         # `b_offset_tensor` and adds them to a_base_ptr / b_base_ptr at
@@ -633,8 +663,13 @@ class GroupedGemmKernel:
         BLOCK_SIZE_N: cutlass.Constexpr[int],
         BLOCK_SIZE_K: cutlass.Constexpr[int],
         NUM_CTAS: cutlass.Constexpr[int],
+        condition: cute.Tensor,
+        USE_CONDITIONAL_EXECUTION: cutlass.Constexpr[bool],
     ):
-        # ----- Warp / cluster identity ------------------------------------
+        if cutlass.const_expr(USE_CONDITIONAL_EXECUTION):
+            if condition[0] == 0:
+                thread_exit()
+        # ----- Warp / cluster identity (TLX prologue) ---------------------
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
         tidx, _, _ = cute.arch.thread_idx()
 
@@ -683,7 +718,7 @@ class GroupedGemmKernel:
                 for i in range(NUM_SMEM_BUFFERS):
                     cute.arch.mbarrier_init(ab_empty_mbar + i, 1)
                     cute.arch.mbarrier_init(ab_full_mbar + i, 1)
-                for i in range(NUM_TMEM_BUFFERS):
+                for i in range(self.NUM_ACC_BARRIERS):
                     cute.arch.mbarrier_init(tmem_full_mbar + i, 1)
                     cute.arch.mbarrier_init(tmem_empty_mbar + i, NUM_CTAS)
                 for i in range(NUM_TILE_BUFFERS):
@@ -888,7 +923,7 @@ class GroupedGemmKernel:
         tm_workspace_idx = (
             bid[2] * grid_dim[1] * grid_dim[0] + bid[1] * grid_dim[0] + bid[0]
         )
-        # SMEM mode patches descriptors in shared memory before publication.
+        # SMEM mode: matches the cute/gemm reference + TLX/Triton behavior.
         # Per-group descriptor patches happen in SMEM, then
         # `tensormap.cp_fenceproxy.global.shared::cta.tensormap::generic.
         # release.gpu.sync.aligned` atomically copies SMEM→GMEM and fences.
@@ -948,22 +983,23 @@ class GroupedGemmKernel:
             _clear_tma_oob_prefetch_bit(tensormap_c_smem_ptr)
         tensormap_manager.fence_tensormap_initialization()
 
-        # ----- Per-warpgroup register redistribution ------------------------
-        # The register allocation uses PTX `setmaxnreg` through CuTe DSL's
-        # `setmaxregister_increase/decrease` primitives. It must be issued
+        # ----- Per-warpgroup register redistribution (mirrors TLX) ---------
+        # TLX uses `num_regs=48` on producer/MMA tasks via `tlx.async_task`,
+        # which compiles to PTX `setmaxnreg.dealloc`. CuTeDSL has the same
+        # primitive (`setmaxregister_increase/decrease`) but it must be issued
         # at warpgroup granularity — all 128 threads of a warpgroup hit
         # the SAME `setmaxnreg.aligned` instruction with the SAME imm
         # count. Layout: WG0 (warps 0-3) = EPILOG (heavy register use,
         # holds accumulator + reg-staged store pipeline); WG1 (warps 4-7)
-        # = MMA + TMA + 2 IDLE (light use). The light warp group receives
-        # 40 registers per thread.
+        # = MMA + TMA + 2 IDLE (light use). Values mirror TLX's
+        # producer/MMA hint of 48 regs/thread.
         if warp_idx < 4:
             cute.arch.setmaxregister_increase(216)
         else:
             cute.arch.setmaxregister_decrease(40)
 
         # =================================================================
-        # Warp-group dispatch.
+        # Warp-group dispatch (TLX `with tlx.async_task(...)` blocks).
         # =================================================================
         if warp_idx == TMA_WARP_ID:
             self._tma_producer_body(
@@ -1198,6 +1234,34 @@ class GroupedGemmKernel:
         pass
 
     @cute.jit
+    def _tma_per_col_tile_wait(
+        self,
+        counter_addr: cutlass.Int64,
+        group: cutlass.Int32,
+        tile_n: cutlass.Int32,
+        n_size: cutlass.Int32,
+        k_size: cutlass.Int32,
+    ):
+        """Pre-TMA hook for subclasses with WGRAD column dependencies."""
+        pass
+
+    @cute.jit
+    def _tma_k_segment_wait(
+        self,
+        tile_m_idx: cutlass.Int32,
+        tile_m_start_per_group: cutlass.Int32,
+        a_buff_counter_addr_i64: cutlass.Int64,
+        kk: cutlass.Int32,
+        num_k_tiles: cutlass.Int32,
+        k_size: cutlass.Int32,
+        NUM_SUB_PER_GEMM_M: cutlass.Constexpr[int],
+    ) -> cutlass.Int32:
+        """`_tma_per_tile_wait` for `GATHER_K_SEGMENTS > 1`: waits until
+        k-tile `kk` is ready and returns the count of leading ready
+        k-tiles."""
+        return num_k_tiles
+
+    @cute.jit
     def _tma_producer_body(  # noqa: C901
         self,
         # ---- TMA copy infrastructure -----------------------------------------
@@ -1233,7 +1297,7 @@ class GroupedGemmKernel:
         # ---- Per-tensor scalar metadata (replaces strides_abc/ptrs_abc) -----
         # Base pointers (int64), and (s0, s1) strides matching the (m, k) /
         # (n, k) view used by `_make_tensor_for_tensormap_update`. Per-group
-        # base pointer is computed inside the kernel with device accumulators
+        # base ptr is computed inside the kernel via TLX-style accumulators
         # (start_am, start_bn, etc.) — no CPU sync, no per-launch device
         # tensor.
         a_base_ptr: cutlass.Int64,
@@ -1244,17 +1308,17 @@ class GroupedGemmKernel:
         b_s1: cutlass.Int32,
         elem_size_bytes_a: cutlass.Constexpr[int],
         elem_size_bytes_b: cutlass.Constexpr[int],
-        # ---- Activation-buffer offsets (see kernel docstring) ---------------
+        # ---- Activation-buffer (TLX-style; see kernel docstring) ------------
         use_activation_buffer: cutlass.Constexpr[bool],
         activation_buffer_size_bytes: cutlass.Int64,
         a_offset_tensor: cute.Tensor,
         b_offset_tensor: cute.Tensor,
-        # ---- Per-M-tile gather-to-TMA wait for distributed dispatch --------
+        # ---- Per-M-tile gather→TMA wait (dist DISPATCH; mirrors TLX) -------
         # When `wait_per_m_tile` is True, busy-wait per (group, tile_m_idx)
         # before issuing the k-loop's TMA loads on `a_buff_counter[
         # tile_m_start_per_group + tile_m_idx] >= NUM_SUB_PER_GEMM_M`.
         # Standalone callers pass `wait_per_m_tile=False` and the address
-        # and NUM_SUB values are unused.
+        # / NUM_SUB are unused. Mirrors TLX line 938-963.
         a_buff_counter_addr_i64: cutlass.Int64,
         wait_per_m_tile: cutlass.Constexpr[bool],
         NUM_SUB_PER_GEMM_M: cutlass.Constexpr[int],
@@ -1276,12 +1340,11 @@ class GroupedGemmKernel:
         BLOCK_SIZE_K: cutlass.Constexpr[int],
         NUM_CTAS: cutlass.Constexpr[int],
         secondary_operands=None,
-        weight_borrow_args=None,
-        mWeightBorrowCounters=None,
     ):
-        """Run the TMA producer with 2-CTA cooperative-tile semantics.
+        """TMA producer task. Ports the TLX producer body in control flow,
+        with intentional 2-CTA cooperative-tile semantics (see deltas below).
 
-        The producer provides:
+        Mirrors TLX:
             * Persistent atomic-counter scheduler (CTA 0 fetches; CTA 1
               receives via DSMEM).
             * Per-group: tensormap update once at group entry, then
@@ -1290,13 +1353,18 @@ class GroupedGemmKernel:
               issue (not before) to avoid a circular deadlock.
             * SENTINEL drain at end so MMA/epilogue consumers terminate.
 
-        In 2-CTA mode, CuTe DSL cooperates on a single cluster-wide tile. Both CTAs
+        Intentional 2-CTA delta vs TLX (cooperative-tile semantics):
+          * TLX pairs separate tiles: each CTA owns half of N
+            (`BLOCK_SIZE_N // NUM_CTAS`) and loads its own B half via
+            per-CTA TMA.
+          * CuTeDSL cooperates on a single cluster-wide tile: both CTAs
             share the FULL tile. The `tiled_mma` with `cta_group=TWO` and
             TMA atoms with multicast handle the 2-CTA distribution
             automatically. We do NOT halve N here.
 
-        `tensormap_manager.update_tensormap` performs the per-group descriptor
-        refresh.
+        The only structural delta from TLX is that `_make_tma_descriptors`
+        becomes `tensormap_manager.update_tensormap` — algorithmically the
+        same per-group descriptor refresh, expressed in CuTeDSL idiom.
         """
         # ---- Loop-carried state -----------------------------------------
         # Pre-declared because CuTeDSL's @cute.jit scoping requires names
@@ -1308,7 +1376,7 @@ class GroupedGemmKernel:
         accum_cnt_smem = cutlass.Int32(0)
         accum_cnt_out = cutlass.Int32(0)
 
-        # Activation-buffer offsets remain device-resident.
+        # Activation-buffer offset (TLX-style).
         # When enabled, the kernel loads two int64 byte offsets from device
         # tensors and adjusts the A/B base pointers — entirely on device, no
         # CPU sync. Used in FP8 / quant pipelines where activations live at
@@ -1377,6 +1445,9 @@ class GroupedGemmKernel:
             local_rank,
             WORLD_SIZE,
             self.SWAP_AB,
+            M_INTERLEAVE=self.M_TILE_INTERLEAVE,
+            DIAG_N_BANDS=self.DIAG_N_BANDS,
+            SKIP_EMPTY_K=problem_type == _WGRAD and self.output_accum,
         )
         work = visitor.get_work(tile_idx)
 
@@ -1542,11 +1613,22 @@ class GroupedGemmKernel:
                     # become B - so the prologue only applies when B really
                     # is the gather-independent weight operand.)
                     weights_ahead = cutlass.Int32(0)
+                    segmented_gather = (
+                        wait_per_m_tile
+                        and problem_type != _WGRAD
+                        and self.GATHER_K_SEGMENTS > 1
+                    )
+                    ready_k = cutlass.Int32(0)
+                    wait_tile = tile_n_idx if self.SWAP_AB else tile_m_idx
+                    wait_prefix = (
+                        work.n_tile_prefix if self.SWAP_AB else work.m_tile_prefix
+                    )
                     # Prefill configurations use larger M tiles; even at this
                     # tile size, the full-tile boundary regresses when armed
                     # ahead, so restrict the overlap to strict decode shapes.
                     if cutlass.const_expr(
                         wait_per_m_tile
+                        and problem_type != _WGRAD
                         and NUM_CTAS == 1
                         and not self.SWAP_AB
                         and self.BLOCK_SIZE_M <= 64
@@ -1590,16 +1672,27 @@ class GroupedGemmKernel:
                                     )
 
                     if cutlass.const_expr(wait_per_m_tile):
-                        self._tma_per_tile_wait(
-                            tile_n_idx if self.SWAP_AB else tile_m_idx,
-                            (
-                                work.n_tile_prefix
-                                if self.SWAP_AB
-                                else work.m_tile_prefix
-                            ),
-                            a_buff_counter_addr_i64,
-                            NUM_SUB_PER_GEMM_M,
-                        )
+                        if cutlass.const_expr(problem_type == _WGRAD):
+                            self._tma_per_col_tile_wait(
+                                a_buff_counter_addr_i64, g, tile_n_idx, n_size, k_size
+                            )
+                        elif cutlass.const_expr(segmented_gather):
+                            ready_k = self._tma_k_segment_wait(
+                                wait_tile,
+                                wait_prefix,
+                                a_buff_counter_addr_i64,
+                                weights_ahead - cutlass.Int32(1),
+                                num_k_tiles,
+                                k_size,
+                                NUM_SUB_PER_GEMM_M,
+                            )
+                        else:
+                            self._tma_per_tile_wait(
+                                wait_tile,
+                                wait_prefix,
+                                a_buff_counter_addr_i64,
+                                NUM_SUB_PER_GEMM_M,
+                            )
 
                     # Back-fill activations for stages pre-armed above.
                     for kk in cutlass.range(weights_ahead, unroll=1):
@@ -1628,6 +1721,17 @@ class GroupedGemmKernel:
 
                     # Issue the remaining activation and weight tiles.
                     for kk in cutlass.range(weights_ahead, num_k_tiles, unroll=1):
+                        if cutlass.const_expr(segmented_gather):
+                            if kk >= ready_k:
+                                ready_k = self._tma_k_segment_wait(
+                                    wait_tile,
+                                    wait_prefix,
+                                    a_buff_counter_addr_i64,
+                                    kk,
+                                    num_k_tiles,
+                                    k_size,
+                                    NUM_SUB_PER_GEMM_M,
+                                )
                         buf, phase = _get_bufidx_phase(accum_cnt_smem, NUM_SMEM_BUFFERS)
                         cute.arch.mbarrier_wait(
                             ab_empty_mbar + buf,
@@ -1751,7 +1855,10 @@ class GroupedGemmKernel:
         NUM_N_CLUSTERS: cutlass.Constexpr[int],
         secondary_operands=None,
     ):
-        """Run the MMA consumer for one cooperative cluster-wide tile.
+        """MMA consumer task. Ports the TLX MMA path + ``_mma_tile_inner``
+        in control flow, with the same cooperative-tile delta as the TMA
+        producer (the cluster cooperates on one tile rather than pairing
+        two TLX-style tiles).
 
         Loops over groups via the tile-info consumer barrier. For each tile:
           * Wait tmem_empty for the chosen tmem buffer.
@@ -1791,6 +1898,8 @@ class GroupedGemmKernel:
             cutlass.Int32(0),
             1,
             self.SWAP_AB,
+            DIAG_N_BANDS=self.DIAG_N_BANDS,
+            SKIP_EMPTY_K=problem_type == _WGRAD and self.output_accum,
         )
         work = visitor.get_mma_work(tile_idx)
 
@@ -1798,108 +1907,47 @@ class GroupedGemmKernel:
             num_k_tiles = work.num_k_tiles
             tmem_buf, tmem_phase = _get_bufidx_phase(accum_cnt_tile, NUM_TMEM_BUFFERS)
 
-            # ---- _mma_tile_inner inlined ----------------------------
-            # In 2-CTA mode, ONLY the leader CTA waits on tmem_empty
-            # and ab_full. Peer CTA's MMA body must NOT wait on its
-            # local bars — only leader's bars receive arrives.
-            # (Matches the cute/gemm reference.)
-            if (NUM_CTAS == 1) or pred_cta0:
-                cute.arch.mbarrier_wait(tmem_empty_mbar + tmem_buf, tmem_phase ^ 1)
-
-            for kk in cutlass.range(num_k_tiles, unroll=1):
-                smem_buf, smem_phase = _get_bufidx_phase(
-                    accum_cnt_smem, NUM_SMEM_BUFFERS
+            if cutlass.const_expr(self.SPLIT_ATOM_ACCUM):
+                accum_cnt_smem = split_atom_mma_tile(
+                    tiled_mma,
+                    tCrA,
+                    tCrB,
+                    tCtAcc_base[(None, None, None, 0)],
+                    ab_full_mbar,
+                    ab_empty_mbar,
+                    tmem_full_mbar,
+                    tmem_empty_mbar,
+                    ab_empty_mcast_mask,
+                    acc_full_mcast_mask,
+                    pred_cta0,
+                    num_k_tiles,
+                    tmem_phase,
+                    accum_cnt_smem,
+                    NUM_SMEM_BUFFERS,
+                    NUM_CTAS,
+                    self.cta_group,
                 )
-                # Wait for TMA loads to complete (leader only in 2-CTA).
-                if (NUM_CTAS == 1) or pred_cta0:
-                    cute.arch.mbarrier_wait(ab_full_mbar + smem_buf, smem_phase)
-
-                # In 2-CTA mode (cta_group=TWO), only the LEADER CTA
-                # issues `cute.gemm` and `tcgen05.commit`. The MMA
-                # atom broadcasts to the peer CTA via the cluster
-                # mcast_mask. Peer CTA just observes — its bars get
-                # arrives via the multicast commit. (Matches the
-                # cute/gemm reference.)
-                if pred_cta0:
-                    tiled_mma.set(tcgen05.Field.ACCUMULATE, kk > 0)
-                    tCtAcc_slot = tCtAcc_base[(None, None, None, tmem_buf)]
-                    num_kblocks = cute.size(tCrA, mode=[2])
-                    for kblock_idx in cutlass.range_constexpr(num_kblocks):
-                        kblock_coord = (None, None, kblock_idx, smem_buf)
-                        cute.gemm(
-                            tiled_mma,
-                            tCtAcc_slot,
-                            tCrA[kblock_coord],
-                            tCrB[kblock_coord],
-                            tCtAcc_slot,
-                        )
-                        tiled_mma.set(tcgen05.Field.ACCUMULATE, True)
-                    # Signal smem_empty: tcgen05.commit broadcasts the
-                    # arrive to all CTAs in the cluster via mcast_mask
-                    # (one arrive per CTA's bar; matches arrive_count).
-                    with cute.arch.elect_one():
-                        tcgen05.commit(
-                            ab_empty_mbar + smem_buf,
-                            ab_empty_mcast_mask,
-                            self.cta_group,
-                        )
-
-                accum_cnt_smem += cutlass.Int32(1)
-
-            # ---- Signal tmem_full to epilogue -----------------------
-            # Normal path (num_k_tiles > 0): leader's tcgen05.commit
-            # signals tmem_full. mcast_mask broadcasts to both CTAs'
-            # bars (1 arrive each). Peer issues nothing.
-            #
-            # Empty-contraction path (num_k_tiles == 0, e.g. wgrad
-            # with k_g=0): tcgen05.commit cta_group=2 with no prior
-            # tcgen05.mma was empirically traced to NOT arrive on
-            # both CTAs' bars (mbarrier desync after >=2 prior
-            # non-empty groups; cuda-gdb confirmed). Workaround:
-            # leader issues a LOCAL arrive + REMOTE arrive on peer
-            # (same arrive topology as the mcast version, leader-
-            # sourced).
-            #
-            # CORRECTNESS INVARIANT (load-bearing): tcgen05.mma from
-            # any prior non-empty group must have RETIRED before the
-            # next epilog reads tmem on this same buf. The
-            # `mbarrier_arrive` pair below does NOT fence — the
-            # fence comes from the chain:
-            #   (1) prior epilog's tcgen05.ld implicitly waited for
-            #       prior tcgen05.mma to retire,
-            #   (2) prior epilog signaled tmem_empty,
-            #   (3) this MMA's tmem_empty wait at start of tile
-            #       gates entry to this empty handler.
-            # Removing the tmem_empty wait or the ld -> tmem_empty
-            # ordering breaks the empty-group path. Epilog detects
-            # num_k_tiles==0 and writes zeros.
-            if num_k_tiles == 0:
-                if cutlass.const_expr(NUM_CTAS == 2):
-                    if pred_cta0:
-                        with cute.arch.elect_one():
-                            cute.arch.mbarrier_arrive(tmem_full_mbar + tmem_buf)
-                            cute.arch.mbarrier_arrive(
-                                tmem_full_mbar + tmem_buf,
-                                peer_cta_rank_in_cluster=1,
-                            )
-                else:
-                    with cute.arch.elect_one():
-                        cute.arch.mbarrier_arrive(tmem_full_mbar + tmem_buf)
-            elif cutlass.const_expr(NUM_CTAS == 2):
-                if pred_cta0:
-                    with cute.arch.elect_one():
-                        tcgen05.commit(
-                            tmem_full_mbar + tmem_buf,
-                            acc_full_mcast_mask,
-                            self.cta_group,
-                        )
             else:
-                with cute.arch.elect_one():
-                    tcgen05.commit(
-                        tmem_full_mbar + tmem_buf,
-                        None,
-                        self.cta_group,
-                    )
+                accum_cnt_smem = native_mma_tile(
+                    tiled_mma,
+                    tCrA,
+                    tCrB,
+                    tCtAcc_base,
+                    ab_full_mbar,
+                    ab_empty_mbar,
+                    tmem_full_mbar,
+                    tmem_empty_mbar,
+                    ab_empty_mcast_mask,
+                    acc_full_mcast_mask,
+                    pred_cta0,
+                    num_k_tiles,
+                    tmem_buf,
+                    tmem_phase,
+                    accum_cnt_smem,
+                    NUM_SMEM_BUFFERS,
+                    NUM_CTAS,
+                    self.cta_group,
+                )
 
             accum_cnt_tile += cutlass.Int32(1)
             tile_idx = scheduler.advance_consumer(accum_cnt_tile)
@@ -1956,8 +2004,12 @@ class GroupedGemmKernel:
         BLOCK_SIZE_K: cutlass.Constexpr[int],
         NUM_CTAS: cutlass.Constexpr[int],
         secondary_operands=None,
+        swiglu_h2=None,
     ):
-        """Run the epilogue consumer for one cooperative cluster-wide tile.
+        """Epilogue consumer task. Ports the TLX epilogue + ``_epi_tile_inner``
+        in control flow; the same cooperative-tile delta as the producer/MMA
+        bodies applies (one cluster-wide tile instead of TLX's paired
+        half-tiles).
 
         Per-tile flow:
           * preread tile_idx via tile_consumer_mbar.
@@ -1978,6 +2030,11 @@ class GroupedGemmKernel:
         """
         # State.
         accum_cnt_tile = cutlass.Int32(0)
+        # SwiGLU in the TMEM drain is hidden behind a second TMEM buffer; with
+        # one it stalls the next tile's MMA, so recompute h2 from the stored h1
+        # after the accumulator release instead.
+        swiglu_inline = swiglu_h2 is not None and NUM_TMEM_BUFFERS > 1
+        swiglu_deferred = swiglu_h2 is not None and NUM_TMEM_BUFFERS == 1
 
         if cutlass.const_expr(self.STATIC_SCHEDULER):
             scheduler = StaticTileScheduler.create_consumer(NUM_CTAS)
@@ -2004,6 +2061,9 @@ class GroupedGemmKernel:
             local_rank,
             WORLD_SIZE,
             self.SWAP_AB,
+            M_INTERLEAVE=self.M_TILE_INTERLEAVE,
+            DIAG_N_BANDS=self.DIAG_N_BANDS,
+            SKIP_EMPTY_K=problem_type == _WGRAD and self.output_accum,
         )
         work = visitor.get_work(tile_idx)
 
@@ -2041,6 +2101,8 @@ class GroupedGemmKernel:
                     tensor_index=2,
                     problem_type=problem_type,
                 )
+                if cutlass.const_expr(swiglu_h2 is not None):
+                    real_tensor_c = interleaved_fc13_view(real_tensor_c, 1)
                 tensormap_manager.update_tensormap(
                     (real_tensor_c,),
                     (tma_atom_c,),
@@ -2060,7 +2122,8 @@ class GroupedGemmKernel:
                     tile_n_idx = work.tile_n_idx
 
                     # ---- Wait MMA done for this tmem buffer ----------------
-                    cute.arch.mbarrier_wait(tmem_full_mbar + tmem_buf, tmem_phase)
+                    if cutlass.const_expr(not self.SPLIT_ATOM_ACCUM):
+                        cute.arch.mbarrier_wait(tmem_full_mbar + tmem_buf, tmem_phase)
 
                     # ---- TMEM -> reg -> SMEM -> GMEM (per-MMA, per-subtile) -
                     c_desc_ptr = tensormap_manager.get_tensormap_ptr(
@@ -2076,6 +2139,10 @@ class GroupedGemmKernel:
                     NUM_MMA_ATOMS_M = cute.size(tCtAcc_base.shape, mode=[1])
                     NUM_MMA_ATOMS_N = cute.size(tCtAcc_base.shape, mode=[2])
                     for mma_m_idx in cutlass.range_constexpr(NUM_MMA_ATOMS_M):
+                        if cutlass.const_expr(self.SPLIT_ATOM_ACCUM):
+                            cute.arch.mbarrier_wait(
+                                tmem_full_mbar + mma_m_idx, tmem_phase
+                            )
                         for mma_n_idx in cutlass.range_constexpr(NUM_MMA_ATOMS_N):
                             # Re-build per-atom partitions. mma_m_idx and
                             # mma_n_idx are constexpr so this is unrolled at
@@ -2131,7 +2198,13 @@ class GroupedGemmKernel:
                                 accum_cnt_tile * subtiles_per_tile
                                 + atom_idx * subtile_cnt
                             )
-                            for subtile_idx in cutlass.range_constexpr(subtile_cnt):
+                            # Unrolled, the inline SwiGLU body thrashes the
+                            # icache.
+                            for subtile_idx in cutlass.range(
+                                subtile_cnt,
+                                unroll=1,
+                                unroll_full=not swiglu_inline,
+                            ):
                                 if cutlass.const_expr(NUM_C_STAGES == 1):
                                     _epilog_wait_pending_tma_store()
                                 c_buffer = (
@@ -2139,8 +2212,9 @@ class GroupedGemmKernel:
                                 ) % NUM_C_STAGES
 
                                 # Skip the TMEM->reg copy on the empty-
-                                # contraction path, which must not read the
-                                # uninitialized accumulator. The retile().load() that
+                                # contraction path (mirrors TLX, which
+                                # never reads the uninitialized
+                                # accumulator). The retile().load() that
                                 # follows is a register-only no-op used
                                 # solely to expose the layout/dtype to
                                 # `cute.zeros_like`; CuTeDSL requires the
@@ -2193,49 +2267,74 @@ class GroupedGemmKernel:
                                             NUM_C_STAGES - 1,
                                             read=True,
                                         )
+                                if cutlass.const_expr(swiglu_inline):
+                                    store_swiglu_h2_fragment(
+                                        swiglu_h2,
+                                        tRS_rC,
+                                        tidx,
+                                        work.split_prefix,
+                                        m_size,
+                                        n_size,
+                                        tile_m_idx,
+                                        tile_n_idx,
+                                        mma_m_idx,
+                                        mma_n_idx,
+                                        subtile_idx,
+                                        NUM_MMA_ATOMS_M,
+                                        NUM_MMA_ATOMS_N,
+                                        BLOCK_SIZE_M,
+                                        BLOCK_SIZE_N,
+                                        NUM_CTAS,
+                                        cluster_cta_rank,
+                                    )
                                 if cutlass.const_expr(NUM_C_STAGES > 1):
                                     cute.arch.barrier(
                                         barrier_id=_BAR_EPILOG_SYNC,
                                         number_of_threads=32 * len(EPILOG_WARP_IDS),
                                     )
+                        if cutlass.const_expr(
+                            self.SPLIT_ATOM_ACCUM and mma_m_idx < NUM_MMA_ATOMS_M - 1
+                        ):
+                            release_acc(
+                                tmem_empty_mbar + mma_m_idx,
+                                EPILOG_WARP_IDS[0],
+                                32 * len(EPILOG_WARP_IDS),
+                                _BAR_EPILOG_SYNC,
+                                NUM_CTAS,
+                            )
 
-                    # ---- TMEM-load fence + cross-warp barrier --------------
-                    # Per CuTeDSL docs (`fence_view_async_tmem_load`):
-                    #   `cute.copy(tmem_load, ...)` → fence_view_async_tmem_load()
-                    #   → consumer_release (= mbarrier_arrive(tmem_empty)).
-                    # The fence (`tcgen05.wait::ld.sync`) is per-warp, so we
-                    # also need a cross-warp barrier to ensure ALL 4 epilog
-                    # warps' reads have retired before warp 0 signals the
-                    # buffer is empty — otherwise MMA can overwrite the TMEM
-                    # slot while warps 1-3 still have in-flight reads,
-                    # producing wrong values. This intentionally does NOT
-                    # wait for the final SMEM->GMEM store; that dependency is
-                    # only on C SMEM reuse, not on TMEM reuse.
-                    cute.arch.fence_view_async_tmem_load()
-                    cute.arch.barrier(
-                        barrier_id=_BAR_EPILOG_SYNC,
-                        number_of_threads=32 * len(EPILOG_WARP_IDS),
+                    acc_slot = tmem_buf
+                    if cutlass.const_expr(self.SPLIT_ATOM_ACCUM):
+                        acc_slot = NUM_MMA_ATOMS_M - 1
+                    release_acc(
+                        tmem_empty_mbar + acc_slot,
+                        EPILOG_WARP_IDS[0],
+                        32 * len(EPILOG_WARP_IDS),
+                        _BAR_EPILOG_SYNC,
+                        NUM_CTAS,
                     )
                     warp_idx_local = cute.arch.make_warp_uniform(cute.arch.warp_idx())
-
-                    # ---- Signal tmem_empty so MMA can reuse the tmem slot ---
-                    # In 2-CTA: BOTH CTAs arrive REMOTELY on leader's local
-                    # bar (peer_cta_rank=0 from both). arrive_count=2 means
-                    # leader's MMA wait blocks until BOTH CTAs' epilogs are
-                    # done reading tmem — required because cluster-shared
-                    # tmem otherwise lets leader's next-tile MMA clobber
-                    # peer's still-in-flight tmem read. Mirrors the
-                    # cute/gemm reference acc_empty_mbar pattern.
-                    # For 1-CTA: plain local arrive, arrive_count=1.
-                    if warp_idx_local == EPILOG_WARP_IDS[0]:
-                        with cute.arch.elect_one():
-                            if cutlass.const_expr(NUM_CTAS == 2):
-                                cute.arch.mbarrier_arrive(
-                                    tmem_empty_mbar + tmem_buf,
-                                    peer_cta_rank_in_cluster=0,
-                                )
-                            else:
-                                cute.arch.mbarrier_arrive(tmem_empty_mbar + tmem_buf)
+                    if cutlass.const_expr(swiglu_deferred):
+                        store_swiglu_h2_from_h1(
+                            swiglu_h2,
+                            warp_idx_local == EPILOG_WARP_IDS[0],
+                            _BAR_EPILOG_SYNC,
+                            32 * len(EPILOG_WARP_IDS),
+                            tidx,
+                            work.split_prefix,
+                            m_size,
+                            n_size,
+                            tile_m_idx,
+                            tile_n_idx,
+                            NUM_MMA_ATOMS_M,
+                            NUM_MMA_ATOMS_N,
+                            subtile_cnt,
+                            BLOCK_SIZE_M,
+                            BLOCK_SIZE_N,
+                            NUM_CTAS,
+                            cluster_cta_rank,
+                            sC.element_type,
+                        )
 
                     # ---- Signal tile_done so producer can reuse slot --------
                     # Gate by EPILOG_WARP_IDS[0] so exactly ONE warp issues
@@ -2294,7 +2393,11 @@ class GroupedGemmKernel:
             epi_tile,
             use_2cta_instrs,
         )
-        copy_atom_t2r = _cap_tmem_ld_repetition(copy_atom_t2r, self.acc_dtype)
+        copy_atom_t2r = _cap_tmem_ld_repetition(
+            copy_atom_t2r,
+            self.acc_dtype,
+            max_regs_per_thread=self.TMEM_LOAD_MAX_REGS_PER_THREAD,
+        )
         tAcc_epi = cute.flat_divide(
             tAcc[((None, None), mma_m_idx, mma_n_idx, None)], epi_tile
         )
@@ -2384,7 +2487,8 @@ class GroupedGemmKernel:
         # `NUM_MMAS` controls how many `tcgen05.mma` atoms are stacked
         # along M per cluster tile. With NUM_MMAS=1 a single atom covers
         # the full cluster M; with NUM_MMAS=2 the kernel emits two stacked
-        # MMAs per K iteration. `cute.gemm(tiled_mma, ...)` automatically iterates the
+        # MMAs per k-iter (matching TLX's `for mma in static_range(NUM_MMAS)`
+        # pattern). `cute.gemm(tiled_mma, ...)` automatically iterates the
         # MMA-M partitions of the operand fragments. Configs respect the
         # atom-M limits by choosing atom_m in the supported set above.
         atom_m = self.BLOCK_SIZE_M // self.NUM_MMAS
@@ -2416,8 +2520,9 @@ class GroupedGemmKernel:
             # Explicit subtile count overrides the auto heuristic, which
             # picks tile_n based on a fixed compute_elts/tile_m budget and
             # often ends up smaller than ideal — yielding more subtile
-            # passes (TMEM->registers->SMEM->TMA store) than necessary.
-            # EPILOGUE_SUBTILE=4 uses BLOCK_N // 4 columns per subtile.
+            # passes (TMEM->reg->SMEM->TMA-store) than necessary. TLX uses
+            # EPILOGUE_SUBTILE=4 (BLOCK_N // 4 per subtile); mirror that
+            # so we get the same number of epilog passes per tile.
             cta_n = self.cta_tile_shape_mnk[1]
             tile_m, tile_n, warp_m, warp_n = _explicit_epilogue_tile_shape(
                 cta_m=self.cta_tile_shape_mnk[0],
@@ -2464,8 +2569,8 @@ class GroupedGemmKernel:
         # shape matches what the kernel will actually allocate, then ask
         # CUTLASS for the column count. With `atom_layout_mnk=(NUM_MMAS_ATOM,
         # 1, 1)` the tiled_mma's M already covers BLOCK_SIZE_M, so we no
-        # longer multiply by NUM_MMAS because per-MMA accumulator slicing is
-        # folded into a single MMA-M dimension of the fragment.
+        # longer multiply by NUM_MMAS — TLX's per-MMA accumulator slicing
+        # is now folded into a single MMA-M dim of the fragment.
         acc_shape = self.tiled_mma.partition_shape_C(self.mma_tiler[:2])
         tCtAcc_fake = self.tiled_mma.make_fragment_C(
             cute.append(acc_shape, self.NUM_TMEM_BUFFERS)
@@ -2494,7 +2599,7 @@ class GroupedGemmKernel:
         elem_size_bytes_a: cutlass.Constexpr[int],
         elem_size_bytes_b: cutlass.Constexpr[int],
         elem_size_bytes_c: cutlass.Constexpr[int],
-        # Activation-buffer offset support for WGRAD:
+        # Activation-buffer offset support (TLX wgrad-style):
         use_activation_buffer: cutlass.Constexpr[bool],
         activation_buffer_size_bytes: cutlass.Int64,
         a_offset_tensor: cute.Tensor,  # int64[1] (or any int64 tensor; only [0] is read)
@@ -2511,6 +2616,8 @@ class GroupedGemmKernel:
         local_rank: cutlass.Int32,
         num_clusters: int,
         stream: cuda.CUstream,
+        condition: cute.Tensor,
+        USE_CONDITIONAL_EXECUTION: cutlass.Constexpr[bool],
     ):
         tensor_a, tensor_b = _swap_if(self.SWAP_AB, tensor_a, tensor_b)
         a_base_ptr, b_base_ptr = _swap_if(self.SWAP_AB, a_base_ptr, b_base_ptr)
@@ -2534,6 +2641,7 @@ class GroupedGemmKernel:
             c_s0, c_s1 = c_s1, c_s0
 
         # Capture dtypes / layouts.
+        self.output_accum = output_accum
         self.a_dtype = tensor_a.element_type
         self.b_dtype = tensor_b.element_type
         self.c_dtype = tensor_c.element_type
@@ -2652,7 +2760,7 @@ class GroupedGemmKernel:
             problem_type=self.problem_type,
             FORCE_N_MAJOR=self.force_n_major,
             NUM_N_CLUSTERS=self.num_n_clusters,
-            WORLD_SIZE=self.world_size,
+            WORLD_SIZE=self.schedule_world_size,
             NUM_SMEM_BUFFERS=self.NUM_SMEM_BUFFERS,
             NUM_TMEM_BUFFERS=self.NUM_TMEM_BUFFERS,
             NUM_C_STAGES=self.NUM_C_STAGES,
@@ -2661,6 +2769,8 @@ class GroupedGemmKernel:
             BLOCK_SIZE_N=self.BLOCK_SIZE_N,
             BLOCK_SIZE_K=self.BLOCK_SIZE_K,
             NUM_CTAS=self.NUM_CTAS,
+            condition=condition,
+            USE_CONDITIONAL_EXECUTION=USE_CONDITIONAL_EXECUTION,
         ).launch(
             grid=grid,
             block=(THREADS_PER_CTA, 1, 1),
@@ -2673,8 +2783,8 @@ class GroupedGemmKernel:
         """Idle padding warps (warps 6-7). They participate in the cluster
         rendezvous in the kernel prologue and tail, but do no pipeline work.
 
-        The two idle warps retain the light register allocation used by the
-        producer warp group.
+        TLX equivalent: `with tlx.async_task(num_warps=2, num_regs=48):
+        if NUM_CTAS == 2: tlx.cluster_barrier()`.
         """
         return
 
@@ -2694,7 +2804,7 @@ def _make_tensor_for_tensormap_update(
     """Build a per-group GMEM tensor for the tensormap update call.
 
     Inputs are SCALARS (no per-launch device tensor). The producer /
-    epilogue bodies maintain device-side `start_*` accumulators and
+    epilog bodies maintain `start_*` accumulators (TLX-style) and
     compute `per_group_base_ptr = base + start * stride * elem_size`
     plus the per-tensor strides. This eliminates the CPU-side prefix
     sum and the strides_abc/ptrs_abc device tensors entirely.

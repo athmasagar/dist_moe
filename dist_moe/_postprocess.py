@@ -31,9 +31,14 @@ class RMSNormPostprocess:
     any gain center) into the corresponding output rows of ``w2`` for
     inference from pre-quantized weights.
 
+    Supported hidden dimensions are multiples of 128 from 256 through 131072.
+    Bitwise backward follows the standalone projection and score-gradient
+    reduction orders, using register, chunked, or shared-gradient schedules
+    selected from the input geometry.
+
     ``require_bitwise=False`` permits DIM clustering in forward and selects the
-    HBM-optimized backward on GB10x. Both can reduce latency, but their results
-    are only numerically equivalent to the standalone operators. Bitwise
+    HBM-optimized backward at compute capability 10 or newer. Both can reduce
+    latency, but their results are only numerically equivalent to the standalone operators. Bitwise
     equivalence remains the default. Non-bitwise training is supported through
     DIM 12288; wider non-bitwise dimensions are inference-only.
 
@@ -472,13 +477,14 @@ def _fused_post_expert_rmsnorm_backward_to(
     )
 
     h3_TKD = h3_MD.reshape(num_tokens, topk, -1)
-    grad_y_TKD = _prepare_bwd_grad_y(
+    grad_y_TD = _prepare_bwd_grad_y(
         grad_output_TD,
         config.norm_output_dtype,
         require_bitwise=config.require_bitwise,
+        x=h3_TKD,
     )
     grad_h3_TKD, grad_topk_scores_TK = _fused_rmsnorm_combine_bwd(
-        grad_y_TKD,
+        grad_y_TD,
         h3_TKD,
         topk_scores_TK,
         rstd_TK,
@@ -670,8 +676,10 @@ def _validate_rmsnorm_postprocess(
         )
 
     # Import lazily so CPU-only processes do not require libcuda.
+    from .kernels.norm._fused_rmsnorm_combine_bwd_kernel import (
+        FusedRMSNormCombineBwd,
+    )
     from .kernels.norm.fused_rmsnorm_combine import (
-        _MAX_OPTIMIZED_FUSED_BWD_DIM,
         supports_accelerated_fwd_contract,
     )
 
@@ -697,11 +705,11 @@ def _validate_rmsnorm_postprocess(
     if (
         not inference_mode
         and not config.require_bitwise
-        and expert_output_dim > _MAX_OPTIMIZED_FUSED_BWD_DIM
+        and expert_output_dim > FusedRMSNormCombineBwd._MAX_DIM
     ):
         raise ValueError(
             "non-bitwise RMSNormPostprocess dimensions above "
-            f"{_MAX_OPTIMIZED_FUSED_BWD_DIM} are inference-only"
+            f"{FusedRMSNormCombineBwd._MAX_DIM} are inference-only"
         )
     _validate_rmsnorm_weight(
         config,
@@ -1056,6 +1064,7 @@ def _resolve_callback(
         h3_saved_MD = None
         if save:
             if save_buffer is not None:
+                assert save_condition is not None
                 conditional_copy_activations(
                     condition=save_condition,
                     lhs=None,
@@ -1290,6 +1299,7 @@ def _resolve_rmsnorm_config(
             )
             return output_TD, None, None, config.output_dtype
         if save_buffer is not None:
+            assert save_condition is not None
             conditional_copy_activations(
                 condition=save_condition,
                 lhs=None,

@@ -22,6 +22,7 @@ from cutlass import (
     Uint32,
     Uint64,
 )
+from cutlass._mlir import ir
 from cutlass._mlir.dialects import llvm, nvvm
 from cutlass.cutlass_dsl import dsl_user_op, T
 
@@ -40,12 +41,10 @@ from ..formats import (
     FP8_E5M2_HALF_RANGE_ROUND_BOUNDARY,
     FP8_E5M2_MAX,
     NVFP4_MAX,
-    NVFP4_NO_CLIP_TARGET_MAX,
     NVFP4_TOKEN_AMAX_FLOOR,
     SWIGLU_CLAMP_ALPHA_DEFAULT,
     SWIGLU_CLAMP_LIMIT_DEFAULT,
 )
-from . import _dsl_compat as _cute_extern  # noqa: F401
 from ._dsl_compat import fmax, fmin
 from ._quack_utils import make_vector
 from ._quant_conversion import (
@@ -96,6 +95,21 @@ _NVFP4_TOKEN_AMAX_FLOOR: cutlass.Constexpr[float] = NVFP4_TOKEN_AMAX_FLOOR
 # Numerator of the per-token global scale: ``numerator * recip(amax)`` — the
 # fleet gs convention (authority: `nvfp4_weight_global_scale`).
 _NVFP4_TOKEN_SCALE_NUMERATOR: cutlass.Constexpr[float] = NVFP4_MAX
+
+
+@dsl_user_op
+def device_trap(*, loc=None, ip=None) -> None:
+    llvm.inline_asm(
+        None,
+        [],
+        "trap;",
+        "",
+        has_side_effects=True,
+        is_align_stack=False,
+        asm_dialect=llvm.AsmDialect.AD_ATT,
+        loc=loc,
+        ip=ip,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -185,25 +199,12 @@ def _compute_recip_from_fp8_e4m3_scale_byte(scale_byte: Uint8) -> Float32:
 @cute.jit
 def _compute_nvfp4_scale_byte(
     max_abs: Float32,
-    use_nvfp4_no_clip_scale: cutlass.Constexpr[bool],
 ) -> Uint8:
     target_max: cutlass.Constexpr[float] = FP4_E2M1_MAX
-    if cutlass.const_expr(use_nvfp4_no_clip_scale):
-        target_max = NVFP4_NO_CLIP_TARGET_MAX
     scale_byte = _compute_fp8_e4m3_scale_byte_rtne(
         max_abs,
         Float32(_FP32_ONE / target_max),
     )
-    if cutlass.const_expr(use_nvfp4_no_clip_scale):
-        # E4M3 subnormals have fixed absolute spacing, so 17/16 headroom can
-        # still round below the ideal scale. One code step is sufficient.
-        scale = _cvt_fp8_byte_to_f32(
-            scale_byte,
-            src_kind=nvvm.CVTPackFloatKind.E4M3x2,
-        )
-        should_bump = scale_byte < Uint8(0x7E)
-        should_bump = should_bump and scale * Float32(FP4_E2M1_MAX) < max_abs
-        scale_byte = Uint8(scale_byte + Uint8(1)) if should_bump else scale_byte
     return scale_byte
 
 
@@ -212,11 +213,8 @@ def _compute_nvfp4_per_token_scale_and_multiplier(
     block_amax: Float32,
     row_scale: Float32,
     mNvfp4RecipLut: cute.Tensor,
-    use_nvfp4_no_clip_scale: cutlass.Constexpr[bool],
 ):
     target_max: cutlass.Constexpr[float] = FP4_E2M1_MAX
-    if cutlass.const_expr(use_nvfp4_no_clip_scale):
-        target_max = NVFP4_NO_CLIP_TARGET_MAX
     # Order is load-bearing: fleet convention is ``(amax * gs) * fl(1/6)`` —
     # see the Triton `_nvfp4_scale_and_recip` for why (E4M3 RTNE ties).
     raw_scale = (block_amax * row_scale) * Float32(1.0 / target_max)
@@ -232,21 +230,6 @@ def _compute_nvfp4_per_token_scale_and_multiplier(
         raw_scale,
         dst_kind=nvvm.CVTPackFloatKind.E4M3x2,
     )
-    if cutlass.const_expr(use_nvfp4_no_clip_scale):
-        # Same one-code bump as _compute_nvfp4_scale_byte: E4M3 subnormals
-        # have fixed absolute spacing, so 17/16 headroom can still round the
-        # scale below block_amax * row_scale / 6, and the satfinite FP4 store
-        # would then pin the block max deterministically (D117854242). The
-        # comparison is in the row-scaled domain the multiplier normalizes.
-        scale_probe = _cvt_fp8_byte_to_f32(
-            scale_byte,
-            src_kind=nvvm.CVTPackFloatKind.E4M3x2,
-        )
-        should_bump = scale_byte < Uint8(0x7E)
-        should_bump = (
-            should_bump and scale_probe * Float32(FP4_E2M1_MAX) < block_amax * row_scale
-        )
-        scale_byte = Uint8(scale_byte + Uint8(1)) if should_bump else scale_byte
     scale_f32 = _cvt_fp8_byte_to_f32(
         scale_byte,
         src_kind=nvvm.CVTPackFloatKind.E4M3x2,
@@ -310,7 +293,6 @@ def _compute_scale_and_recip_from_amax(
     max_abs: Float32,
     format_id: cutlass.Constexpr[int],
     half_range_scale: cutlass.Constexpr[bool],
-    use_nvfp4_no_clip_scale: cutlass.Constexpr[bool] = False,
 ):
     if cutlass.const_expr(
         format_id == BLOCK_SCALED_FORMAT_MXFP8_E4M3
@@ -343,7 +325,6 @@ def _compute_scale_and_recip_from_amax(
         return scale_byte, recip_scale
     scale_byte = _compute_nvfp4_scale_byte(
         max_abs,
-        use_nvfp4_no_clip_scale,
     )
     return scale_byte, _compute_recip_from_fp8_e4m3_scale_byte(scale_byte)
 
@@ -389,19 +370,16 @@ def _compute_scale_and_recip_from_amax_with_optional_nvfp4_lut(
     format_id: cutlass.Constexpr[int],
     half_range_scale: cutlass.Constexpr[bool],
     mNvfp4RecipLut: cute.Tensor,
-    use_nvfp4_no_clip_scale: cutlass.Constexpr[bool] = False,
 ):
     if cutlass.const_expr(format_id == BLOCK_SCALED_FORMAT_NVFP4):
         scale_byte = _compute_nvfp4_scale_byte(
             max_abs,
-            use_nvfp4_no_clip_scale,
         )
         return scale_byte, Float32(mNvfp4RecipLut[Int32(scale_byte)])
     return _compute_scale_and_recip_from_amax(
         max_abs,
         format_id,
         half_range_scale,
-        use_nvfp4_no_clip_scale,
     )
 
 
@@ -672,6 +650,91 @@ def _rcp_rn_f32(x: Float32, *, loc=None, ip=None) -> Float32:
     )
 
 
+@dsl_user_op
+def _rcp_rn_f32_fast_path(x: Float32, *, loc=None, ip=None) -> tuple[Float32, Uint32]:
+    """ptxas's branch-free expansion of ``rcp.rn.f32`` plus its range check.
+
+    The flag is nonzero where ``x`` needs the slow path (the result would be
+    denormal, or ``x`` is inf/nan/denormal); those lanes must recompute with
+    `_rcp_rn_f32`. Everywhere else the value is bitwise ``rcp.rn.f32``.
+    """
+    res = llvm.inline_asm(
+        ir.Type.parse("!llvm.struct<(f32, i32)>"),
+        [Float32(x).ir_value(loc=loc, ip=ip)],
+        "{ .reg .f32 r0, e; .reg .b32 t; .reg .pred p;\n"
+        "rcp.approx.ftz.f32 r0, $2;\n"
+        "fma.rn.f32 e, $2, r0, 0fBF800000;\n"
+        "neg.f32 e, e;\n"
+        "fma.rn.f32 $0, r0, e, r0;\n"
+        "mov.b32 t, $2;\n"
+        "add.u32 t, t, 0x1800000;\n"
+        "and.b32 t, t, 0x7f800000;\n"
+        "setp.le.u32 p, t, 0x1ffffff;\n"
+        "selp.u32 $1, 1, 0, p; }",
+        "=f,=r,f",
+        has_side_effects=False,
+        is_align_stack=False,
+    )
+    return (
+        Float32(llvm.extractvalue(T.f32(), res, [0], loc=loc, ip=ip)),
+        Uint32(llvm.extractvalue(T.i32(), res, [1], loc=loc, ip=ip)),
+    )
+
+
+@dsl_user_op
+def _rcp_rn_f32_ge1(x: Float32, *, loc=None, ip=None) -> Float32:
+    """Branch-free bitwise ``rcp.rn.f32`` for ``x >= 1``, inf or nan.
+
+    The flagged inputs of `_rcp_rn_f32_fast_path` in this range are
+    ``x >= 2**126``, whose result is the denormal ``q * 2**-149`` with
+    ``q = round(2**149 / x)``. ``q`` comes from the fast-path reciprocal of
+    ``x * 2**-126`` (exact scaling, within 1 of the answer) and is fixed up by
+    the exact signs of ``(q +- 1/2) * x - 2**149``; those are never zero, so
+    there are no ties.
+    """
+    return Float32(
+        llvm.inline_asm(
+            T.f32(),
+            [Float32(x).ir_value(loc=loc, ip=ip)],
+            "{ .reg .f32 s, r0, e, q, h, l; .reg .b32 t, k; .reg .pred p;\n"
+            "rcp.approx.ftz.f32 r0, $1;\n"
+            "fma.rn.f32 e, $1, r0, 0fBF800000;\n"
+            "neg.f32 e, e;\n"
+            "fma.rn.f32 $0, r0, e, r0;\n"
+            "mul.f32 s, $1, 0f00800000;\n"
+            "rcp.approx.ftz.f32 r0, s;\n"
+            "fma.rn.f32 e, s, r0, 0fBF800000;\n"
+            "neg.f32 e, e;\n"
+            "fma.rn.f32 r0, r0, e, r0;\n"
+            "mul.f32 r0, r0, 0f4B000000;\n"
+            "cvt.rni.f32.f32 q, r0;\n"
+            "add.f32 h, q, 0f3F000000;\n"
+            "add.f32 l, q, 0fBF000000;\n"
+            "fma.rn.f32 h, h, s, 0fCB000000;\n"
+            "fma.rn.f32 l, l, s, 0fCB000000;\n"
+            "setp.lt.f32 p, h, 0f00000000;\n"
+            "@p add.f32 q, q, 0f3F800000;\n"
+            "setp.gt.f32 p, l, 0f00000000;\n"
+            "@p add.f32 q, q, 0fBF800000;\n"
+            "testp.infinite.f32 p, $1;\n"
+            "@p mov.f32 q, 0f00000000;\n"
+            "cvt.rzi.u32.f32 t, q;\n"
+            "testp.notanumber.f32 p, $1;\n"
+            "@p mov.b32 t, $1;\n"
+            "mov.b32 k, $1;\n"
+            "add.u32 k, k, 0x1800000;\n"
+            "and.b32 k, k, 0x7f800000;\n"
+            "setp.le.u32 p, k, 0x1ffffff;\n"
+            "@p mov.b32 $0, t; }",
+            "=f,f",
+            has_side_effects=False,
+            is_align_stack=False,
+            loc=loc,
+            ip=ip,
+        )
+    )
+
+
 @cute.jit
 def _compute_nvfp4_token_scales(row_amax: Float32):
     # gs convention: numerator * recip(amax) — bitwise-matching the fake-quant
@@ -695,13 +758,11 @@ def _scale_nvfp4_per_token_block(
     mNvfp4RecipLut: cute.Tensor,
     source_dtype: type[cutlass.Numeric],
     values: cute.Tensor,
-    use_nvfp4_no_clip_scale: cutlass.Constexpr[bool],
 ) -> Uint8:
     scale_byte, multiplier = _compute_nvfp4_per_token_scale_and_multiplier(
         block_amax,
         row_scale,
         mNvfp4RecipLut,
-        use_nvfp4_no_clip_scale,
     )
     for pair in cutlass.range_constexpr(8):
         value0, value1 = _unpack_b16x2(packed[rep, pair], source_dtype)
@@ -984,6 +1045,16 @@ def _apply_block_scaled_quant_dxy_values_f32x2(
         _sigmoid_f32(x_f32x2[0], fast_math),
         _sigmoid_f32(x_f32x2[1], fast_math),
     )
+    return _swiglu_bwd_dxy_from_sigmoid_f32x2(dz_f32x2, x_f32x2, y_f32x2, sigmoid_f32x2)
+
+
+@cute.jit
+def _swiglu_bwd_dxy_from_sigmoid_f32x2(
+    dz_f32x2,
+    x_f32x2,
+    y_f32x2,
+    sigmoid_f32x2,
+):
     x_sigmoid_f32x2 = _mul_f32x2(x_f32x2, sigmoid_f32x2)
     one_plus_x_f32x2 = _add_f32x2(
         (Float32(_FP32_ONE), Float32(_FP32_ONE)),
@@ -1293,7 +1364,7 @@ def _cvt_fp4_pair(
     q_lo: Float32,
     q_hi: Float32,
 ) -> Uint8:
-    """Pack an FP4 (E2M1) element pair with round-to-nearest conversion."""
+    """Pack two FP4 E2M1 values into one byte with round-to-nearest."""
     return _cvt_f32x2_to_qdata_byte_rn(
         q_lo,
         q_hi,
@@ -1317,13 +1388,19 @@ def _store_qdata_row(
             q_lo = vals[2 * k] * recip
             q_hi = vals[2 * k + 1] * recip
             q_byte_col = (col_start + 2 * k) // 2
-            q_byte = _cvt_fp4_pair(q_lo, q_hi)
+            q_byte = _cvt_fp4_pair(
+                q_lo,
+                q_hi,
+            )
             mQ[row, q_byte_col] = q_byte
     else:
         for k in cutlass.range_constexpr(sf_vec_size):
             q = vals[k] * recip
             q_col = col_start + k
-            mQ[row, q_col] = _cvt_qdata_for_format_id(q, format_id)
+            mQ[row, q_col] = _cvt_qdata_for_format_id(
+                q,
+                format_id,
+            )
 
 
 @cute.jit
@@ -1343,7 +1420,10 @@ def _store_qdata_col_major_fp4(
         if is_even:
             q_lo = q_codes[k]
             q_hi = partner_code
-            byte = _cvt_fp4_pair(q_lo, q_hi)
+            byte = _cvt_fp4_pair(
+                q_lo,
+                q_hi,
+            )
             mQ[q_col, row_pair] = byte
 
 
@@ -1360,7 +1440,10 @@ def _store_qdata_col_major_fp8(
     row = row_start + tidx
     for k in cutlass.range_constexpr(sf_vec_size):
         q_col = col_start + k
-        mQ[q_col, row] = _cvt_qdata_for_format_id(q_codes[k], format_id)
+        mQ[q_col, row] = _cvt_qdata_for_format_id(
+            q_codes[k],
+            format_id,
+        )
 
 
 @cute.jit

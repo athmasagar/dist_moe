@@ -46,7 +46,9 @@ config = dist_moe.Config(
     inference=True,
 )
 context = dist_moe.create_context(group=ep_group, config=config)
-prepared_w13 = dist_moe.prepare_block_scaled_weight(w13_E2FD, policy, inference=True)
+prepared_w13 = dist_moe.prepare_block_scaled_weight(
+    w13_E2FD.flatten(1, 2), policy, inference=True
+)
 prepared_w2 = dist_moe.prepare_block_scaled_weight(w2_EDF, policy, inference=True)
 y_TD = dist_moe.routed_experts(
     x_TD,
@@ -65,6 +67,10 @@ Unlike MXFP8 evaluation, wrapping a training context in `torch.no_grad()` does
 not enable NVFP4: the format requires the static inference context because its
 routing, packed dispatch, weight contract, and memory layout are
 inference-specialized.
+
+Staged inference retains the asynchronous source's 128-row routing and launch
+selection. Compact automatic decode tuning applies to the matched Mega
+operand layout, not to staged offset-backed scratch.
 
 <a id="reuse-the-two-rank-example"></a>
 ## Reuse the two-rank example
@@ -118,6 +124,21 @@ does not requantize weights during each invocation or CUDA-graph replay.
 Non-strict `make_fx` captures the same registered block-scaled forward without
 introducing autograd state.
 
+For supported Mega inference, `fuse_swiglu=True` prepares W13 in adjacent gate/up groups
+of eight. Quantization happens before that rearrangement, so each canonical
+16-value scale group is preserved. Qdata and natural scale rows are rearranged
+together, then the scales are converted to blocked storage. W2 is never
+interleaved. The default remains concatenated for both pipelines; interleaved
+preparation is rejected for staged execution and training. Preparation itself
+is a registered operation with metadata-only FakeTensor outputs.
+Offset-backed G8 execution has additional source admission limits; preparation
+does not promise that every VMM-configured Mega shape can consume this layout.
+It requires the high-throughput producer topology: the padded allocation row
+bound must be at least `16 * num_sms`, and `(D, F)` must differ from
+`(4096, 4096)`. Compact decode, explicit scheduler relay, and activation rings
+are excluded with offsets. A shape selecting the narrow topology is rejected
+before launch instead of receiving a separate mapping or static workaround.
+
 <a id="plan-context-memory"></a>
 ## Plan context memory
 
@@ -129,12 +150,20 @@ introducing autograd state.
 - row storage is padded to the dispatch alignment required by peer loads.
 
 Inference uses `num_activation_slots=0`. The activation slot is therefore
-empty and all temporary offsets refer to reusable scratch. With VMM disabled,
-scratch is device HBM. With VMM enabled, one stable virtual allocation is
+empty and scratch is reusable. With VMM disabled, scratch is device HBM:
+Mega inference binds aligned static views and skips the unused per-call
+`get_forward_plan()` launch and received-count clone. The internal source
+rules select host or device tensor maps; static views do not force host maps.
+Staged inference retains GPU-offset planning.
+
+Every VMM-configured inference context retains the GPU-offset scratch planner
+and device tensor maps. One stable virtual allocation is
 ordered from low to high addresses as a device-backed prefix, host-backed
 overflow, and hot device-backed scratch suffix. Planner offsets address the
-same logical bytes regardless of physical backing. VMM changes residency, not
-the execution graph or packed row format.
+same logical bytes regardless of physical backing. The context's VMM
+configuration selects this planner-backed execution; operands are not
+individually reclassified or separately mapped. The packed row format and
+arithmetic are unchanged by that choice.
 
 <a id="follow-the-forward-pass"></a>
 ## Follow the forward pass
@@ -160,15 +189,16 @@ local token results `A/B`; rank 1 performs the symmetric work for `C/D`.
 | 1 | `_stage_blockscaled_dispatch` | local BF16 `x_TD` | packed qdata, E4M3 scales, and FP32 inverse row scale | local rank's symmetric dispatch HBM | not saved; inference scratch is reusable after the call | none inside quantization |
 | 2 | `_ep_barrier` | dispatch and routing publication state | symmetric-memory signal state | device | no backward state | EP device barrier before peer reads |
 | 3 | `dist_dispatch_routing` | global top-k IDs and published row addresses | per-expert counts, gather pointers, scatter pointers | local HBM metadata referring to local or peer HBM | invocation-local only | no CPU synchronization |
-| 4 | `get_forward_plan` | received-row counts and static model geometry | device offsets for the fixed scratch layout | device HBM | scratch-only plan; nothing is retained for backward | one fixed-topology planner launch |
+| 4 | scratch binding | received-row counts and static model geometry | static views for device-only Mega; GPU offsets for staged or VMM-configured inference | context-owned scratch | no backward state | planner-backed paths run `get_forward_plan`; device-only Mega skips that launch and the unused count clone |
 | 5a | staged distributed W13 GEMM | peer packed rows, prepared W13 qdata/scales/global inverse | W13 result and fused activation state at planner offsets | scratch; peer input remains in symmetric HBM | overwritten by the next invocation | kernel-internal producer/consumer ordering |
 | 5b | staged fused SwiGLU/W2/combine | staged activation, prepared W2 qdata/scales/global inverse, scatter pointers | combined expert output | local output plus peer symmetric combine stores | no recompute path exists | device barrier before peer combine consumption |
-| 5c | Mega fused forward | the same packed rows, both prepared weights, routing metadata, and scratch offsets | combined expert output | scratch and peer symmetric combine HBM | no backward state or recompute | fixed chunk-pipeline ordering and peer barrier |
+| 5c | Mega fused forward | packed rows, both prepared weights, routing metadata, and static views or VMM scratch offsets | combined expert output | scratch and peer symmetric combine HBM | no backward state or recompute | fixed chunk-pipeline ordering and peer barrier |
 | 6 | `_async_forward_postprocess` | combined rows and top-k scores | BF16 `y_TD` | local HBM | returned output only | no host synchronization |
 
 Only one of the staged pair or the Mega launch executes. Both consume the same
-prepared-weight layout, routing metadata, scratch plan, and packed symmetric
-dispatch rows.
+prepared row format, routing metadata, and packed symmetric dispatch rows.
+Scratch binding follows the context/pipeline contract above; G8 is Mega-only
+and remains subject to its source topology and offset restrictions.
 
 <a id="understand-the-packed-dispatch-row"></a>
 ## Understand the packed dispatch row
@@ -200,8 +230,11 @@ device ordering.
 
 The Mega path pipelines W13, SwiGLU, W2, and combine in one chunked forward
 launch. It uses the same arithmetic, prepared weights, peer pointers, and
-planner-owned scratch but keeps intermediate tiles within the fused pipeline
-where possible.
+context-owned scratch but keeps intermediate tiles within the fused pipeline
+where possible. Device-only Mega uses static views; VMM-configured Mega keeps
+the device-offset plan and device tensor maps. The G8 offset-backed source path
+requires its admitted producer topology rather than remapping selected operands
+to make an unsupported shape run.
 
 Neither path saves activations, routing snapshots, DGRAD operands, or WGRAD
 operands for backward. The returned BF16 output is the only user-visible
@@ -212,8 +245,10 @@ result.
 
 The context, prepared weights, input tensors, routing tensors, output tensor,
 symmetric buffers, and scratch allocation must retain stable addresses across
-capture and replay. Device-side routing and planning can change values while
-their tensor shapes and launch topology remain fixed. A replay may therefore
+capture and replay. Device-side routing and planner-backed offsets can change
+values while their tensor shapes and launch topology remain fixed. Device-only
+Mega instead reuses static views with its captured automatic descriptor path.
+A replay may therefore
 use new activations and routing decisions without allocating a new dispatch
 row buffer or changing the captured kernel sequence.
 

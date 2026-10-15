@@ -61,11 +61,13 @@ _COPY_NUM_STAGES = 1
 
 
 def _copy_launch_config() -> tuple[int, int]:
+    """Return the retained persistent copy CTA count and warp count."""
     num_ctas = num_sms_per_device() * _COPY_CTAS_PER_SM
     return num_ctas, _COPY_NUM_WARPS
 
 
 def _validate_copy_tensor(tensor: torch.Tensor, *, name: str) -> None:
+    """Validate the dtype and contiguous layout of an activation copy tensor."""
     if tensor.dtype not in (torch.float16, torch.bfloat16, torch.uint8):
         raise TypeError(f"{name} must have dtype float16, bfloat16, or uint8")
     if not tensor.is_contiguous():
@@ -73,6 +75,7 @@ def _validate_copy_tensor(tensor: torch.Tensor, *, name: str) -> None:
 
 
 def _triton_copy_dtype(dtype: torch.dtype):
+    """Map a supported copy dtype to its Triton scalar dtype."""
     if dtype is torch.float16:
         return tl.float16
     if dtype is torch.bfloat16:
@@ -88,6 +91,7 @@ def _validate_activation_destination(
     activation_offset: torch.Tensor,
     device: torch.device,
 ) -> None:
+    """Validate buffer and device-offset metadata without reading its value."""
     if activation_buffer.dtype is not torch.uint8:
         raise TypeError("activation_buffer must have dtype uint8")
     if activation_buffer.device != device:
@@ -179,7 +183,8 @@ def copy_routing_and_dispatch(
     if dispatch.device != x.device:
         raise ValueError("dispatch must be on the input device")
     num_elements = max(x.numel(), expert_ids.numel())
-    grid = (triton.cdiv(num_elements, _COPY_BLOCK_SIZE),)
+    # The token-count header is published even for an empty payload.
+    grid = (max(1, triton.cdiv(num_elements, _COPY_BLOCK_SIZE)),)
     _triton_copy_routing_and_dispatch[grid](
         # Triton otherwise calls mutable data_ptr(), which materializes COW
         # inputs and changes their address during CUDA-graph capture.
@@ -198,6 +203,8 @@ def copy_routing_and_dispatch(
         routing_stride_0=expert_ids.stride(0),
         routing_stride_1=expert_ids.stride(1),
         BLOCK_SIZE=_COPY_BLOCK_SIZE,
+        X_CONTIGUOUS=x.is_contiguous(),
+        ROUTING_CONTIGUOUS=expert_ids.is_contiguous(),
         num_warps=_COPY_NUM_WARPS,
         num_stages=_COPY_NUM_STAGES,
         NUM_EXPERTS=num_experts,
@@ -233,7 +240,7 @@ def copy_dispatch_to_activation(
     dispatch: torch.Tensor,
     activation_buffer: torch.Tensor,
     activation_offset: torch.Tensor,
-    condition: torch.Tensor,
+    condition: torch.Tensor | None,
 ) -> None:
     """Save the published dispatch payload to the activation buffer when selected."""
     _validate_copy_tensor(dispatch, name="dispatch")
@@ -242,7 +249,8 @@ def copy_dispatch_to_activation(
         activation_offset=activation_offset,
         device=dispatch.device,
     )
-    validate_conditional_execution(condition, device=dispatch.device)
+    if condition is not None:
+        validate_conditional_execution(condition, device=dispatch.device)
 
     num_ctas, num_warps = _copy_launch_config()
     _triton_copy_dispatch_to_activation[(num_ctas,)](
@@ -264,16 +272,17 @@ def copy_activation_to_dispatch(
     dispatch: torch.Tensor,
     activation_buffer: torch.Tensor,
     activation_offset: torch.Tensor,
-    condition: torch.Tensor,
+    condition: torch.Tensor | None,
 ) -> None:
-    """Publish a saved activation to dispatch only when recompute is selected."""
+    """Publish a saved activation, unconditionally when condition is None."""
     _validate_copy_tensor(dispatch, name="dispatch")
     _validate_activation_destination(
         activation_buffer=activation_buffer,
         activation_offset=activation_offset,
         device=dispatch.device,
     )
-    validate_conditional_execution(condition, device=dispatch.device)
+    if condition is not None:
+        validate_conditional_execution(condition, device=dispatch.device)
 
     num_ctas, num_warps = _copy_launch_config()
     _triton_copy_activation_to_dispatch[(num_ctas,)](
@@ -306,33 +315,45 @@ def _triton_copy_routing_and_dispatch(
     routing_num_cols,
     routing_stride_0,
     routing_stride_1,
+    BLOCK_SIZE: tl.constexpr,
+    X_CONTIGUOUS: tl.constexpr,
+    ROUTING_CONTIGUOUS: tl.constexpr,
     NUM_EXPERTS: tl.constexpr,
     VALIDATE_EXPERT_IDS: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
 ):
     # int64: pid * BLOCK_SIZE wraps int32 once the published payload exceeds 2**31 elements.
-    offsets = tl.program_id(0).to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    block_start = tl.program_id(0).to(tl.int64) * BLOCK_SIZE
+    offsets = block_start + tl.arange(0, BLOCK_SIZE)
 
     x_mask = offsets < x_num_elements
-    x_rows = offsets // x_num_cols
-    x_cols = offsets - x_rows * x_num_cols
-    x_offsets = x_rows * x_stride_0 + x_cols * x_stride_1
+    if X_CONTIGUOUS:
+        x_offsets = offsets
+    else:
+        x_rows = offsets // x_num_cols
+        x_cols = offsets - x_rows * x_num_cols
+        x_offsets = x_rows * x_stride_0 + x_cols * x_stride_1
     x_values = tl.load(x_ptr + x_offsets, mask=x_mask)
     tl.store(dispatch_ptr + offsets, x_values, mask=x_mask)
 
-    routing_mask = offsets < routing_num_elements
-    routing_rows = offsets // routing_num_cols
-    routing_cols = offsets - routing_rows * routing_num_cols
-    routing_offsets = routing_rows * routing_stride_0 + routing_cols * routing_stride_1
-    expert_ids = tl.load(expert_ids_ptr + routing_offsets, mask=routing_mask)
-    if VALIDATE_EXPERT_IDS:
-        invalid = routing_mask & ((expert_ids < -1) | (expert_ids >= NUM_EXPERTS))
-        has_invalid = tl.sum(invalid.to(tl.int32)) > 0
-        should_trap = has_invalid & (get_flat_tid() == 0)
-        if should_trap:
-            tl.device_print("DistMoE expert ID is outside [-1, num_experts)")
-        device_trap_if(should_trap)
-    tl.store(routing_ptr + offsets, expert_ids, mask=routing_mask)
+    if block_start < routing_num_elements:
+        routing_mask = offsets < routing_num_elements
+        if ROUTING_CONTIGUOUS:
+            routing_offsets = offsets
+        else:
+            routing_rows = offsets // routing_num_cols
+            routing_cols = offsets - routing_rows * routing_num_cols
+            routing_offsets = (
+                routing_rows * routing_stride_0 + routing_cols * routing_stride_1
+            )
+        expert_ids = tl.load(expert_ids_ptr + routing_offsets, mask=routing_mask)
+        if VALIDATE_EXPERT_IDS:
+            invalid = routing_mask & ((expert_ids < -1) | (expert_ids >= NUM_EXPERTS))
+            has_invalid = tl.sum(invalid.to(tl.int32)) > 0
+            should_trap = has_invalid & (get_flat_tid() == 0)
+            if should_trap:
+                tl.device_print("DistMoE expert ID is outside [-1, num_experts)")
+            device_trap_if(should_trap)
+        tl.store(routing_ptr + offsets, expert_ids, mask=routing_mask)
     tl.store(
         routing_token_count_ptr + offsets,
         routing_num_rows,
@@ -469,8 +490,9 @@ def _triton_copy_dispatch_to_activation(
     NUM_CTA: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
-    if tl.load(condition_ptr, eviction_policy="evict_last") == 0:
-        return
+    if condition_ptr is not None:
+        if tl.load(condition_ptr, eviction_policy="evict_last") == 0:
+            return
 
     pid = tl.program_id(0)
     byte_offset = tl.load(activation_offset_ptr, eviction_policy="evict_last").to(
@@ -484,7 +506,8 @@ def _triton_copy_dispatch_to_activation(
     )
     activation_ptr = tl.multiple_of(activation_ptr_raw, align)
 
-    num_blocks = tl.cdiv(num_elements, BLOCK_SIZE)
+    # Not tl.cdiv: n + BLOCK_SIZE - 1 wraps int32 just below 2**31 elements; n - 1 cannot.
+    num_blocks = (num_elements - 1) // BLOCK_SIZE + 1
     num_blocks_per_cta = tl.cdiv(num_blocks, NUM_CTA)
     block_start = pid * num_blocks_per_cta
     block_end = min(block_start + num_blocks_per_cta, num_blocks)
@@ -506,8 +529,9 @@ def _triton_copy_activation_to_dispatch(
     NUM_CTA: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
-    if tl.load(condition_ptr, eviction_policy="evict_last") == 0:
-        return
+    if condition_ptr is not None:
+        if tl.load(condition_ptr, eviction_policy="evict_last") == 0:
+            return
 
     pid = tl.program_id(0)
     byte_offset = tl.load(activation_offset_ptr, eviction_policy="evict_last").to(
@@ -521,7 +545,8 @@ def _triton_copy_activation_to_dispatch(
     )
     activation_ptr = tl.multiple_of(activation_ptr_raw, align)
 
-    num_blocks = tl.cdiv(num_elements, BLOCK_SIZE)
+    # Not tl.cdiv: n + BLOCK_SIZE - 1 wraps int32 just below 2**31 elements; n - 1 cannot.
+    num_blocks = (num_elements - 1) // BLOCK_SIZE + 1
     num_blocks_per_cta = tl.cdiv(num_blocks, NUM_CTA)
     block_start = pid * num_blocks_per_cta
     block_end = min(block_start + num_blocks_per_cta, num_blocks)
@@ -585,7 +610,8 @@ def _triton_conditional_copy(
     typed_buffer_base = tl.multiple_of(typed_buffer_base_raw, align)
 
     # Persistent kernel: each CTA processes contiguous blocks
-    num_blocks = tl.cdiv(num_elements, BLOCK_SIZE)
+    # Not tl.cdiv: n + BLOCK_SIZE - 1 wraps int32 just below 2**31 elements; n - 1 cannot.
+    num_blocks = (num_elements - 1) // BLOCK_SIZE + 1
     num_blocks_per_cta = tl.cdiv(num_blocks, NUM_CTA)
     block_start = pid * num_blocks_per_cta
     block_end = min(block_start + num_blocks_per_cta, num_blocks)

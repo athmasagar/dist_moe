@@ -12,9 +12,20 @@ import cutlass.cute as cute
 import cutlass.utils as utils
 from cutlass.cute.nvgpu import cpasync
 
-from ._grouped_gemm_config import NATIVE_SWIZZLE_GROUP_SIZE
+from ..formats import (
+    SWIGLU_CLAMP_ALPHA_DEFAULT,
+    SWIGLU_CLAMP_LIMIT_DEFAULT,
+)
+from ._grouped_gemm_config import (
+    NATIVE_SWIZZLE_GROUP_SIZE,
+    WGRAD_DISPATCH_TILE_M,
+)
+from .combine_scatter import CombineScatterMixin
 from .dispatch_quant import (
     _dispatch_gather_producer_body,
+    _gather_k_segment_tma_wait,
+    _GATHER_K_SEGMENTS,
+    _mega_dispatch_quant_wgrad_feature_tile_wait,
 )
 from .grouped_gemm_kernel import (
     _BAR_EPILOG_SYNC,
@@ -23,12 +34,24 @@ from .grouped_gemm_kernel import (
     _packed_group_rows_byte_extent,
     _require_valid_activation_buffer_range,
     _swap_if,
+    _TMEM_LD_MAX_REGS_PER_THREAD,
     _transpose_c_if_swap,
     GroupedGemmKernel,
+)
+from .grouped_gemm_tiles import release_acc
+from .native_combine_swiglu import (
+    NATIVE_SWIGLU_BWD_PASSES_PER_BATCH,
+    native_swiglu_bwd_producer_body,
+    NATIVE_SWIGLU_BWD_ROWS,
 )
 from .params import GroupedGemmSecondaryOperands
 from .swiglu_epilogue import (
     store_interleaved_swiglu_smem_tile,
+)
+from .swiglu_fragment import (
+    h1_epi_smem_layout,
+    h1_swiglu_epilogue,
+    interleaved_fc13_view,
 )
 from .tile_scheduler import (
     _DGRAD,
@@ -39,11 +62,6 @@ from .tile_scheduler import (
     GroupedProblemVisitor,
     stage_expert_metadata,
     StaticTileScheduler,
-)
-from .weight_borrow import (
-    _drain_weight_fetch_items,
-    WEIGHT_BORROW_CHUNK_BYTES,
-    WeightBorrowArgs,
 )
 
 # Default gather sub-tile M (must be < BLOCK_SIZE_M for finer dispatch).
@@ -60,6 +78,22 @@ _TARGET_NUM_SUB_PER_GEMM_M_1CTA: int = 8
 
 
 _TARGET_NUM_SUB_PER_GEMM_M_2CTA: int = 16
+
+
+# M tiles per block of the rotated schedule's source-segment interleave
+# (`_interleave_m_tile_idx`). Measured on GB300 EP4 at farm FC2 shapes:
+# uniform COMBINE p50/p90 1208/1522 -> 1101/1139 us (1 block: 1087/1123,
+# 3: 1159/1223), and the 2x-skew hot rank's DGRAD dispatch went from 9% to
+# 27% faster than tlx (1 block ties). FPROP dispatch measured 0-3% slower
+# on uniform routing and keeps the plain rotation.
+_M_TILE_INTERLEAVE: int = 2
+
+
+# Split-atom COMBINE tiles cast an atom's last this-many subtiles into
+# registers before staging them, so the atom's TMEM goes back to the MMA
+# while they are still being scattered. Uniform hot-rank combine FPROP vs
+# tlx on GB300 EP4: 0 held +3.1%, 1 +0.6%, 2 -3.0%; 3 and 4 no better.
+_COMBINE_HELD_SUBTILES: int = 2
 
 
 # Warp layout (12 warps = 384 threads/CTA in DISPATCH; 8 warps = 256 in COMBINE):
@@ -124,41 +158,46 @@ _DIST_GATHER_WG_THREADS: int = 32 * len(GATHER_WARP_IDS)  # 128
 _DIST_EPILOG_WG_THREADS: int = 32 * len(DIST_EPILOG_WARP_IDS)  # 128
 
 
-def _make_u32x4_vector_type():
-    """MLIR ir.VectorType<4xi32> for 16-byte vectorized load/store."""
-    from cutlass._mlir import ir
-
-    return ir.VectorType.get([4], cutlass.Uint32.mlir_type)
-
-
 def _get_ag_block_size_m(block_size_m: int, target_num_sub_per_gemm_m: int) -> int:
     """Choose gather sub-tile M, scaling with BLOCK_M but no smaller than
     `_AG_BLOCK_SIZE_M`. Caller picks target based on 1CTA vs 2CTA."""
     return max(_AG_BLOCK_SIZE_M, block_size_m // target_num_sub_per_gemm_m)
 
 
-class DistGroupedGemmKernel(GroupedGemmKernel):
+class DistGroupedGemmKernel(CombineScatterMixin, GroupedGemmKernel):
     """Distributed grouped GEMM with gather A or scatter C.
 
     Mode is fixed at construction (`DISPATCH` for gather-A, `COMBINE` for
-    scatter-C). fprop/dgrad share the same kernel; wgrad is not implemented.
+    scatter-C). Wgrad dispatch gathers B and synchronizes feature columns.
     """
 
+    # Bound each TMEM load's destinations within the fixed 168-register
+    # epilogue allocation; the logical fragment and its lifetime stay unchanged.
+    TMEM_LOAD_MAX_REGS_PER_THREAD: int = _TMEM_LD_MAX_REGS_PER_THREAD
     DISPATCH: int = 1
     COMBINE: int = 2
     DISPATCH_SWIGLU_FWD: int = 3
+    # DGRAD COMBINE whose A operand (grad_h1) is produced in-kernel by the
+    # warps 8-11 SwiGLU-backward producer.
+    COMBINE_SWIGLU_BWD: int = 4
 
-    # Expert-borrow weight streaming (chunked native Mega only): the trailing
-    # SLOTS groups' weights arrive via in-kernel fetch from peer publish
-    # windows; the TMA producer gates on per-slot done counters. 0 compiles
-    # the path out.
-    WEIGHT_BORROW_SLOTS: int = 0
-    WEIGHT_BORROW_CHUNK_BYTES: int = WEIGHT_BORROW_CHUNK_BYTES
+    # Cross-group FC13->FC2 lead window (chunked native Mega only). Part of the
+    # compile cache key, so every dist kernel carries it.
+    GLOBAL_LEAD_CHUNKS: int = 0
+    GATHER_WG_THREADS: int = _DIST_GATHER_WG_THREADS
+    EPILOG_WG_THREADS: int = _DIST_EPILOG_WG_THREADS
+    # Per-K-segment gather signals; off for TMA producers that wait for
+    # whole tiles.
+    GATHER_SEGMENT_SIGNALS: bool = True
+    # Peer loads in flight per gather lane on narrow (<= 4 rows per warp)
+    # sub-tiles.
+    GATHER_LOADS_PER_LANE: int = 32
+    _tma_k_segment_wait = _gather_k_segment_tma_wait
 
     def __init__(
         self,
         config: dict,
-        problem_type: int,  # _FPROP / _DGRAD only (no wgrad)
+        problem_type: int,
         mode: int,  # DISPATCH / COMBINE
         acc_dtype: type[cutlass.Numeric] = cutlass.Float32,
         force_n_major: bool = True,  # dist kernel always uses N-major scheduling
@@ -169,20 +208,38 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
         host_a_tensormap: bool = False,
         has_padding_sentinels: bool = False,
         swap_ab: bool = False,
+        output_accum: bool = False,
+        schedule_rotation: bool = True,
+        swiglu_clamped: bool = False,
+        swiglu_alpha: float = SWIGLU_CLAMP_ALPHA_DEFAULT,
+        swiglu_limit: float = SWIGLU_CLAMP_LIMIT_DEFAULT,
+        swiglu_emit_h2: bool = False,
+        swiglu_emit_h1: bool = False,
+        gather_k_segments: int = _GATHER_K_SEGMENTS,
     ) -> None:
-        if problem_type not in (_FPROP, _DGRAD):
+        if problem_type not in (_FPROP, _DGRAD, _WGRAD):
             raise ValueError(
                 f"DistGroupedGemmKernel: unsupported problem_type={problem_type} "
-                f"(only _FPROP / _DGRAD supported)"
+                f"(only _FPROP / _DGRAD / _WGRAD supported)"
             )
+        if problem_type == _WGRAD and mode != self.DISPATCH:
+            raise ValueError("WGRAD supports DISPATCH only")
         if mode not in (
             self.DISPATCH,
             self.COMBINE,
             self.DISPATCH_SWIGLU_FWD,
+            self.COMBINE_SWIGLU_BWD,
         ):
             raise ValueError(f"DistGroupedGemmKernel: unsupported mode={mode}")
         if mode == self.DISPATCH_SWIGLU_FWD and problem_type != _FPROP:
             raise ValueError("DISPATCH_SWIGLU_FWD supports FPROP only")
+        if mode == self.COMBINE_SWIGLU_BWD and problem_type != _DGRAD:
+            raise ValueError("COMBINE_SWIGLU_BWD supports RN DGRAD only")
+        if swiglu_emit_h2 and mode != self.COMBINE_SWIGLU_BWD:
+            raise ValueError("swiglu_emit_h2 requires COMBINE_SWIGLU_BWD")
+        # Only the host-built (non-swapped) B tensormap takes the interleaved view.
+        if swiglu_emit_h1 and (mode != self.DISPATCH_SWIGLU_FWD or swap_ab):
+            raise ValueError("swiglu_emit_h1 requires non-swapped DISPATCH_SWIGLU_FWD")
         if swap_ab and (
             problem_type != _FPROP
             or mode not in (self.DISPATCH, self.DISPATCH_SWIGLU_FWD)
@@ -198,10 +255,17 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
             static_scheduler=static_scheduler,
             host_a_tensormap=host_a_tensormap,
             swap_ab=swap_ab,
+            schedule_rotation=schedule_rotation,
         )
         self.mode = mode
         self.swiglu_fast_math = swiglu_fast_math
+        self.swiglu_clamped = swiglu_clamped
+        self.swiglu_alpha = swiglu_alpha
+        self.swiglu_limit = swiglu_limit
+        self.swiglu_emit_h2 = swiglu_emit_h2
+        self.swiglu_emit_h1 = swiglu_emit_h1
         self.has_padding_sentinels = has_padding_sentinels
+        self.output_accum = output_accum
         # 2CTA needs finer gather granularity because CuTe splits one M
         # tile across CTAs.
         target_num_sub_per_gemm_m = (
@@ -209,46 +273,90 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
             if self.NUM_CTAS == 2
             else _TARGET_NUM_SUB_PER_GEMM_M_1CTA
         )
-        self.AG_BLOCK_SIZE_M: int = _get_ag_block_size_m(
-            self.BLOCK_SIZE_N if self.SWAP_AB else self.BLOCK_SIZE_M,
-            target_num_sub_per_gemm_m,
+        self.AG_BLOCK_SIZE_M: int = (
+            WGRAD_DISPATCH_TILE_M
+            if problem_type == _WGRAD
+            else _get_ag_block_size_m(
+                self.BLOCK_SIZE_N if self.SWAP_AB else self.BLOCK_SIZE_M,
+                target_num_sub_per_gemm_m,
+            )
         )
         self.AG_BLOCK_SIZE_K: int = _AG_BLOCK_SIZE_K
+        self.GATHER_K_SEGMENTS: int = 1 if problem_type == _WGRAD else gather_k_segments
+        self.M_TILE_INTERLEAVE: int = (
+            _M_TILE_INTERLEAVE
+            if mode == self.COMBINE
+            or (mode == self.DISPATCH and problem_type == _DGRAD)
+            else 0
+        )
+        # Plain COMBINE FPROP N bands: walking every M tile in one band pins a
+        # wave's scatter to one column band of the destination rows.
+        self.DIAG_N_BANDS: bool = not force_n_major
         self.dispatch_scatter: bool = False
+
+    @cute.jit
+    def _tma_per_col_tile_wait(
+        self,
+        counter_addr: cutlass.Int64,
+        group: cutlass.Int32,
+        tile_n: cutlass.Int32,
+        n_size: cutlass.Int32,
+        k_size: cutlass.Int32,
+    ):
+        col_tiles = cute.ceil_div(n_size, self.AG_BLOCK_SIZE_K)
+        counters = cute.make_tensor(
+            cute.make_ptr(cutlass.Int32, counter_addr, cute.AddressSpace.gmem),
+            cute.make_layout((group + 1) * col_tiles),
+        )
+        _mega_dispatch_quant_wgrad_feature_tile_wait(
+            mDoneCounter=counters,
+            col_done_counter_offset=cutlass.Int32(0),
+            g=group,
+            feature_tile_idx=tile_n,
+            feature_tile_elems=self.BLOCK_SIZE_N,
+            feature_size=n_size,
+            group_row_blocks=cute.ceil_div(k_size, self.AG_BLOCK_SIZE_M),
+            col_work_tiles=col_tiles,
+            DISPATCH_QUANT_SCALE_COLS_PER_TILE=self.AG_BLOCK_SIZE_K,
+            sf_vec_size=1,
+        )
 
     def _setup_attributes(self):
         """Set up base GEMM layouts plus COMBINE's row-major scatter SMEM."""
         super()._setup_attributes()
+        if self.swiglu_emit_h1:
+            self.epi_smem_layout_staged = h1_epi_smem_layout(
+                self.c_dtype, self.epi_tile, self.NUM_C_STAGES
+            )
         self.c_smem_layout_staged = self.epi_smem_layout_staged
-        if self.mode in (
+        if not self.swiglu_emit_h1 and self.mode in (
             self.COMBINE,
             self.DISPATCH_SWIGLU_FWD,
+            self.COMBINE_SWIGLU_BWD,
         ):
             # COMBINE does not TMA-store C; use a row-major scratch tile so
             # adjacent-N values stay physically adjacent for 16-byte
-            # LDS->STG. 1-TMEM configs use an 8-element row skew to avoid
-            # 32-way shared-bank conflicts measured at an unpadded 64-col
-            # stride. 2-TMEM configs are near the dynamic-SMEM launch
+            # LDS->STG. The scatter epilogue only uses stage 0, so one
+            # stage is allocated. An 8-element row skew avoids the 32-way
+            # shared-bank conflicts of an unpadded 64-col stride; chunked
+            # mega's 1-stage 2-TMEM tiles are at the dynamic-SMEM launch
             # limit and stay unpadded.
             epi_m = cute.size(self.epi_tile[0])
             epi_n = cute.size(self.epi_tile[1])
-            row_skew = 8 if self.NUM_TMEM_BUFFERS == 1 else 0
+            row_skew = 8 if self.NUM_TMEM_BUFFERS == 1 or self.NUM_C_STAGES > 1 else 0
             if self.SWAP_AB:
                 col_stride = epi_m + row_skew
                 self.c_smem_layout_staged = cute.make_layout(
-                    (epi_m, epi_n, self.NUM_C_STAGES),
-                    stride=(1, col_stride, epi_n * col_stride),
+                    (epi_m, epi_n, 1), stride=(1, col_stride, epi_n * col_stride)
                 )
             else:
                 row_stride = epi_n + row_skew
                 self.c_smem_layout_staged = cute.make_layout(
-                    (epi_m, epi_n, self.NUM_C_STAGES),
-                    stride=(row_stride, 1, epi_m * row_stride),
+                    (epi_m, epi_n, 1), stride=(row_stride, 1, epi_m * row_stride)
                 )
 
     def _make_shared_storage(self, a_dtype, b_dtype, c_dtype, G: int):  # noqa: ANN001
         NUM_SMEM = self.NUM_SMEM_BUFFERS
-        NUM_TMEM = self.NUM_TMEM_BUFFERS
         NUM_TILE = self.NUM_TILE_BUFFERS
         NUM_CTAS = self.NUM_CTAS
 
@@ -260,14 +368,17 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
             c_smem_elems = cute.cosize(self.c_smem_layout_staged)
         scatter_ptr_smem_elems = (
             cute.size(self.epi_tile[1] if self.SWAP_AB else self.epi_tile[0])
-            if self.mode == self.COMBINE or self.dispatch_scatter
+            if self.mode in (self.COMBINE, self.COMBINE_SWIGLU_BWD)
+            or self.dispatch_scatter
             else 0
         )
+        if self.SPLIT_ATOM_ACCUM:
+            scatter_ptr_smem_elems *= self.NUM_MMAS
 
         n_smem_empty = NUM_SMEM
         n_smem_full = NUM_SMEM
-        n_tmem_full = NUM_TMEM
-        n_tmem_empty = NUM_TMEM
+        n_tmem_full = self.NUM_ACC_BARRIERS
+        n_tmem_empty = self.NUM_ACC_BARRIERS
         n_tile_consumer = NUM_TILE
         n_tile_producer = NUM_TILE
         n_tile_cta_bar = 2 if NUM_CTAS == 2 else 0
@@ -313,6 +424,16 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
         """DISPATCH per-tile gather wait: before issuing TMA loads for
         tile (group g, gemm_m_idx), busy-wait until the gather WG has
         filled this M-tile's slots in `a_buff_counter`."""
+        ready_count = NUM_SUB_PER_GEMM_M
+        if cutlass.const_expr(self.GATHER_K_SEGMENTS > 1):
+            # One byte per K segment, each filled by every gather warp of
+            # every sub-tile (see `_gather_k_segment_tma_wait`); no byte can
+            # exceed its final value, so the sum is reached only when all are.
+            ready_count = (
+                NUM_SUB_PER_GEMM_M
+                * (self.GATHER_WG_THREADS // 32)
+                * (((1 << (8 * self.GATHER_K_SEGMENTS)) - 1) // 255)
+            )
         counter_slot_addr = a_buff_counter_addr_i64 + cutlass.Int64(
             tile_m_start_per_group + tile_m_idx
         ) * cutlass.Int64(4)
@@ -329,7 +450,7 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
             ready = False
             while not ready:
                 v = cute.arch.load(ptr, cutlass.Uint32, sem="acquire", scope="gpu")
-                ready = v >= cutlass.Uint32(NUM_SUB_PER_GEMM_M)
+                ready = v >= cutlass.Uint32(ready_count)
         cute.arch.barrier(
             barrier_id=_BAR_TMA_WAIT_INTERNAL,
             number_of_threads=32,
@@ -409,6 +530,8 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
             local_rank,
             WORLD_SIZE,
             self.SWAP_AB,
+            M_INTERLEAVE=self.M_TILE_INTERLEAVE,
+            DIAG_N_BANDS=self.DIAG_N_BANDS,
         )
         work = visitor.get_work(tile_idx)
         swiglu_sC = _transpose_c_if_swap(sC, self.SWAP_AB)
@@ -435,156 +558,214 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                     tile_n_idx = work.tile_n_idx
 
                     # Wait MMA done for this tmem buffer.
-                    cute.arch.mbarrier_wait(tmem_full_mbar + tmem_buf, tmem_phase)
+                    if cutlass.const_expr(not self.SPLIT_ATOM_ACCUM):
+                        cute.arch.mbarrier_wait(tmem_full_mbar + tmem_buf, tmem_phase)
 
                     NUM_MMA_ATOMS_M = cute.size(tCtAcc_base.shape, mode=[1])
                     NUM_MMA_ATOMS_N = cute.size(tCtAcc_base.shape, mode=[2])
 
-                    for mma_m_idx in cutlass.range_constexpr(NUM_MMA_ATOMS_M):
-                        if cutlass.const_expr(not fuse_swiglu_fwd):
-                            self._combine_epilog_load_scatter_ptrs(
-                                tidx=tidx,
-                                sC=sC,
-                                scatter_ptr_smem_ptr=scatter_ptr_smem_ptr,
-                                tile_m_idx=tile_m_idx,
-                                mma_m_idx=mma_m_idx,
-                                cm_start=cm_start,
-                                m_size=m_size,
-                                scatter_ptrs_addr_i64=scatter_ptrs_addr_i64,
-                                padding_row_addr_i64=padding_row_addr_i64,
-                                BLOCK_SIZE_M=BLOCK_SIZE_M,
-                                NUM_MMA_ATOMS_M=NUM_MMA_ATOMS_M,
-                                NUM_CTAS=NUM_CTAS,
-                                cluster_cta_rank=cluster_cta_rank,
-                            )
-                            # Publish the CTA-SMEM pointer table before scatter.
-                            cute.arch.barrier(
-                                barrier_id=_BAR_EPILOG_SYNC,
-                                number_of_threads=_DIST_EPILOG_WG_THREADS,
-                            )
-                        for mma_n_idx in cutlass.range_constexpr(NUM_MMA_ATOMS_N):
-                            (
-                                _tiled_copy_t2r_atom,
-                                tTR_tAcc_base,
-                                _tTR_rAcc_atom,
-                            ) = self._epilog_tmem_copy_and_partition(
-                                tidx=tidx,
-                                tAcc=tCtAcc_base,
-                                gC_mnl=tCgC,
-                                epi_tile=epi_tile,
-                                use_2cta_instrs=NUM_CTAS == 2,
-                                mma_m_idx=mma_m_idx,
-                                mma_n_idx=mma_n_idx,
-                            )
-                            tTR_tAcc = tTR_tAcc_base[
-                                (None, None, None, None, None, tmem_buf)
-                            ]
-                            tTR_tAcc = cute.group_modes(
-                                tTR_tAcc, 3, cute.rank(tTR_tAcc)
-                            )
-                            subtile_cnt = cute.size(tTR_tAcc.shape, mode=[3])
+                    # Split-atom tiles load every atom's pointer table up
+                    # front: a reload after atom 0's scatter queues behind its
+                    # in-flight remote stores while the MMA waits on atom 1.
+                    PTR_ATOMS = NUM_MMA_ATOMS_M if self.SPLIT_ATOM_ACCUM else 1
+                    EPILOGUE_M = cute.size(sC.shape, mode=[0])
 
-                            for subtile_idx in cutlass.range_constexpr(subtile_cnt):
-                                tTR_tAcc_mn = tTR_tAcc[(None, None, None, subtile_idx)]
-                                cute.copy(
-                                    _tiled_copy_t2r_atom,
-                                    tTR_tAcc_mn,
-                                    tTR_rAcc,
-                                )
-
-                                # Cast to c_dtype and stage through SMEM;
-                                # scatter below reloads raw b16 payloads.
-                                acc_vec = tiled_copy_r2s.retile(tTR_rAcc).load()
-                                if num_k_tiles == 0:
-                                    acc_vec = cute.zeros_like(acc_vec)
-                                tRS_rC.store(acc_vec.to(self.c_dtype))
-                                cute.copy(
-                                    tiled_copy_r2s,
-                                    tRS_rC,
-                                    tRS_sC[(None, None, None, 0)],
-                                )
-
-                                cute.arch.fence_proxy(
-                                    "async.shared",
-                                    space="cta",
-                                )
-                                cute.arch.barrier(
-                                    barrier_id=_BAR_EPILOG_SYNC,
-                                    number_of_threads=_DIST_EPILOG_WG_THREADS,
-                                )
-
-                                if cutlass.const_expr(fuse_swiglu_fwd):
-                                    swiglu_tile_m_idx, swiglu_tile_n_idx = _swap_if(
-                                        self.SWAP_AB, tile_m_idx, tile_n_idx
-                                    )
-                                    swiglu_mma_m_idx, swiglu_mma_n_idx = _swap_if(
-                                        self.SWAP_AB, mma_m_idx, mma_n_idx
-                                    )
-                                    (
-                                        swiglu_num_mma_atoms_m,
-                                        swiglu_num_mma_atoms_n,
-                                    ) = _swap_if(
-                                        self.SWAP_AB,
-                                        NUM_MMA_ATOMS_M,
-                                        NUM_MMA_ATOMS_N,
-                                    )
-                                    swiglu_m_size, swiglu_n_size = _swap_if(
-                                        self.SWAP_AB, m_size, n_size
-                                    )
-                                    swiglu_block_size_m, swiglu_block_size_n = _swap_if(
-                                        self.SWAP_AB,
-                                        BLOCK_SIZE_M,
-                                        BLOCK_SIZE_N,
-                                    )
-                                    store_interleaved_swiglu_smem_tile(
-                                        tidx=tidx,
-                                        sC_stage=swiglu_sC[(None, None, 0)],
-                                        m_output_words=mSwigluOutputWords,
-                                        tile_m_idx=swiglu_tile_m_idx,
-                                        tile_n_idx=swiglu_tile_n_idx,
-                                        mma_m_idx=swiglu_mma_m_idx,
-                                        mma_n_idx=swiglu_mma_n_idx,
-                                        subtile_idx=subtile_idx,
-                                        num_mma_atoms_m=swiglu_num_mma_atoms_m,
-                                        num_mma_atoms_n=swiglu_num_mma_atoms_n,
-                                        cm_start=cm_start,
-                                        m_size=swiglu_m_size,
-                                        n_size=swiglu_n_size,
-                                        block_size_m=swiglu_block_size_m,
-                                        block_size_n=swiglu_block_size_n,
-                                        num_ctas=NUM_CTAS,
-                                        cluster_cta_rank=cluster_cta_rank,
-                                        cluster_split_m=not self.SWAP_AB,
-                                        subtile_axis_m=self.SWAP_AB,
-                                        epilogue_threads=_DIST_EPILOG_WG_THREADS,
-                                        fast_math=self.swiglu_fast_math,
-                                        swizzle_group_size=NATIVE_SWIZZLE_GROUP_SIZE,
-                                    )
-                                else:
-                                    self._combine_epilog_scatter_smem_tile(
+                    ATOM_TRIPS = 1
+                    for _atom_trip in cutlass.range(ATOM_TRIPS, unroll=1):
+                        for atom_unrolled in cutlass.range_constexpr(
+                            NUM_MMA_ATOMS_M // ATOM_TRIPS
+                        ):
+                            mma_m_idx = atom_unrolled
+                            ptr_tab = (
+                                scatter_ptr_smem_ptr
+                                + (mma_m_idx % PTR_ATOMS) * EPILOGUE_M
+                            )
+                            if not fuse_swiglu_fwd and mma_m_idx % PTR_ATOMS == 0:
+                                for ld_m_idx in cutlass.range_constexpr(PTR_ATOMS):
+                                    self._combine_epilog_load_scatter_ptrs(
                                         tidx=tidx,
                                         sC=sC,
-                                        scatter_ptr_smem_ptr=scatter_ptr_smem_ptr,
+                                        scatter_ptr_smem_ptr=scatter_ptr_smem_ptr
+                                        + ld_m_idx * EPILOGUE_M,
                                         tile_m_idx=tile_m_idx,
-                                        tile_n_idx=tile_n_idx,
-                                        mma_m_idx=mma_m_idx,
-                                        mma_n_idx=mma_n_idx,
-                                        subtile_idx=subtile_idx,
-                                        NUM_MMA_ATOMS_M=NUM_MMA_ATOMS_M,
-                                        NUM_MMA_ATOMS_N=NUM_MMA_ATOMS_N,
+                                        mma_m_idx=mma_m_idx + ld_m_idx,
                                         cm_start=cm_start,
                                         m_size=m_size,
-                                        n_size=n_size,
-                                        elem_size_bytes_c=elem_size_bytes_c,
+                                        scatter_ptrs_addr_i64=scatter_ptrs_addr_i64,
+                                        padding_row_addr_i64=padding_row_addr_i64,
                                         BLOCK_SIZE_M=BLOCK_SIZE_M,
-                                        BLOCK_SIZE_N=BLOCK_SIZE_N,
+                                        NUM_MMA_ATOMS_M=NUM_MMA_ATOMS_M,
                                         NUM_CTAS=NUM_CTAS,
                                         cluster_cta_rank=cluster_cta_rank,
                                     )
+                                # Publish the CTA-SMEM pointer table before scatter.
                                 cute.arch.barrier(
                                     barrier_id=_BAR_EPILOG_SYNC,
                                     number_of_threads=_DIST_EPILOG_WG_THREADS,
                                 )
+                            if cutlass.const_expr(self.SPLIT_ATOM_ACCUM):
+                                cute.arch.mbarrier_wait(
+                                    tmem_full_mbar + mma_m_idx, tmem_phase
+                                )
+                            for mma_n_idx in cutlass.range_constexpr(NUM_MMA_ATOMS_N):
+                                (
+                                    _tiled_copy_t2r_atom,
+                                    tTR_tAcc_base,
+                                    _tTR_rAcc_atom,
+                                ) = self._epilog_tmem_copy_and_partition(
+                                    tidx=tidx,
+                                    tAcc=tCtAcc_base,
+                                    gC_mnl=tCgC,
+                                    epi_tile=epi_tile,
+                                    use_2cta_instrs=NUM_CTAS == 2,
+                                    mma_m_idx=mma_m_idx,
+                                    mma_n_idx=mma_n_idx,
+                                )
+                                tTR_tAcc = tTR_tAcc_base[
+                                    (None, None, None, None, None, tmem_buf)
+                                ]
+                                tTR_tAcc = cute.group_modes(
+                                    tTR_tAcc, 3, cute.rank(tTR_tAcc)
+                                )
+                                subtile_cnt = cute.size(tTR_tAcc.shape, mode=[3])
+                                # Subtiles from `first_held` on are all read from
+                                # TMEM at `first_held`, which then releases the atom.
+                                first_held = subtile_cnt
+                                if cutlass.const_expr(
+                                    self.SPLIT_ATOM_ACCUM
+                                    and mma_n_idx == NUM_MMA_ATOMS_N - 1
+                                ):
+                                    first_held = subtile_cnt - min(
+                                        _COMBINE_HELD_SUBTILES, subtile_cnt
+                                    )
+                                subtile_rC = [tRS_rC] * (first_held + 1)
+                                for _ in cutlass.range_constexpr(
+                                    first_held + 1, subtile_cnt
+                                ):
+                                    subtile_rC.append(
+                                        cute.make_rmem_tensor_like(tRS_rC)
+                                    )
+
+                                for subtile_idx in cutlass.range_constexpr(subtile_cnt):
+                                    ld_lo = subtile_idx
+                                    ld_hi = subtile_idx + 1
+                                    if cutlass.const_expr(subtile_idx == first_held):
+                                        ld_hi = subtile_cnt
+                                    elif cutlass.const_expr(subtile_idx > first_held):
+                                        ld_hi = ld_lo
+                                    for ld_idx in cutlass.range_constexpr(ld_lo, ld_hi):
+                                        ld_rC = subtile_rC[ld_idx]
+                                        cute.copy(
+                                            _tiled_copy_t2r_atom,
+                                            tTR_tAcc[(None, None, None, ld_idx)],
+                                            tTR_rAcc,
+                                        )
+
+                                        # Cast to c_dtype and stage through SMEM;
+                                        # scatter below reloads raw b16 payloads.
+                                        acc_vec = tiled_copy_r2s.retile(tTR_rAcc).load()
+                                        if num_k_tiles == 0:
+                                            acc_vec = cute.zeros_like(acc_vec)
+                                        ld_rC.store(acc_vec.to(self.c_dtype))
+                                    cute.copy(
+                                        tiled_copy_r2s,
+                                        subtile_rC[subtile_idx],
+                                        tRS_sC[(None, None, None, 0)],
+                                    )
+
+                                    cute.arch.fence_proxy(
+                                        "async.shared",
+                                        space="cta",
+                                    )
+                                    if cutlass.const_expr(subtile_idx == first_held):
+                                        # Doubles as the C-staging barrier.
+                                        release_acc(
+                                            tmem_empty_mbar + mma_m_idx,
+                                            DIST_EPILOG_WARP_IDS[0],
+                                            _DIST_EPILOG_WG_THREADS,
+                                            _BAR_EPILOG_SYNC,
+                                            NUM_CTAS,
+                                        )
+                                    else:
+                                        cute.arch.barrier(
+                                            barrier_id=_BAR_EPILOG_SYNC,
+                                            number_of_threads=_DIST_EPILOG_WG_THREADS,
+                                        )
+
+                                    if cutlass.const_expr(fuse_swiglu_fwd):
+                                        swiglu_tile_m_idx, swiglu_tile_n_idx = _swap_if(
+                                            self.SWAP_AB, tile_m_idx, tile_n_idx
+                                        )
+                                        swiglu_mma_m_idx, swiglu_mma_n_idx = _swap_if(
+                                            self.SWAP_AB, mma_m_idx, mma_n_idx
+                                        )
+                                        (
+                                            swiglu_num_mma_atoms_m,
+                                            swiglu_num_mma_atoms_n,
+                                        ) = _swap_if(
+                                            self.SWAP_AB,
+                                            NUM_MMA_ATOMS_M,
+                                            NUM_MMA_ATOMS_N,
+                                        )
+                                        swiglu_m_size, swiglu_n_size = _swap_if(
+                                            self.SWAP_AB, m_size, n_size
+                                        )
+                                        swiglu_block_size_m, swiglu_block_size_n = (
+                                            _swap_if(
+                                                self.SWAP_AB,
+                                                BLOCK_SIZE_M,
+                                                BLOCK_SIZE_N,
+                                            )
+                                        )
+                                        store_interleaved_swiglu_smem_tile(
+                                            tidx=tidx,
+                                            sC_stage=swiglu_sC[(None, None, 0)],
+                                            m_output_words=mSwigluOutputWords,
+                                            tile_m_idx=swiglu_tile_m_idx,
+                                            tile_n_idx=swiglu_tile_n_idx,
+                                            mma_m_idx=swiglu_mma_m_idx,
+                                            mma_n_idx=swiglu_mma_n_idx,
+                                            subtile_idx=subtile_idx,
+                                            num_mma_atoms_m=swiglu_num_mma_atoms_m,
+                                            num_mma_atoms_n=swiglu_num_mma_atoms_n,
+                                            cm_start=cm_start,
+                                            m_size=swiglu_m_size,
+                                            n_size=swiglu_n_size,
+                                            block_size_m=swiglu_block_size_m,
+                                            block_size_n=swiglu_block_size_n,
+                                            num_ctas=NUM_CTAS,
+                                            cluster_cta_rank=cluster_cta_rank,
+                                            cluster_split_m=not self.SWAP_AB,
+                                            subtile_axis_m=self.SWAP_AB,
+                                            epilogue_threads=_DIST_EPILOG_WG_THREADS,
+                                            fast_math=self.swiglu_fast_math,
+                                            swizzle_group_size=NATIVE_SWIZZLE_GROUP_SIZE,
+                                        )
+                                    else:
+                                        self._combine_epilog_scatter_smem_tile(
+                                            tidx=tidx,
+                                            sC=sC,
+                                            scatter_ptr_smem_ptr=ptr_tab,
+                                            tile_m_idx=tile_m_idx,
+                                            tile_n_idx=tile_n_idx,
+                                            mma_m_idx=mma_m_idx,
+                                            mma_n_idx=mma_n_idx,
+                                            subtile_idx=subtile_idx,
+                                            NUM_MMA_ATOMS_M=NUM_MMA_ATOMS_M,
+                                            NUM_MMA_ATOMS_N=NUM_MMA_ATOMS_N,
+                                            cm_start=cm_start,
+                                            m_size=m_size,
+                                            n_size=n_size,
+                                            elem_size_bytes_c=elem_size_bytes_c,
+                                            BLOCK_SIZE_M=BLOCK_SIZE_M,
+                                            BLOCK_SIZE_N=BLOCK_SIZE_N,
+                                            NUM_CTAS=NUM_CTAS,
+                                            cluster_cta_rank=cluster_cta_rank,
+                                        )
+                                    cute.arch.barrier(
+                                        barrier_id=_BAR_EPILOG_SYNC,
+                                        number_of_threads=_DIST_EPILOG_WG_THREADS,
+                                    )
 
                     # Signal tile_done so producer can reuse slot.
                     warp_idx_local = cute.arch.make_warp_uniform(cute.arch.warp_idx())
@@ -595,182 +776,19 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                         warp_idx_local == DIST_EPILOG_WARP_IDS[0],
                     )
 
-                    # CORRECTNESS: TMEM-load fence + cross-warp barrier
-                    # to ensure ALL 4 epilog warps' t2r reads have retired
-                    # before warp 0 signals `tmem_empty`. The fence
-                    # (`tcgen05.wait::ld.sync`) is per-warp; without the
-                    # cross-warp barrier, warp 0 could arrive while warps
-                    # 1-3 still have in-flight TMEM reads, letting MMA
-                    # overwrite the slot. (DISPATCH gets this implicitly
-                    # via the TMA-store async-proxy + EPILOG_SYNC; the
-                    # manual STG path here has neither.)
-                    cute.arch.fence_view_async_tmem_load()
-                    cute.arch.barrier(
-                        barrier_id=_BAR_EPILOG_SYNC,
-                        number_of_threads=_DIST_EPILOG_WG_THREADS,
-                    )
-
-                    # Signal tmem_empty so MMA can reuse the tmem slot.
-                    if warp_idx_local == DIST_EPILOG_WARP_IDS[0]:
-                        with cute.arch.elect_one():
-                            if cutlass.const_expr(NUM_CTAS == 2):
-                                cute.arch.mbarrier_arrive(
-                                    tmem_empty_mbar + tmem_buf,
-                                    peer_cta_rank_in_cluster=0,
-                                )
-                            else:
-                                cute.arch.mbarrier_arrive(tmem_empty_mbar + tmem_buf)
+                    if cutlass.const_expr(not self.SPLIT_ATOM_ACCUM):
+                        release_acc(
+                            tmem_empty_mbar + tmem_buf,
+                            DIST_EPILOG_WARP_IDS[0],
+                            _DIST_EPILOG_WG_THREADS,
+                            _BAR_EPILOG_SYNC,
+                            NUM_CTAS,
+                        )
 
                     accum_cnt_tile += cutlass.Int32(1)
 
                     tile_idx = scheduler.advance_consumer(accum_cnt_tile)
                     work = visitor.get_work(tile_idx)
-
-    @cute.jit
-    def _combine_epilog_load_scatter_ptrs(
-        self,
-        tidx: cutlass.Int32,
-        sC: cute.Tensor,
-        scatter_ptr_smem_ptr: cute.Pointer,
-        tile_m_idx: cutlass.Int32,
-        mma_m_idx: cutlass.Constexpr[int],
-        cm_start: cutlass.Int32,
-        m_size: cutlass.Int32,
-        scatter_ptrs_addr_i64: cutlass.Int64,
-        padding_row_addr_i64: cutlass.Int64,
-        BLOCK_SIZE_M: cutlass.Constexpr[int],
-        NUM_MMA_ATOMS_M: cutlass.Constexpr[int],
-        NUM_CTAS: cutlass.Constexpr[int],
-        cluster_cta_rank: cutlass.Int32,
-        subtile_idx: cutlass.Constexpr[int] = 0,
-        subtile_axis_m: cutlass.Constexpr[bool] = False,
-    ) -> None:
-        """Cache per-row scatter base pointers in CTA SMEM."""
-        EPILOGUE_M: cutlass.Constexpr[int] = cute.size(sC.shape, mode=[0])
-        ATOM_M: cutlass.Constexpr[int] = BLOCK_SIZE_M // NUM_MMA_ATOMS_M
-        ATOM_CTA_M: cutlass.Constexpr[int] = ATOM_M // NUM_CTAS
-
-        if tidx < cutlass.Int32(EPILOGUE_M):
-            local_row = tidx
-            row_in_group = (
-                tile_m_idx * cutlass.Int32(BLOCK_SIZE_M)
-                + cutlass.Int32(mma_m_idx * ATOM_M)
-                + cluster_cta_rank * cutlass.Int32(ATOM_CTA_M)
-                + local_row
-            )
-            if cutlass.const_expr(subtile_axis_m):
-                row_in_group += cutlass.Int32(subtile_idx * EPILOGUE_M)
-            if row_in_group < m_size:
-                peer_addr_ptr = scatter_ptrs_addr_i64 + cutlass.Int64(
-                    cm_start + row_in_group
-                ) * cutlass.Int64(8)
-                peer_base_i64 = cute.arch.load(
-                    cute.make_ptr(cutlass.Int64, peer_addr_ptr, cute.AddressSpace.gmem),
-                    cutlass.Int64,
-                )
-                if cutlass.const_expr(self.has_padding_sentinels):
-                    if peer_base_i64 == cutlass.Int64(0):
-                        peer_base_i64 = padding_row_addr_i64
-                cute.arch.store(
-                    scatter_ptr_smem_ptr + local_row,
-                    peer_base_i64,
-                    ss="cta",
-                )
-
-    @cute.jit
-    def _combine_epilog_scatter_smem_tile(
-        self,
-        tidx: cutlass.Int32,
-        sC: cute.Tensor,
-        scatter_ptr_smem_ptr: cute.Pointer,
-        tile_m_idx: cutlass.Int32,
-        tile_n_idx: cutlass.Int32,
-        mma_m_idx: cutlass.Constexpr[int],
-        mma_n_idx: cutlass.Constexpr[int],
-        subtile_idx: cutlass.Constexpr[int],
-        NUM_MMA_ATOMS_M: cutlass.Constexpr[int],
-        NUM_MMA_ATOMS_N: cutlass.Constexpr[int],
-        cm_start: cutlass.Int32,
-        m_size: cutlass.Int32,
-        n_size: cutlass.Int32,
-        elem_size_bytes_c: cutlass.Constexpr[int],
-        BLOCK_SIZE_M: cutlass.Constexpr[int],
-        BLOCK_SIZE_N: cutlass.Constexpr[int],
-        NUM_CTAS: cutlass.Constexpr[int],
-        cluster_cta_rank: cutlass.Int32,
-        ELEMS_PER_VEC: cutlass.Constexpr[int] = 8,
-        subtile_axis_m: cutlass.Constexpr[bool] = False,
-    ) -> None:
-        """Scatter from the staged epilogue tile. Each lane stores one
-        16-byte contiguous-N chunk; with 64-elem N subtiles, lanes 0..7
-        cover one row's chunks, 8..15 the next, etc."""
-        EPILOGUE_M: cutlass.Constexpr[int] = cute.size(sC.shape, mode=[0])
-        EPILOGUE_N: cutlass.Constexpr[int] = cute.size(sC.shape, mode=[1])
-        CHUNKS_PER_ROW: cutlass.Constexpr[int] = EPILOGUE_N // ELEMS_PER_VEC
-        ROWS_PER_PASS: cutlass.Constexpr[int] = (
-            _DIST_EPILOG_WG_THREADS // CHUNKS_PER_ROW
-        )
-        NUM_ROW_PASSES: cutlass.Constexpr[int] = (
-            EPILOGUE_M + ROWS_PER_PASS - 1
-        ) // ROWS_PER_PASS
-        ATOM_M: cutlass.Constexpr[int] = BLOCK_SIZE_M // NUM_MMA_ATOMS_M
-        ATOM_CTA_M: cutlass.Constexpr[int] = ATOM_M // NUM_CTAS
-        N_ATOM_SPAN: cutlass.Constexpr[int] = BLOCK_SIZE_N // NUM_MMA_ATOMS_N
-
-        chunk = tidx % CHUNKS_PER_ROW
-        row_lane = tidx // CHUNKS_PER_ROW
-        local_col = chunk * cutlass.Int32(ELEMS_PER_VEC)
-
-        for row_pass in cutlass.range_constexpr(NUM_ROW_PASSES):
-            local_row = row_lane + cutlass.Int32(row_pass * ROWS_PER_PASS)
-            if local_row < cutlass.Int32(EPILOGUE_M):
-                row_in_group = (
-                    tile_m_idx * cutlass.Int32(BLOCK_SIZE_M)
-                    + cutlass.Int32(mma_m_idx * ATOM_M)
-                    + cluster_cta_rank * cutlass.Int32(ATOM_CTA_M)
-                    + local_row
-                )
-                if cutlass.const_expr(subtile_axis_m):
-                    row_in_group += cutlass.Int32(subtile_idx * EPILOGUE_M)
-                n_global_first = (
-                    tile_n_idx * cutlass.Int32(BLOCK_SIZE_N)
-                    + cutlass.Int32(mma_n_idx * N_ATOM_SPAN)
-                    + local_col
-                )
-                if cutlass.const_expr(not subtile_axis_m):
-                    n_global_first += cutlass.Int32(subtile_idx * EPILOGUE_N)
-
-                if (row_in_group < m_size) and (
-                    n_global_first + cutlass.Int32(ELEMS_PER_VEC) <= n_size
-                ):
-                    peer_base_i64 = cute.arch.load(
-                        scatter_ptr_smem_ptr + local_row,
-                        cutlass.Int64,
-                        ss="cta",
-                    )
-
-                    col0 = local_col
-                    ptr_vec = cute.recast_ptr(
-                        sC.iterator
-                        + cute.crd2idx(
-                            (local_row, col0 + cutlass.Int32(0), cutlass.Int32(0)),
-                            sC.layout,
-                        ),
-                        dtype=cutlass.Uint32,
-                    )
-                    vec = cute.arch.load(
-                        ptr_vec,
-                        _make_u32x4_vector_type(),
-                        ss="cta",
-                    )
-                    dst_addr = peer_base_i64 + cutlass.Int64(
-                        n_global_first
-                    ) * cutlass.Int64(elem_size_bytes_c)
-                    cute.arch.store(
-                        cute.make_ptr(cutlass.Uint32, dst_addr, cute.AddressSpace.gmem),
-                        vec,
-                        cop="cg",
-                    )
 
     # Device kernel entries: dispatch_kernel (3 WGs, 384 threads) and
     # combine_kernel (2 WGs, 256 threads). Layout per WG:
@@ -855,8 +873,6 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
         # sync. A placeholder int32[1] is passed when disabled.
         conditional_execution_tensor: cute.Tensor,
         USE_CONDITIONAL_EXECUTION: cutlass.Constexpr[bool],
-        weight_borrow_args=None,
-        mWeightBorrowCounters: cute.Tensor | None = None,
     ):
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
         tidx, _, _ = cute.arch.thread_idx()
@@ -895,7 +911,7 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                     cute.arch.mbarrier_init(ab_empty_mbar + i, 1)
                 for i in range(NUM_SMEM_BUFFERS):
                     cute.arch.mbarrier_init(ab_full_mbar + i, 1)
-                for i in range(NUM_TMEM_BUFFERS):
+                for i in range(self.NUM_ACC_BARRIERS):
                     cute.arch.mbarrier_init(tmem_full_mbar + i, 1)
                     cute.arch.mbarrier_init(tmem_empty_mbar + i, NUM_CTAS)
                 for i in range(NUM_TILE_BUFFERS):
@@ -1094,6 +1110,7 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
         # tensormap update inherits from the base machinery. Addresses
         # are 128-byte aligned by host construction.
         effective_a_base_ptr = a_base_ptr
+        effective_b_base_ptr = b_base_ptr
         effective_c_base_ptr = c_base_ptr
         effective_mSwigluOutputWords = mSwigluOutputWords
         if cutlass.const_expr(USE_ACTIVATION_BUFFER):
@@ -1106,14 +1123,14 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
             if (cute.arch.block_idx()[0] == 0) & (tidx == 0):
                 output_byte_extent = _packed_group_rows_byte_extent(
                     split_sizes,
-                    c_s0,
-                    elem_size_bytes_c,
+                    a_s1 if problem_type == _WGRAD else c_s0,
+                    elem_size_bytes_a if problem_type == _WGRAD else elem_size_bytes_c,
                     G,
                 )
                 gathered_byte_extent = _packed_group_rows_byte_extent(
                     split_sizes,
-                    a_s0,
-                    elem_size_bytes_a,
+                    b_s1 if problem_type == _WGRAD else a_s0,
+                    elem_size_bytes_b if problem_type == _WGRAD else elem_size_bytes_a,
                     G,
                 )
                 _require_valid_activation_buffer_range(
@@ -1128,12 +1145,28 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                     activation_buffer_size_bytes=activation_buffer_size_bytes,
                     warp_scoped_diagnostic=False,
                 )
-            effective_a_base_ptr = activation_buffer_base_ptr + x_g_off
-            effective_c_base_ptr = activation_buffer_base_ptr + y_off
+            if cutlass.const_expr(problem_type == _WGRAD):
+                effective_a_base_ptr = activation_buffer_base_ptr + y_off
+                effective_b_base_ptr = activation_buffer_base_ptr + x_g_off
+            else:
+                effective_a_base_ptr = activation_buffer_base_ptr + x_g_off
+                effective_c_base_ptr = activation_buffer_base_ptr + y_off
             if cutlass.const_expr(self.mode == self.DISPATCH_SWIGLU_FWD):
                 h2_off = cutlass.Int64(
                     cute.make_tensor(swiglu_output_offsets_ptr, cute.make_layout(1))[0]
                 )
+                if (cute.arch.block_idx()[0] == 0) & (tidx == 0):
+                    _require_valid_activation_buffer_range(
+                        byte_offset=h2_off,
+                        byte_extent=_packed_group_rows_byte_extent(
+                            split_sizes,
+                            N // cutlass.Int32(2),
+                            elem_size_bytes_c,
+                            G,
+                        ),
+                        activation_buffer_size_bytes=activation_buffer_size_bytes,
+                        warp_scoped_diagnostic=False,
+                    )
                 effective_mSwigluOutputWords = cute.make_tensor(
                     cute.make_ptr(
                         cutlass.Uint32,
@@ -1155,27 +1188,17 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
 
         if warp_idx >= GATHER_WARP_IDS[0]:  # GATHER WG (warps 8-11)
             if should_run:
-                if cutlass.const_expr(self.WEIGHT_BORROW_SLOTS > 0):
-                    # Pull the borrowed slots' weight rows before token
-                    # gathering; the whole gather warp-group acts as one
-                    # producer group.
-                    _drain_weight_fetch_items(
-                        weight_borrow_args,
-                        mWeightBorrowCounters,
-                        cutlass.Int32(0),
-                        cutlass.Int32(1),
-                        gather_tile_idx_smem_ptr,
-                        cutlass.Int32(0),
-                        tidx - cutlass.Int32(GATHER_WARP_IDS[0] * 32),
-                        SLOTS=self.WEIGHT_BORROW_SLOTS,
-                        CHUNK_BYTES=self.WEIGHT_BORROW_CHUNK_BYTES,
-                        GROUP_THREADS=_DIST_GATHER_WG_THREADS,
-                        SYNC_BAR=_BAR_GATHER_WG_INTERNAL,
-                    )
                 gather_base_ptr = effective_a_base_ptr
                 gather_stride = a_s0
                 gather_elem_size = elem_size_bytes_a
                 gather_block_m: cutlass.Constexpr[int] = BLOCK_SIZE_M
+                gather_features = K
+                if cutlass.const_expr(problem_type == _WGRAD):
+                    gather_base_ptr = effective_b_base_ptr
+                    gather_stride = b_s1
+                    gather_elem_size = elem_size_bytes_b
+                    gather_block_m = AG_BLOCK_SIZE_M
+                    gather_features = N
                 if cutlass.const_expr(self.SWAP_AB):
                     gather_base_ptr = b_base_ptr
                     gather_stride = b_s0
@@ -1192,7 +1215,7 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                     split_sizes=split_sizes,
                     elem_size_bytes_a=gather_elem_size,
                     G=G,
-                    K=K,
+                    K=gather_features,
                     local_rank=local_rank,
                     WORLD_SIZE=WORLD_SIZE,
                     AG_BLOCK_SIZE_M=AG_BLOCK_SIZE_M,
@@ -1201,6 +1224,11 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                     has_padding_sentinels=self.has_padding_sentinels,
                     _BAR_GATHER_WG_INTERNAL=_BAR_GATHER_WG_INTERNAL,
                     _DIST_GATHER_WG_THREADS=_DIST_GATHER_WG_THREADS,
+                    SEGMENT_SIGNALS=self.GATHER_SEGMENT_SIGNALS,
+                    LOADS_PER_LANE=self.GATHER_LOADS_PER_LANE,
+                    gather_columns=problem_type == _WGRAD,
+                    K_SEGMENTS=self.GATHER_K_SEGMENTS,
+                    M_INTERLEAVE=self.M_TILE_INTERLEAVE,
                 )
         elif warp_idx == DIST_TMA_WARP_ID:  # TMA producer
             # No cross-WG handoff barrier: TMA busy-waits per (group,
@@ -1235,7 +1263,7 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                     split_sizes=split_sizes,
                     cluster_cta_rank=cluster_cta_rank,
                     a_base_ptr=effective_a_base_ptr,
-                    b_base_ptr=b_base_ptr,
+                    b_base_ptr=effective_b_base_ptr,
                     a_s0=a_s0,
                     a_s1=a_s1,
                     b_s0=b_s0,
@@ -1265,8 +1293,6 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                     BLOCK_SIZE_K=BLOCK_SIZE_K,
                     NUM_CTAS=NUM_CTAS,
                     secondary_operands=secondary_operands,
-                    weight_borrow_args=weight_borrow_args,
-                    mWeightBorrowCounters=mWeightBorrowCounters,
                 )
         elif warp_idx == DIST_MMA_WARP_ID:  # MMA consumer
             tmem_ptr = cute.arch.retrieve_tmem_ptr(
@@ -1338,7 +1364,9 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                 tidx=tidx,
                 sC=sC,
             )
-            if cutlass.const_expr(self.mode == self.DISPATCH_SWIGLU_FWD):
+            if cutlass.const_expr(
+                self.mode == self.DISPATCH_SWIGLU_FWD and not self.swiglu_emit_h1
+            ):
                 if should_run:
                     self._combine_epilog_consumer_body(
                         tidx=tidx,
@@ -1422,6 +1450,13 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                     BLOCK_SIZE_N=BLOCK_SIZE_N,
                     BLOCK_SIZE_K=BLOCK_SIZE_K,
                     NUM_CTAS=NUM_CTAS,
+                    swiglu_h2=h1_swiglu_epilogue(
+                        self,
+                        effective_mSwigluOutputWords,
+                        effective_c_base_ptr,
+                        M,
+                        c_s0,
+                    ),
                 )
             # TMEM dealloc handshake (epilog warps).
             if warp_idx == DIST_EPILOG_WARP_IDS[0]:
@@ -1468,6 +1503,9 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
         tiled_mma: cute.TiledMma,
         split_sizes: cute.Tensor,
         counter_ptr: cute.Pointer,
+        # COMBINE_SWIGLU_BWD producer work / per-M-tile done counters.
+        gather_counter: cute.Tensor,
+        a_buff_counter: cute.Tensor,
         # Combine-mode scatter scheduler:
         scatter_ptrs_ptr: cute.Pointer,
         padding_row_ptr: cutlass.Int64,
@@ -1512,9 +1550,22 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
         # sync. A placeholder int32[1] is passed when disabled.
         conditional_execution_tensor: cute.Tensor,
         USE_CONDITIONAL_EXECUTION: cutlass.Constexpr[bool],
+        # COMBINE_SWIGLU_BWD inputs: grad_h2 (GM, I) and h1 (GM, 2I).
+        swiglu_dz_base_ptr: cutlass.Int64,
+        swiglu_h1_base_ptr: cutlass.Int64,
+        swiglu_dz_s0: cutlass.Int32,
+        swiglu_h1_s0: cutlass.Int32,
+        swiglu_dz_offsets_ptr: cute.Pointer,
+        swiglu_h1_offsets_ptr: cute.Pointer,
     ):
         warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
         tidx, _, _ = cute.arch.thread_idx()
+        fuse_swiglu_bwd = self.mode == self.COMBINE_SWIGLU_BWD
+        cta_threads = (
+            DIST_THREADS_PER_CTA_DISPATCH
+            if fuse_swiglu_bwd
+            else DIST_THREADS_PER_CTA_COMBINE
+        )
 
         cluster_cta_rank = cutlass.Int32(0)
         pred_cta0 = True
@@ -1549,7 +1600,7 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                     cute.arch.mbarrier_init(ab_empty_mbar + i, 1)
                 for i in range(NUM_SMEM_BUFFERS):
                     cute.arch.mbarrier_init(ab_full_mbar + i, 1)
-                for i in range(NUM_TMEM_BUFFERS):
+                for i in range(self.NUM_ACC_BARRIERS):
                     cute.arch.mbarrier_init(tmem_full_mbar + i, 1)
                     cute.arch.mbarrier_init(tmem_empty_mbar + i, NUM_CTAS)
                 for i in range(NUM_TILE_BUFFERS):
@@ -1571,7 +1622,7 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
         else:
             cute.arch.barrier(
                 barrier_id=_BAR_FULL_CTA_SYNC,
-                number_of_threads=DIST_THREADS_PER_CTA_COMBINE,
+                number_of_threads=cta_threads,
             )
 
         # Conditional execution: gate body calls on a device flag.
@@ -1598,7 +1649,7 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
         # warp 0; also covers init + alloc visibility in 1-CTA mode.
         cute.arch.barrier(
             barrier_id=0,
-            number_of_threads=DIST_THREADS_PER_CTA_COMBINE,
+            number_of_threads=cta_threads,
         )
 
         sA = storage.sA.get_tensor(
@@ -1764,12 +1815,40 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                 )
             effective_a_base_ptr = activation_buffer_base_ptr + x_off
 
+        if cutlass.const_expr(USE_ACTIVATION_BUFFER and fuse_swiglu_bwd):
+            dz_off = cutlass.Int64(
+                cute.make_tensor(swiglu_dz_offsets_ptr, cute.make_layout(1))[0]
+            )
+            h1_off = cutlass.Int64(
+                cute.make_tensor(swiglu_h1_offsets_ptr, cute.make_layout(1))[0]
+            )
+            _require_valid_activation_buffer_range(
+                byte_offset=dz_off,
+                byte_extent=_packed_group_rows_byte_extent(
+                    split_sizes, swiglu_dz_s0, elem_size_bytes_a, G
+                ),
+                activation_buffer_size_bytes=activation_buffer_size_bytes,
+                warp_scoped_diagnostic=False,
+            )
+            _require_valid_activation_buffer_range(
+                byte_offset=h1_off,
+                byte_extent=_packed_group_rows_byte_extent(
+                    split_sizes, swiglu_h1_s0, elem_size_bytes_a, G
+                ),
+                activation_buffer_size_bytes=activation_buffer_size_bytes,
+                warp_scoped_diagnostic=False,
+            )
+            swiglu_dz_base_ptr = activation_buffer_base_ptr + dz_off
+            swiglu_h1_base_ptr = activation_buffer_base_ptr + h1_off
+
         if warp_idx < len(DIST_EPILOG_WARP_IDS):
             cute.arch.setmaxregister_increase(168)  # WG0: epilog
         elif warp_idx < GATHER_WARP_IDS[0]:
             cute.arch.setmaxregister_decrease(40)  # WG1: mma+tma+idle
+        elif cutlass.const_expr(fuse_swiglu_bwd):
+            cute.arch.setmaxregister_increase(168)  # WG2: SwiGLU-bwd producer
 
-        # COMBINE has no GATHER WG: warps 8-11 are not launched.
+        # Plain COMBINE launches no warps 8-11.
         if warp_idx == DIST_TMA_WARP_ID:  # TMA producer
             if should_run:
                 self._tma_producer_body(
@@ -1808,11 +1887,11 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                     activation_buffer_size_bytes=activation_buffer_size_bytes,
                     a_offset_tensor=split_sizes,  # unused dummy
                     b_offset_tensor=split_sizes,
-                    # COMBINE has no GATHER WG; the per-M-tile wait is
-                    # disabled and the address/count are ignored.
-                    a_buff_counter_addr_i64=cutlass.Int64(0),
-                    wait_per_m_tile=False,
-                    NUM_SUB_PER_GEMM_M=0,
+                    a_buff_counter_addr_i64=cutlass.Int64(
+                        a_buff_counter.iterator.toint()
+                    ),
+                    wait_per_m_tile=fuse_swiglu_bwd,
+                    NUM_SUB_PER_GEMM_M=BLOCK_SIZE_M // NATIVE_SWIGLU_BWD_ROWS,
                     G=G,
                     M=M,
                     N=N,
@@ -1952,6 +2031,33 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                     self.num_tmem_alloc_cols,
                     is_two_cta=(NUM_CTAS == 2),
                 )
+        elif cutlass.const_expr(fuse_swiglu_bwd) and warp_idx >= GATHER_WARP_IDS[0]:
+            if should_run:
+                native_swiglu_bwd_producer_body(
+                    mWorkCounter=gather_counter,
+                    mDoneCounter=a_buff_counter,
+                    split_sizes=split_sizes,
+                    dz_base_ptr=swiglu_dz_base_ptr,
+                    dz_s0=swiglu_dz_s0,
+                    h1_base_ptr=swiglu_h1_base_ptr,
+                    h1_s0=swiglu_h1_s0,
+                    dxy_base_ptr=effective_a_base_ptr,
+                    dxy_s0=a_s0,
+                    K=K,
+                    local_rank=local_rank,
+                    producer_tidx=tidx - cutlass.Int32(GATHER_WARP_IDS[0] * 32),
+                    dtype=self.a_dtype,
+                    G=G,
+                    WORLD_SIZE=WORLD_SIZE,
+                    BLOCK_SIZE_M=BLOCK_SIZE_M,
+                    ROWS=NATIVE_SWIGLU_BWD_ROWS,
+                    PASSES_PER_BATCH=NATIVE_SWIGLU_BWD_PASSES_PER_BATCH,
+                    fast_math=self.swiglu_fast_math,
+                    clamped=self.swiglu_clamped,
+                    alpha=self.swiglu_alpha,
+                    limit=self.swiglu_limit,
+                    emit_h2=self.swiglu_emit_h2,
+                )
         else:  # IDLE warps (6, 7)
             self._idle_body()
 
@@ -2007,6 +2113,13 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
         # check a constexpr no-op.
         conditional_execution_tensor: cute.Tensor,
         use_conditional_execution: cutlass.Constexpr[bool],
+        # COMBINE_SWIGLU_BWD grad_h2 / h1 operands; 0 for every other mode.
+        swiglu_dz_base_ptr: cutlass.Int64,
+        swiglu_h1_base_ptr: cutlass.Int64,
+        swiglu_dz_s0: cutlass.Int32,
+        swiglu_h1_s0: cutlass.Int32,
+        swiglu_dz_offsets: cute.Tensor,
+        swiglu_h1_offsets: cute.Tensor,
         num_clusters: int,
         stream: cuda.CUstream,
         secondary_a_base_ptr: cutlass.Int64 | None = None,
@@ -2017,11 +2130,6 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
         secondary_b_s1: cutlass.Int32 | None = None,
         secondary_ready_counter: cute.Tensor | None = None,
         secondary_ready_feature_tiles: cutlass.Int32 | None = None,
-        weight_borrow_window_ptrs: cute.Tensor | None = None,
-        weight_borrow_src_rank: cute.Tensor | None = None,
-        weight_borrow_src_slot: cute.Tensor | None = None,
-        weight_borrow_scalars=None,
-        weight_borrow_counters: cute.Tensor | None = None,
     ):
         """Build TMA atoms + SharedStorage, launch fused dist_kernel
         with 384 threads/CTA."""
@@ -2054,6 +2162,9 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
 
         if cutlass.const_expr(self.problem_type == _DGRAD):
             self.b_major_mode = OperandMajorMode.MN
+        elif cutlass.const_expr(self.problem_type == _WGRAD):
+            self.a_major_mode = OperandMajorMode.MN
+            self.b_major_mode = OperandMajorMode.MN
 
         self._setup_attributes()
 
@@ -2074,6 +2185,9 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
             self.cluster_shape_mn, self.tiled_mma.thr_id
         )
         b_smem_layout = cute.slice_(self.b_smem_layout_staged, (None, None, None, 0))
+        if cutlass.const_expr(self.swiglu_emit_h1):
+            tensor_b = interleaved_fc13_view(tensor_b, 0)
+            tensor_c = interleaved_fc13_view(tensor_c, 1)
         tma_atom_b, tma_tensor_b = cute.nvgpu.make_tiled_tma_atom_B(
             b_op,
             tensor_b,
@@ -2087,7 +2201,9 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
         )
         epi_smem_layout = cute.slice_(self.epi_smem_layout_staged, (None, None, 0))
         tma_atom_c, tma_tensor_c = cpasync.make_tiled_tma_atom(
-            cpasync.CopyBulkTensorTileS2GOp(),
+            cpasync.CopyReduceBulkTensorTileS2GOp()
+            if self.output_accum
+            else cpasync.CopyBulkTensorTileS2GOp(),
             tensor_c,
             epi_smem_layout,
             c_cta_v_layout,
@@ -2108,28 +2224,6 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                 ready_counter=secondary_ready_counter,
                 ready_feature_tiles=secondary_ready_feature_tiles,
                 schedule_rank=local_rank,
-            )
-
-        weight_borrow_args = None
-        if cutlass.const_expr(weight_borrow_window_ptrs is not None):
-            s = weight_borrow_scalars
-            weight_borrow_args = WeightBorrowArgs(
-                window_ptrs=weight_borrow_window_ptrs,
-                src_rank=weight_borrow_src_rank,
-                src_slot=weight_borrow_src_slot,
-                slot_buf_base=s[0],
-                w13_win_off=s[1],
-                w13_slot_off=s[2],
-                w13_row_bytes=s[3],
-                s13_win_off=s[4],
-                s13_slot_off=s[5],
-                s13_row_bytes=s[6],
-                w2_win_off=s[7],
-                w2_slot_off=s[8],
-                w2_row_bytes=s[9],
-                s2_win_off=s[10],
-                s2_slot_off=s[11],
-                s2_row_bytes=s[12],
             )
 
         grid = (num_clusters * self.NUM_CTAS, 1, 1)
@@ -2181,7 +2275,7 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                 problem_type=self.problem_type,
                 FORCE_N_MAJOR=self.force_n_major,
                 NUM_N_CLUSTERS=self.num_n_clusters,
-                WORLD_SIZE=self.world_size,
+                WORLD_SIZE=self.schedule_world_size,
                 AG_BLOCK_SIZE_M=self.AG_BLOCK_SIZE_M,
                 AG_BLOCK_SIZE_K=self.AG_BLOCK_SIZE_K,
                 NUM_SMEM_BUFFERS=self.NUM_SMEM_BUFFERS,
@@ -2200,8 +2294,6 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                 USE_ACTIVATION_BUFFER=use_activation_buffer,
                 conditional_execution_tensor=conditional_execution_tensor,
                 USE_CONDITIONAL_EXECUTION=use_conditional_execution,
-                weight_borrow_args=weight_borrow_args,
-                mWeightBorrowCounters=weight_borrow_counters,
             ).launch(
                 grid=grid,
                 block=(DIST_THREADS_PER_CTA_DISPATCH, 1, 1),
@@ -2225,6 +2317,8 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                 tiled_mma=self.tiled_mma,
                 split_sizes=split_sizes,
                 counter_ptr=counter.iterator,
+                gather_counter=gather_counter,
+                a_buff_counter=a_buff_counter,
                 scatter_ptrs_ptr=scatter_ptrs.iterator,
                 padding_row_ptr=padding_row_ptr,
                 tensormaps=tensormaps,
@@ -2245,7 +2339,7 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                 problem_type=self.problem_type,
                 FORCE_N_MAJOR=self.force_n_major,
                 NUM_N_CLUSTERS=self.num_n_clusters,
-                WORLD_SIZE=self.world_size,
+                WORLD_SIZE=self.schedule_world_size,
                 NUM_SMEM_BUFFERS=self.NUM_SMEM_BUFFERS,
                 NUM_TMEM_BUFFERS=self.NUM_TMEM_BUFFERS,
                 NUM_TILE_BUFFERS=self.NUM_TILE_BUFFERS,
@@ -2259,9 +2353,21 @@ class DistGroupedGemmKernel(GroupedGemmKernel):
                 USE_ACTIVATION_BUFFER=use_activation_buffer,
                 conditional_execution_tensor=conditional_execution_tensor,
                 USE_CONDITIONAL_EXECUTION=use_conditional_execution,
+                swiglu_dz_base_ptr=swiglu_dz_base_ptr,
+                swiglu_h1_base_ptr=swiglu_h1_base_ptr,
+                swiglu_dz_s0=swiglu_dz_s0,
+                swiglu_h1_s0=swiglu_h1_s0,
+                swiglu_dz_offsets_ptr=swiglu_dz_offsets.iterator,
+                swiglu_h1_offsets_ptr=swiglu_h1_offsets.iterator,
             ).launch(
                 grid=grid,
-                block=(DIST_THREADS_PER_CTA_COMBINE, 1, 1),
+                block=(
+                    DIST_THREADS_PER_CTA_DISPATCH
+                    if self.mode == DistGroupedGemmKernel.COMBINE_SWIGLU_BWD
+                    else DIST_THREADS_PER_CTA_COMBINE,
+                    1,
+                    1,
+                ),
                 cluster=(*self.cluster_shape_mn, 1),
                 stream=stream,
             )

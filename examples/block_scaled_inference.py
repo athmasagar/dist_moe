@@ -11,7 +11,7 @@ try:
         dist_moe.BlockScaledFormat.MXFP8_E4M3,
         dist_moe.BlockScaledFormat.NVFP4,
     ):
-        policy = dist_moe.BlockScaledConfig(format=block_format, pipeline="staged")
+        policy = dist_moe.BlockScaledConfig(format=block_format, pipeline="mega")
         config = create_config(inputs, inference=True, block_scaled=policy)
         context = dist_moe.create_context(
             group=inputs.group,
@@ -22,6 +22,7 @@ try:
             inputs.w13_EFD,
             policy,
             inference=True,
+            fuse_swiglu=True,
         )
         prepared_w2 = dist_moe.prepare_block_scaled_weight(
             inputs.w2_EDF,

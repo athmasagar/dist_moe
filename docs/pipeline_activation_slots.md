@@ -177,6 +177,11 @@ except BaseException:
     raise
 ```
 
+Construction checks slot alignment once. Reset restores the initial offsets and
+counters in the existing allocation; it does not read CUDA offsets back to the
+CPU. Reset still must not run while saved forward state has a live backward
+consumer.
+
 Selecting an unknown slot, exceeding that slot's configured MoE-layer depth,
 or attempting a second live forward for the same slot fails instead of falling
 back to modulo assignment or another allocation.

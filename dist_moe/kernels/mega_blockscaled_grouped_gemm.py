@@ -60,13 +60,17 @@ from .config import (
     DEFAULT_BLOCKSCALED_GROUPED_GEMM_M_MULTIPLE_OF,
     uses_paged_blockscaled_scale_rows,
 )
-from .dist_blockscaled_grouped_gemm import (
-    _activation_buffer_placeholder,
+from .dist_blockscaled_config import (
     _can_use_fused_combine_swiglu_quant,
     _can_use_fused_dispatch_quant,
+)
+from .dist_blockscaled_grouped_gemm import (
+    _activation_buffer_placeholder,
     _flatten_last_dim,
+    _INT32_MAX,
     _logical_dim_size,
     _maybe_slice_output,
+    _q_words_tensor,
     _resolve_combine_descriptor_tensor,
 )
 from .grouped_gemm import _DGRAD, _WGRAD
@@ -775,13 +779,22 @@ def _make_mega_two_gemm_kernel_args(  # noqa: C901
         0 if wgrad_b_global_scale_inv is None else wgrad_b_global_scale_inv.data_ptr()
     )
     nvfp4_recip_lut_ptr = 0 if nvfp4_recip_lut is None else nvfp4_recip_lut.data_ptr()
+    qwords = (
+        dgrad_a.view(torch.uint32),
+        _qdata_words(col_q_storage),
+        activation_row_q.view(torch.uint32),
+        _qdata_words(activation_col_q_storage),
+    )
+    wide_qwords = max(words.numel() for words in qwords) > _INT32_MAX
+    dgrad_q_cute, col_q_cute, activation_row_q_cute, activation_col_q_cute = (
+        _q_words_tensor(words, wide=wide_qwords, format=kernel_format)
+        for words in qwords
+    )
     quant_kernel_args = (
         route_cute,
         _to_cute_tensor(quant_work_counter, assumed_align=4, format=kernel_format),
         _to_cute_tensor(quant_done_counter, assumed_align=4, format=kernel_format),
-        _to_cute_tensor(
-            dgrad_a.view(torch.uint32), assumed_align=16, format=kernel_format
-        ),
+        dgrad_q_cute,
         _to_cute_tensor(
             dgrad_sfa.view(torch.uint8), assumed_align=16, format=kernel_format
         ),
@@ -790,9 +803,7 @@ def _make_mega_two_gemm_kernel_args(  # noqa: C901
             assumed_align=4,
             format=kernel_format,
         ),
-        _to_cute_tensor(
-            _qdata_words(col_q_storage), assumed_align=16, format=kernel_format
-        ),
+        col_q_cute,
         _to_cute_tensor(
             col_scale_storage.view(-1).view(torch.uint8),
             assumed_align=16,
@@ -803,11 +814,7 @@ def _make_mega_two_gemm_kernel_args(  # noqa: C901
         _to_cute_tensor(activation_route, assumed_align=8, format=kernel_format),
         _to_cute_tensor(activation_work_counter, assumed_align=4, format=kernel_format),
         _to_cute_tensor(activation_done_counter, assumed_align=4, format=kernel_format),
-        _to_cute_tensor(
-            activation_row_q.view(torch.uint32),
-            assumed_align=16,
-            format=kernel_format,
-        ),
+        activation_row_q_cute,
         _to_cute_tensor(
             activation_row_scale.view(torch.uint8),
             assumed_align=16,
@@ -818,11 +825,7 @@ def _make_mega_two_gemm_kernel_args(  # noqa: C901
             assumed_align=4,
             format=kernel_format,
         ),
-        _to_cute_tensor(
-            _qdata_words(activation_col_q_storage),
-            assumed_align=16,
-            format=kernel_format,
-        ),
+        activation_col_q_cute,
         _to_cute_tensor(
             activation_col_scale_storage.view(-1).view(torch.uint8),
             assumed_align=16,
@@ -948,6 +951,7 @@ def _make_mega_two_gemm_kernel_args(  # noqa: C901
         use_activation_buffer,
         use_conditional_execution,
         condition_owner,
+        wide_qwords,
     )
 
 
@@ -964,6 +968,7 @@ def _get_mega_blockscaled_kernel(
     combine_swiglu_alpha: float = SWIGLU_CLAMP_ALPHA_DEFAULT,
     combine_swiglu_limit: float = SWIGLU_CLAMP_LIMIT_DEFAULT,
     mode: int = MegaBlockScaledGroupedGemmKernel.MEGA_BACKWARD_DISPATCH_MODE,
+    schedule_rotation: bool = True,
 ) -> MegaBlockScaledGroupedGemmKernel:
     swiglu_clamp = canonical_swiglu_clamp(
         combine_swiglu_clamped, combine_swiglu_alpha, combine_swiglu_limit
@@ -978,6 +983,7 @@ def _get_mega_blockscaled_kernel(
         combine_swiglu_fast_math,
         swiglu_clamp,
         mode,
+        schedule_rotation,
     )
     inst = _MEGA_BLOCKSCALED_KERNEL_CACHE.get(key)
     if inst is None:
@@ -993,6 +999,7 @@ def _get_mega_blockscaled_kernel(
             num_n_clusters=num_n_clusters,
             world_size=world_size,
             dispatch_source_dtype=dispatch_source_dtype,
+            schedule_rotation=schedule_rotation,
         )
         _MEGA_BLOCKSCALED_KERNEL_CACHE[key] = inst
     return inst
@@ -1020,6 +1027,7 @@ def _cute_mega_blockscaled_grouped_gemm_dispatch_bprop(  # noqa: C901
     activation_buffer: torch.Tensor | None = None,
     activation_offsets: torch.Tensor | None = None,
     conditional_execution: torch.Tensor | None = None,
+    pre_shuffled_rows: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
     """Run the fused backward dispatch DGRAD+WGRAD mega kernel."""
     if dx is not None and activation_buffer is not None:
@@ -1214,6 +1222,7 @@ def _cute_mega_blockscaled_grouped_gemm_dispatch_bprop(  # noqa: C901
         num_n_clusters=num_n_clusters,
         world_size=world_size,
         dispatch_source_dtype=dispatch_source_dtype,
+        schedule_rotation=not pre_shuffled_rows,
     )
     workspace = _allocate_mega_dispatch_counter_workspace(
         num_clusters=num_clusters,
@@ -1232,6 +1241,7 @@ def _cute_mega_blockscaled_grouped_gemm_dispatch_bprop(  # noqa: C901
         use_activation_buffer,
         use_conditional_execution,
         condition_owner,
+        wide_qwords,
     ) = _make_mega_two_gemm_kernel_args(
         dgrad_tensors=(dy_row_q, w_dgrad, dx, dy_row_scale, sfb),
         wgrad_tensors=(
@@ -1276,6 +1286,7 @@ def _cute_mega_blockscaled_grouped_gemm_dispatch_bprop(  # noqa: C901
         _torch_layout_signature(dy_wgrad_quant[0]),
         _torch_layout_signature(x_wgrad_q),
         _torch_layout_signature(dw),
+        wide_qwords,
         dgrad_problem.G,
         dgrad_problem.N,
         dgrad_problem.K,
@@ -1297,6 +1308,7 @@ def _cute_mega_blockscaled_grouped_gemm_dispatch_bprop(  # noqa: C901
             MegaBlockScaledGroupedGemmKernel.DISPATCH_QUANT_WARPS_PER_GROUP,
             MegaBlockScaledGroupedGemmKernel.DISPATCH_QUANT_MICROTILES_PER_WARP,
         ),
+        pre_shuffled_rows,
     )
     name_prefix = "_cute_mega_blockscaled_grouped_gemm_dispatch_bprop"
     compiled = _compile_or_get(
@@ -1333,6 +1345,7 @@ def mega_blockscaled_grouped_gemm_dgrad_wgrad_dispatch(
     activation_buffer: torch.Tensor | None = None,
     activation_offsets: torch.Tensor | None = None,
     conditional_execution: torch.Tensor | None = None,
+    pre_shuffled_rows: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
     """Run fused backward dispatch bprop.
 
@@ -1361,6 +1374,7 @@ def mega_blockscaled_grouped_gemm_dgrad_wgrad_dispatch(
             activation_buffer=activation_buffer,
             activation_offsets=activation_offsets,
             conditional_execution=conditional_execution,
+            pre_shuffled_rows=pre_shuffled_rows,
         )
     except _MegaFusedUnsupportedError as exc:
         raise NotImplementedError(str(exc)) from exc
@@ -1393,6 +1407,7 @@ def _cute_mega_blockscaled_grouped_gemm_combine_bprop(  # noqa: C901
     activation_buffer: torch.Tensor | None = None,
     activation_offsets: torch.Tensor | None = None,
     conditional_execution: torch.Tensor | None = None,
+    pre_shuffled_rows: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
     if w.dim() != 3:
         raise ValueError(f"w must be 3D, got shape={tuple(w.shape)}")
@@ -1592,6 +1607,7 @@ def _cute_mega_blockscaled_grouped_gemm_combine_bprop(  # noqa: C901
         combine_swiglu_clamped=swiglu_clamped,
         combine_swiglu_alpha=swiglu_alpha,
         combine_swiglu_limit=swiglu_limit,
+        schedule_rotation=not pre_shuffled_rows,
     )
     workspace = _allocate_mega_dispatch_counter_workspace(
         num_clusters=num_clusters,
@@ -1610,6 +1626,7 @@ def _cute_mega_blockscaled_grouped_gemm_combine_bprop(  # noqa: C901
         use_activation_buffer,
         use_conditional_execution,
         condition_owner,
+        wide_qwords,
     ) = _make_mega_two_gemm_kernel_args(
         dgrad_tensors=(dxy_row_q, w_dgrad, dgrad_c, dxy_row_scale, sfb),
         wgrad_tensors=(
@@ -1656,6 +1673,7 @@ def _cute_mega_blockscaled_grouped_gemm_combine_bprop(  # noqa: C901
         _torch_layout_signature(dw),
         _torch_layout_signature(grad_h2_2d),
         _torch_layout_signature(h1_2d),
+        wide_qwords,
         dgrad_problem.G,
         dgrad_problem.N,
         dgrad_problem.K,
@@ -1674,6 +1692,7 @@ def _cute_mega_blockscaled_grouped_gemm_combine_bprop(  # noqa: C901
         use_activation_buffer,
         use_conditional_execution,
         "mega_combine_bprop",
+        pre_shuffled_rows,
     )
     name_prefix = "_cute_mega_blockscaled_grouped_gemm_combine_bprop"
     compile_options = "--opt-level=1"
@@ -1722,6 +1741,7 @@ def mega_blockscaled_grouped_gemm_dgrad_wgrad_swiglu_bwd_combine(
     activation_buffer: torch.Tensor | None = None,
     activation_offsets: torch.Tensor | None = None,
     conditional_execution: torch.Tensor | None = None,
+    pre_shuffled_rows: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
     """Run fused backward combine bprop.
 
@@ -1755,6 +1775,7 @@ def mega_blockscaled_grouped_gemm_dgrad_wgrad_swiglu_bwd_combine(
             activation_buffer=activation_buffer,
             activation_offsets=activation_offsets,
             conditional_execution=conditional_execution,
+            pre_shuffled_rows=pre_shuffled_rows,
         )
     except _MegaFusedUnsupportedError as exc:
         raise NotImplementedError(str(exc)) from exc

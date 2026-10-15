@@ -48,13 +48,17 @@ from .params import (
     GroupedGemmTmaPipeline as _MegaTmaPipeline,
     MegaPipelineParams,
 )
+from .tensormap_fold import wait_folded_tensormaps
 from .tile_scheduler import (
     _get_bufidx_phase,
     _subtile_coords,
     _subtile_is_valid,
+    _subtile_valid_n,
+    CHUNKED_MEGA_WORK_INFO_ROLE_ALL,
     CHUNKED_MEGA_WORK_INFO_ROLE_MMA,
     CHUNKED_MEGA_WORK_INFO_ROLE_TMA_B,
     ChunkedMegaProblemVisitor,
+    ChunkedMegaWorkTileInfo,
     load_chunked_mega_work_info,
     load_mega_work_info,
     MegaDynamicScheduler,
@@ -151,7 +155,7 @@ def _mega_tma_producer_body(  # noqa: C901
         params.force_n_major,
         params.num_n_clusters,
         problem.local_rank,
-        params.world_size,
+        params.schedule_world_size,
         params.SWAP_AB,
         group_tile_size,
     )
@@ -432,7 +436,7 @@ def _mega_mma_consumer_body(  # noqa: C901
             params.force_n_major,
             params.num_n_clusters,
             problem.local_rank,
-            params.world_size,
+            params.schedule_world_size,
             params.SWAP_AB,
             group_tile_size,
         )
@@ -561,6 +565,24 @@ def _wait_before_tma_load(
         )
 
 
+# createpolicy.fractional encodings for the TMA cache-policy operand.
+_L2_EVICT_NORMAL = 0x1000000000000000
+_L2_EVICT_FIRST = 0x12F0000000000000
+
+
+@cute.jit
+def _weight_l2_policy(group_rows, block_n: cutlass.Constexpr[int]):
+    """L2 policy for a group's weight (A/SFA) loads under SWAP_AB. When the
+    group's routed rows fit one token tile, each weight tile is read exactly
+    once, so it streams evict-first instead of displacing the reused
+    activation tiles and the combine writes. Larger groups re-read every
+    weight tile per token tile and keep the normal policy."""
+    policy = cutlass.Int64(_L2_EVICT_NORMAL)
+    if group_rows <= cutlass.Int32(block_n):
+        policy = cutlass.Int64(_L2_EVICT_FIRST)
+    return policy
+
+
 @cute.jit
 def _sm103_tma_load_pair_segments(
     sync: GroupedGemmPipelineSync,
@@ -586,6 +608,7 @@ def _sm103_tma_load_pair_segments(
     NUM_SMEM_BUFFERS: cutlass.Constexpr[int],
     SF_RING_TILES: cutlass.Constexpr[int],
     sf_vec_size: cutlass.Constexpr[int],
+    cache_policy=None,
 ):
     """SM103 ultra loads for one operand pair: per K=768 tile, three K=256
     data segments ride the A/B smem ring (``accum * 3 + seg``) and the scale
@@ -627,6 +650,7 @@ def _sm103_tma_load_pair_segments(
                         tma_bar_ptr=sync.ab_full_mbar + ab_buf,
                         mcast_mask=data_mask,
                         tma_desc_ptr=data_desc,
+                        cache_policy=cache_policy,
                     )
                 else:
                     cute.copy(
@@ -635,6 +659,7 @@ def _sm103_tma_load_pair_segments(
                         s_data[(None, ab_buf)],
                         tma_bar_ptr=sync.ab_full_mbar + ab_buf,
                         mcast_mask=data_mask,
+                        cache_policy=cache_policy,
                     )
             if cutlass.const_expr(sf_stage < SF_SEGMENTS):
                 sf_k = kk * cutlass.Int32(SF_SEGMENTS) + cutlass.Int32(sf_stage)
@@ -657,6 +682,7 @@ def _sm103_tma_load_pair_segments(
                         tma_bar_ptr=sync.sf_full_mbar + sf_slot,
                         mcast_mask=scale_mask,
                         tma_desc_ptr=scale_desc,
+                        cache_policy=cache_policy,
                     )
                 else:
                     cute.copy(
@@ -665,6 +691,7 @@ def _sm103_tma_load_pair_segments(
                         s_scale[(None, sf_slot)],
                         tma_bar_ptr=sync.sf_full_mbar + sf_slot,
                         mcast_mask=scale_mask,
+                        cache_policy=cache_policy,
                     )
         accum_cnt_smem += cutlass.Int32(1)
     return accum_cnt_smem
@@ -692,12 +719,10 @@ def _blockscaled_tma_load_pair_tile(
     use_device_tensormaps: cutlass.Constexpr[bool],
     KLOOP_UNROLL: cutlass.Constexpr[int],
     NUM_SMEM_BUFFERS: cutlass.Constexpr[int],
+    cache_policy=None,
 ):
+    buf, phase = _get_bufidx_phase(accum_cnt_smem, NUM_SMEM_BUFFERS)
     for kk in cutlass.range(num_k_tiles, unroll=KLOOP_UNROLL):
-        buf, phase = _get_bufidx_phase(
-            accum_cnt_smem,
-            NUM_SMEM_BUFFERS,
-        )
         cute.arch.mbarrier_wait(sync.ab_empty_mbar + buf, phase ^ 1)
         if sync.cluster_cta_rank == 0:
             with cute.arch.elect_one():
@@ -713,6 +738,7 @@ def _blockscaled_tma_load_pair_tile(
                 tma_bar_ptr=sync.ab_full_mbar + buf,
                 mcast_mask=data_mask,
                 tma_desc_ptr=data_desc,
+                cache_policy=cache_policy,
             )
             cute.copy(
                 scale_atom,
@@ -721,6 +747,7 @@ def _blockscaled_tma_load_pair_tile(
                 tma_bar_ptr=sync.ab_full_mbar + buf,
                 mcast_mask=scale_mask,
                 tma_desc_ptr=scale_desc,
+                cache_policy=cache_policy,
             )
         else:
             cute.copy(
@@ -729,6 +756,7 @@ def _blockscaled_tma_load_pair_tile(
                 s_data[(None, buf)],
                 tma_bar_ptr=sync.ab_full_mbar + buf,
                 mcast_mask=data_mask,
+                cache_policy=cache_policy,
             )
             cute.copy(
                 scale_atom,
@@ -736,9 +764,109 @@ def _blockscaled_tma_load_pair_tile(
                 s_scale[(None, buf)],
                 tma_bar_ptr=sync.ab_full_mbar + buf,
                 mcast_mask=scale_mask,
+                cache_policy=cache_policy,
             )
+        buf += cutlass.Int32(1)
+        wrapped = buf == cutlass.Int32(NUM_SMEM_BUFFERS)
+        buf = cutlass.Int32(0) if wrapped else buf
+        phase ^= cutlass.Int32(wrapped)
         accum_cnt_smem += cutlass.Int32(1)
     return accum_cnt_smem
+
+
+@cute.jit
+def _make_chunked_mega_visitor(
+    params: ChunkedGemmWarpParams,
+    problem: GroupedGemmProblem,
+) -> ChunkedMegaProblemVisitor:
+    _, N, K = problem.mnk
+    return ChunkedMegaProblemVisitor.create(
+        problem.split_sizes,
+        N,
+        K,
+        problem.groups,
+        params.BLOCK_SIZE_M,
+        params.BLOCK_SIZE_N,
+        params.BLOCK_SIZE_K,
+        params.force_n_major,
+        params.num_n_clusters,
+        problem.local_rank,
+        params.schedule_world_size,
+        params.SWAP_AB,
+        params.PIPELINE_CHUNK_ROWS,
+        params.PIPELINE_LEAD_CHUNKS,
+        params.FC2_TILES_PER_SCHEDULE_ITEM,
+        params.STAGE_ALL_FC13,
+        params.GLOBAL_LEAD_CHUNKS,
+    )
+
+
+@cute.jit
+def _make_chunked_mega_producer(
+    params: ChunkedGemmWarpParams,
+    sync: GroupedGemmPipelineSync,
+) -> MegaDynamicScheduler:
+    return MegaDynamicScheduler.create_producer(
+        sync.counter_ptr,
+        sync.tile_cta_bar_mbar,
+        sync.tile_id_smem_ptr,
+        sync.tile_consumer_mbar,
+        sync.tile_producer_mbar,
+        sync.cluster_cta_rank,
+        params.NUM_CTAS,
+        params.NUM_TILE_BUFFERS,
+        params.NUM_TILE_CTA_BARS,
+    )
+
+
+@cute.jit
+def _publish_chunked_mega_terminal_work(
+    params: ChunkedGemmWarpParams,
+    scheduler: MegaDynamicScheduler,
+    work: ChunkedMegaWorkTileInfo,
+    work_info_smem_ptr: cute.Pointer,
+    accum_cnt_out: cutlass.Int32,
+) -> None:
+    scheduler.producer_wait_tile_released(accum_cnt_out)
+    publish_chunked_mega_work_info(
+        work,
+        work_info_smem_ptr,
+        accum_cnt_out % params.NUM_TILE_BUFFERS,
+        native_mma_tails=params.NATIVE_MMA_TAILS,
+    )
+    scheduler.producer_publish_tile(accum_cnt_out)
+
+
+@cute.jit
+def _gemm_scheduler_warp(
+    params: ChunkedGemmWarpParams,
+    problem: GroupedGemmProblem,
+    sync: GroupedGemmPipelineSync,
+    work_info_smem_ptr: cute.Pointer,
+    dispatch_gather_ptrs=None,
+) -> None:
+    scheduler = _make_chunked_mega_producer(params, sync)
+    visitor = _make_chunked_mega_visitor(params, problem)
+    tile_idx = scheduler.initial_work_tile_info()
+    work = visitor.get_work(tile_idx)
+    accum_cnt_out = cutlass.Int32(0)
+    while work.is_valid_tile:
+        publish_chunked_mega_work_info(
+            work,
+            work_info_smem_ptr,
+            accum_cnt_out % params.NUM_TILE_BUFFERS,
+            native_mma_tails=params.NATIVE_MMA_TAILS,
+            gather_ptrs=dispatch_gather_ptrs,
+            block_n=params.BLOCK_SIZE_N,
+        )
+        scheduler.producer_publish_tile(accum_cnt_out)
+        accum_cnt_out += cutlass.Int32(1)
+        scheduler.producer_wait_tile_released(accum_cnt_out)
+        tile_idx = scheduler.advance_producer(accum_cnt_out)
+        work = visitor.get_work(tile_idx)
+    _publish_chunked_mega_terminal_work(
+        params, scheduler, work, work_info_smem_ptr, accum_cnt_out
+    )
 
 
 @cute.jit
@@ -767,22 +895,18 @@ def _gemm_tma_warp(  # noqa: C901
     fc13_seg_tx: cutlass.Constexpr[tuple] = (0, 0),
     fc2_seg_tx: cutlass.Constexpr[tuple] = (0, 0),
     weight_borrow_args=None,
+    b_layouts: tuple = (),
+    dispatch_gather_ptrs=None,
 ) -> None:
     M, N, K = problem.mnk
-    # Chunked Mega requires dynamic scheduling: only load-A decodes work;
-    # every other role consumes its barrier-protected SMEM record.
-    if cutlass.const_expr(load_a):
-        scheduler = MegaDynamicScheduler.create_producer(
-            sync.counter_ptr,
-            sync.tile_cta_bar_mbar,
-            sync.tile_id_smem_ptr,
-            sync.tile_consumer_mbar,
-            sync.tile_producer_mbar,
-            sync.cluster_cta_rank,
-            params.NUM_CTAS,
-            params.NUM_TILE_BUFFERS,
-            params.NUM_TILE_CTA_BARS,
-        )
+    is_producer: cutlass.Constexpr[bool] = load_a and not params.SCHEDULER_RELAY
+    work_info_role: cutlass.Constexpr[int] = (
+        CHUNKED_MEGA_WORK_INFO_ROLE_ALL
+        if params.SCHEDULER_RELAY
+        else CHUNKED_MEGA_WORK_INFO_ROLE_TMA_B
+    )
+    if cutlass.const_expr(is_producer):
+        scheduler = _make_chunked_mega_producer(params, sync)
     else:
         scheduler = MegaDynamicScheduler.create_record_consumer(
             sync.tile_consumer_mbar,
@@ -797,26 +921,8 @@ def _gemm_tma_warp(  # noqa: C901
         params.MEGA_DGRAD_TENSORMAP_BASE,
         params.MEGA_WGRAD_TENSORMAP_BASE,
     )
-    if cutlass.const_expr(load_a):
-        visitor = ChunkedMegaProblemVisitor.create(
-            problem.split_sizes,
-            N,
-            K,
-            problem.groups,
-            params.BLOCK_SIZE_M,
-            params.BLOCK_SIZE_N,
-            params.BLOCK_SIZE_K,
-            params.force_n_major,
-            params.num_n_clusters,
-            problem.local_rank,
-            params.world_size,
-            params.SWAP_AB,
-            params.PIPELINE_CHUNK_ROWS,
-            params.PIPELINE_LEAD_CHUNKS,
-            params.FC2_TILES_PER_SCHEDULE_ITEM,
-            params.STAGE_ALL_FC13,
-            params.GLOBAL_LEAD_CHUNKS,
-        )
+    if cutlass.const_expr(is_producer):
+        visitor = _make_chunked_mega_visitor(params, problem)
         work = visitor.get_work(tile_idx)
     else:
         work = load_chunked_mega_work_info(
@@ -824,9 +930,12 @@ def _gemm_tma_warp(  # noqa: C901
             work_info_smem_ptr,
             cutlass.Int32(0),
             format is not NVFP4,
-            CHUNKED_MEGA_WORK_INFO_ROLE_TMA_B,
+            work_info_role,
+            native_mma_tails=params.NATIVE_MMA_TAILS,
         )
 
+    if cutlass.const_expr(use_device_tensormaps and params.FOLD_TENSORMAP_PREP):
+        wait_folded_tensormaps(sync.counter_ptr, problem.groups)
     while work.is_valid_tile:
         g = work.group_idx
         desc_ptrs_pair: list = []
@@ -844,7 +953,8 @@ def _gemm_tma_warp(  # noqa: C901
                             cute.AddressSpace.generic,
                         )
                     )
-                    tensormap_manager.fence_tensormap_update(desc_g_ptr)
+                    if cutlass.const_expr((desc_delta % 2 == 0) == load_a):
+                        tensormap_manager.fence_tensormap_update(desc_g_ptr)
             desc_ptrs_pair.append(desc_ptrs)
 
         # Borrowed trailing groups' weights stream in from a peer while local
@@ -873,11 +983,14 @@ def _gemm_tma_warp(  # noqa: C901
                     full_m_size = (2 * N, K)[gemm_idx]
                     # Under SWAP_AB, the visitor stores the expert row count
                     # in full_n_size; full_m_size is the static output width.
-                    if cutlass.const_expr(load_a):
+                    if cutlass.const_expr(is_producer):
                         publish_chunked_mega_work_info(
                             work,
                             work_info_smem_ptr,
                             accum_cnt_out % params.NUM_TILE_BUFFERS,
+                            native_mma_tails=params.NATIVE_MMA_TAILS,
+                            gather_ptrs=dispatch_gather_ptrs,
+                            block_n=params.BLOCK_SIZE_N,
                         )
                         scheduler.producer_publish_tile(accum_cnt_out)
                     tile_m_idx = work.tile_m_idx
@@ -942,6 +1055,9 @@ def _gemm_tma_warp(  # noqa: C901
                                     group_axis = cutlass.Int32(0)
                                     data_desc = None
                                     scale_desc = None
+                                weight_l2_policy = _weight_l2_policy(
+                                    work.full_n_size, params.BLOCK_SIZE_N
+                                )
                                 if cutlass.const_expr(params.USE_SM103_ULTRA):
                                     seg_tx = (fc13_seg_tx, fc2_seg_tx)[gemm_idx]
                                     if cutlass.const_expr(gemm_idx == 0):
@@ -979,6 +1095,7 @@ def _gemm_tma_warp(  # noqa: C901
                                         NUM_SMEM_BUFFERS=NUM_SMEM_BUFFERS,
                                         SF_RING_TILES=params.SM103_SF_RING_TILES,
                                         sf_vec_size=format.sf_vec_size,
+                                        cache_policy=weight_l2_policy,
                                     )
                                 else:
                                     accum_cnt_smem = _blockscaled_tma_load_pair_tile(
@@ -1002,6 +1119,7 @@ def _gemm_tma_warp(  # noqa: C901
                                         use_device_tensormaps,
                                         KLOOP_UNROLL=KLOOP_UNROLL,
                                         NUM_SMEM_BUFFERS=NUM_SMEM_BUFFERS,
+                                        cache_policy=weight_l2_policy,
                                     )
                             else:
                                 data_axis = subtile_n_idx
@@ -1068,11 +1186,39 @@ def _gemm_tma_warp(  # noqa: C901
                                         sf_vec_size=format.sf_vec_size,
                                     )
                                 else:
+                                    gB = pipeline.gB
+                                    if cutlass.const_expr(
+                                        params.COMPACT_DECODE_ROWS
+                                        or params.NATIVE_MMA_TAILS
+                                    ):
+                                        valid_n = _subtile_valid_n(
+                                            work.full_n_size,
+                                            subtile_n_idx,
+                                            params.BLOCK_SIZE_N,
+                                        )
+                                        if cutlass.const_expr(params.NATIVE_MMA_TAILS):
+                                            valid_n = work.mma_n
+                                        delta = sync.cluster_cta_rank * (
+                                            (
+                                                valid_n
+                                                - cutlass.Int32(params.BLOCK_SIZE_N)
+                                            )
+                                            // cutlass.Int32(2)
+                                        )
+                                        origin = cute.make_tensor(
+                                            gB.iterator, b_layouts[gemm_idx]
+                                        )
+                                        shifted = cute.domain_offset(
+                                            (delta, 0, 0), origin
+                                        )
+                                        gB = cute.make_tensor(
+                                            shifted.iterator, gB.layout
+                                        )
                                     accum_cnt_smem = _blockscaled_tma_load_pair_tile(
                                         sync,
                                         pipeline.tma_atom_b,
                                         pipeline.tma_atom_sfb,
-                                        pipeline.gB,
+                                        gB,
                                         pipeline.gSFB,
                                         pipeline.sB,
                                         pipeline.sSFB,
@@ -1091,7 +1237,7 @@ def _gemm_tma_warp(  # noqa: C901
                                         NUM_SMEM_BUFFERS=NUM_SMEM_BUFFERS,
                                     )
             accum_cnt_out += cutlass.Int32(1)
-            if cutlass.const_expr(load_a):
+            if cutlass.const_expr(is_producer):
                 scheduler.producer_wait_tile_released(accum_cnt_out)
                 tile_idx = scheduler.advance_producer(accum_cnt_out)
                 work = visitor.get_work(tile_idx)
@@ -1102,16 +1248,13 @@ def _gemm_tma_warp(  # noqa: C901
                     work_info_smem_ptr,
                     accum_cnt_out % params.NUM_TILE_BUFFERS,
                     format is not NVFP4,
-                    CHUNKED_MEGA_WORK_INFO_ROLE_TMA_B,
+                    work_info_role,
+                    native_mma_tails=params.NATIVE_MMA_TAILS,
                 )
-    if cutlass.const_expr(load_a):
-        scheduler.producer_wait_tile_released(accum_cnt_out)
-        publish_chunked_mega_work_info(
-            work,
-            work_info_smem_ptr,
-            accum_cnt_out % params.NUM_TILE_BUFFERS,
+    if cutlass.const_expr(is_producer):
+        _publish_chunked_mega_terminal_work(
+            params, scheduler, work, work_info_smem_ptr, accum_cnt_out
         )
-        scheduler.producer_publish_tile(accum_cnt_out)
 
 
 @cute.jit
@@ -1125,8 +1268,14 @@ def _gemm_mma_warp(
     format: cutlass.Constexpr,
     cta_group: cutlass.Constexpr,
     sf_dtype: cutlass.Constexpr[type[cutlass.Numeric]],
+    dispatch_gather_ptrs=None,
 ) -> None:
     M, N, K = problem.mnk
+    work_info_role: cutlass.Constexpr[int] = (
+        CHUNKED_MEGA_WORK_INFO_ROLE_ALL
+        if params.COMPACT_DECODE_ROWS and not params.NATIVE_MMA_TAILS
+        else CHUNKED_MEGA_WORK_INFO_ROLE_MMA
+    )
     scheduler = MegaDynamicScheduler.create_record_consumer(
         sync.tile_consumer_mbar,
         sync.tile_id_smem_ptr,
@@ -1142,7 +1291,8 @@ def _gemm_mma_warp(
         work_info_smem_ptr,
         cutlass.Int32(0),
         format is not NVFP4,
-        CHUNKED_MEGA_WORK_INFO_ROLE_MMA,
+        work_info_role,
+        native_mma_tails=params.NATIVE_MMA_TAILS,
     )
 
     while work.is_valid_tile:
@@ -1198,6 +1348,18 @@ def _gemm_mma_warp(
                                 OVERLAPPING_ACCUM=params.OVERLAPPING_ACCUM,
                                 cta_group=cta_group,
                                 sf_dtype=sf_dtype,
+                                dynamic_n=(
+                                    work.mma_n
+                                    if params.NATIVE_MMA_TAILS
+                                    else _subtile_valid_n(
+                                        work.full_n_size,
+                                        subtile_n_idx,
+                                        params.BLOCK_SIZE_N,
+                                    )
+                                    if params.COMPACT_DECODE_ROWS
+                                    or params.NATIVE_MMA_TAILS
+                                    else None
+                                ),
                             )
                         accum_cnt_tile += cutlass.Int32(1)
         accum_cnt_out += cutlass.Int32(1)
@@ -1207,5 +1369,6 @@ def _gemm_mma_warp(
             work_info_smem_ptr,
             accum_cnt_out % params.NUM_TILE_BUFFERS,
             format is not NVFP4,
-            CHUNKED_MEGA_WORK_INFO_ROLE_MMA,
+            work_info_role,
+            native_mma_tails=params.NATIVE_MMA_TAILS,
         )

@@ -46,8 +46,7 @@ statistics, and optional in-place accumulation into standard
 
 Full `torch.compile`, strict export, TLX or hierarchical execution,
 synchronous block-scaled backends, MXFP8 E5M2, MXFP4, A8W4, NVFP4 training,
-expert borrowing, activation rings, communication quantization, and
-interleaved Mega inference weights.
+expert borrowing, activation rings, and communication quantization.
 
 </details>
 
@@ -225,7 +224,9 @@ The flattened form `[E_local * 2F, D]` is also accepted
 when W2 is `[E_local * D, F]`. Inputs and weights must be contiguous CUDA BF16
 tensors. Expert IDs must be contiguous integers in `[-1, num_experts)`, where
 `-1` disables a route and requires score zero. Scores must be contiguous BF16
-or FP32 tensors.
+or FP32 tensors. Nonnegative expert IDs in each token's top-k row must be
+distinct; repeated `-1` padding is allowed. Uniqueness is a caller requirement,
+not part of the optional range-only debug check.
 
 <a id="understand-the-execution-model"></a>
 ## Understand the execution model
@@ -521,10 +522,12 @@ and scales. The complete
 prepares both expert weights before execution:
 
 ```python
+policy = dist_moe.BlockScaledConfig(pipeline="mega")
 prepared_w13 = dist_moe.prepare_block_scaled_weight(
     w13_EFD,
     policy,
     inference=True,
+    fuse_swiglu=True,
 )
 prepared_w2 = dist_moe.prepare_block_scaled_weight(
     w2_EDF,
@@ -533,8 +536,20 @@ prepared_w2 = dist_moe.prepare_block_scaled_weight(
 )
 ```
 
+`fuse_swiglu=True` is a Mega-inference W13 option. Preparation quantizes the
+canonical gate/up weights first, then places quantized rows and their scales
+in adjacent groups of eight. This lets the inference kernel fuse SwiGLU
+without changing the logical BF16 source. Do not enable it for W2 or training.
+The default remains concatenated weight preparation, including the staged
+pipeline. Device-only Mega inference uses aligned views of context-owned
+scratch for either layout, with the automatic tensor-map policy. VMM inference
+keeps GPU-planned offsets and device-prepared tensor maps; it does not use the
+static scratch layout. Both preparation modes are registered operations with FakeTensor
+metadata; actual quantization occurs only when the operation executes.
+
 Training integrations may refill compatible prepared MXFP8 storage with the
-`out=` argument after a new weight unshard.
+`out=` argument after a new weight unshard. Refill preserves the quantized
+storage tensors and returns a wrapper associated with the current source weight.
 
 See [MXFP8 execution](docs/mxfp8_execution.md) and
 [NVFP4 inference](docs/nvfp4_execution.md) for format-specific fields.

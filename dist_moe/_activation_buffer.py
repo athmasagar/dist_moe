@@ -312,6 +312,7 @@ class ActivationBuffer:
         initial_offsets = [
             i * self.activation_slot_bytes for i in range(self.num_activation_slots)
         ]
+        _assert_slot_boundaries_aligned(initial_offsets + [self.buffer.numel()])
         self.initial_buffer_offsets = torch.tensor(
             initial_offsets + [self.buffer.numel()],
             dtype=self.buffer_offsets.dtype,
@@ -634,15 +635,13 @@ class ActivationBuffer:
 
         Zeros saved_activation_bytes_per_rank and resets peak_min_free_space.
         The buffer contents are not cleared (they will be overwritten on next use).
+        Slot alignment is validated at construction; reset does not read
+        device offsets back to the host.
         """
         is_capturing = self.buffer.is_cuda and torch.cuda.is_current_stream_capturing()
         if not is_capturing:
             self.buffer = _normalize_aligned_buffer(self.buffer)
         self.buffer_offsets.copy_(self.initial_buffer_offsets)
-        if not is_capturing:
-            _assert_slot_boundaries_aligned(
-                [int(x) for x in self.buffer_offsets.cpu().tolist()]
-            )
         self.saved_activation_bytes_per_rank.zero_()
         self.peak_min_free_space.copy_(self.initial_peak_min_free_space)
         self.moe_layer_id.zero_()
@@ -814,6 +813,7 @@ class ActivationBuffer:
         )
 
         if self.device_scratch_size is not None:
+            assert host_scratch_size is not None
             slot_parts.append(
                 f"scratch({scratch_max_used / BYTES_PER_GB:.4f}/"
                 f"{scratch_size / BYTES_PER_GB:.4f}GB "
@@ -829,6 +829,7 @@ class ActivationBuffer:
 
         total_max_used = activation_used_total + scratch_max_used
         if self.device_scratch_size is not None:
+            assert host_scratch_size is not None and host_scratch_used is not None
             device_reserved = N * self.activation_slot_bytes + device_scratch_size
             host_reserved = host_scratch_size
             device_used = activation_used_total + device_scratch_used
@@ -860,7 +861,7 @@ class ActivationBuffer:
 
     def _build_overflow_message(
         self,
-        peak_values: list[float],
+        peak_values: list[int],
         scratch_min_free: float,
         scratch_size: float,
         reserved_memory: float,

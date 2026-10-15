@@ -12,7 +12,7 @@ grouped-GEMM epilogues; builds on the generic tile quantizer in ``common.py``.
 
 import cutlass
 import cutlass.cute as cute
-from cutlass import Float32, Int32, Uint8, Uint32, Uint64
+from cutlass import Float32, Int32, Uint8, Uint64
 
 from ..formats import (
     BLOCK_SCALED_FORMAT_IDS,
@@ -773,11 +773,6 @@ def _quantize_swiglu_fwd_fp8_tile(  # noqa: C901
             False,
             False,
             qdata_elems_per_word,
-            Uint32(0),
-            Uint32(0),
-            Int32(0),
-            False,
-            0,
         )
 
 
@@ -909,6 +904,7 @@ def _quantize_swiglu_bwd_dxy_fp8_tile(  # noqa: C901
         row_block,
         row_blocks,
     )
+
     _quantize_swiglu_bwd_fp8_tile_values(
         dx_vals,
         mRowQWords,

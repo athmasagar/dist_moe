@@ -3,6 +3,8 @@
 This guide explains the packed NVFP4 representation and the GPU kernels that
 consume it. Read [NVFP4 inference execution](nvfp4_execution.md) first for the
 public API and end-to-end lifetime model.
+The [memory planner](memory_planner.md) defines the hard routing and physical
+scratch bounds; this guide explains the kernel views inside that allocation.
 
 ## Outline
 
@@ -10,6 +12,9 @@ public API and end-to-end lifetime model.
 - [Prepare weights](#prepare-weights)
 - [Publish source rows](#publish-source-rows)
 - [Run expert compute](#run-expert-compute)
+- [Interleaved Mega inference](#interleaved-mega-inference)
+- [Physical scales and scratch](#physical-scales-and-scratch)
+- [Publication and readiness](#publication-and-readiness)
 - [Compare with MXFP8](#compare-with-mxfp8)
 - [Preserve numerical and layout invariants](#preserve-numerical-and-layout-invariants)
 
@@ -44,6 +49,16 @@ per-expert global scale and its reciprocal. The runtime consumes the reciprocal
 directly, so eager execution and CUDA graph replay do not launch a reciprocal
 kernel on every invocation.
 
+The default W13 rows concatenate gate and up projections for both staged and
+Mega execution. Opt-in `fuse_swiglu=True` preparation is restricted to Mega
+inference. It quantizes canonical W13 first, interleaves qdata and natural
+scale rows together in adjacent gate/up groups of eight, and then converts
+scales to blocked storage. The per-expert global scale remains attached to
+the original logical weight. W2 is never interleaved, and no backward operand
+is created for this representation.
+Mega G8 preparation is not a blanket admission of offset-backed execution;
+the source topology restrictions below still apply.
+
 <a id="publish-source-rows"></a>
 ## Publish source rows
 
@@ -76,12 +91,131 @@ packed row in local/peer symmetric HBM
 ```
 
 The staged policy uses the distributed dispatch and fused
-SwiGLU/W2/combine kernels. The Mega policy uses the chunked forward kernel.
-Format-specific topology selectors choose FP4 MMA atom widths and producer
-layouts; they do not add an alternate allocator or communication protocol.
+SwiGLU/W2/combine kernels. It keeps concatenated W13 and a dense BF16 H1
+boundary. The Mega policy uses the chunked forward kernel. The source
+configuration helpers jointly select FP4 MMA atom widths, token/feature tiles,
+producer layouts, epilogue transfers, and legal pipeline depths. Under
+`SWAP_AB`, `BLOCK_SIZE_N` names the token tile, not the public output feature
+dimension. Deriving pipeline depth does not shrink that width to fit a
+different scratch estimate.
 The optional clamped-SwiGLU specialization is evaluated in FP32 registers
 before the W2 activation is quantized and does not change the packed NVFP4
 dispatch or scale layouts.
+
+The shared `blockscaled_gemm_tiles` helpers build qdata/scale TMA operands;
+the matching distributed and Mega entrypoint modules pass the complete
+problem and pipeline records to `gemm_warp_roles` and the tile scheduler.
+Those components share one descriptor, layout, and readiness contract rather
+than maintaining separate inference arithmetic.
+
+<a id="interleaved-mega-inference"></a>
+## Interleaved Mega inference
+
+Interleaved W13 places the gate/up values needed by SwiGLU beside one another
+within the FC13 epilogue:
+
+```text
+gate[0:8], up[0:8], gate[8:16], up[8:16], ...
+  -> FC13 FP32 accumulation
+  -> plain or clamped SwiGLU
+  -> dense BF16 H2 staging
+  -> per-token amax/global scale and per-16-value block quantization
+  -> W2
+```
+
+NVFP4 needs a global scale for the entire activation row. A feature-axis
+epilogue tile cannot see the row's complete amax, so it stages dense H2.
+Row-quantization producers wait for that source tile, reread the complete row,
+reduce its block maxima, and publish packed H2, blocked E4M3 scales, and the
+FP32 inverse row scale. MXFP8 has no per-token global scale and can quantize
+interleaved H2 in the epilogue without this dense staging.
+
+Eligible Mega configurations use a scheduler relay to publish shared chunk
+work records to TMA, MMA, and epilogue roles. FC2 consumes H2 only after its
+quantization counter is ready. Relay records do not replace the row-readiness
+protocol, descriptor publication, or caller-owned peer barriers.
+
+<a id="physical-scales-and-scratch"></a>
+## Physical scales and scratch
+
+Qdata packs two feature values per byte, but blocked scale storage still uses
+128-row atoms with four scale columns. A token tile of `B` rows occupies
+`ceil(B / 128) * 128` physical scale rows. Compact inference routing has a
+32-row logical alignment; each expert's qdata and scale prefixes are expanded
+to complete physical tiles/pages. A 96-row token tile therefore occupies a
+128-row scale page, and a 192-row tile occupies 256 scale rows. These tails
+are storage, not additional admitted routes.
+
+For device-only Mega, the source config and static layout builder share this
+geometry. The [device-resolved memory plan](memory_planner.md#build-and-inspect-a-plan)
+covers all supported runtime T values, not only the largest T, because smaller
+tiles can have larger scale-page expansion. The launcher checks the resolved
+physical byte requirement before accessing scratch; a short allocation raises
+instead of selecting a narrower kernel. VMM-configured execution retains its
+GPU-offset scratch planner and source admission bounds.
+
+Device-only Mega inference uses aligned, disjoint views of the context's
+existing byte allocation for both concatenated and interleaved W13:
+
+- gathered X and H2 packed rows, blocked scales, and inverse row scales;
+- full dense BF16 H1 for concat, or dense BF16 H2 staging for interleaved
+  FC13's full-row amax reduction;
+- small never-stored descriptor operands and unused column-quantization views;
+- the source counter splits and tensor-map table.
+
+There is no second arena and no CPU read of the GPU activation-offset table.
+Internal source admission selects host or device tensor maps. Host maps, when
+legal, are constructed from these actual static views; static views with
+partial scale pages or unsupported host geometry use device preparation.
+The unused per-call `get_forward_plan()` and received-count clone are skipped;
+GPU routing counts and pointers still drive descriptor preparation and compute.
+
+Offset-backed operands with host tensor maps are rejected before launch.
+Staged inference and every VMM-configured inference context retain the
+GPU-offset scratch planner; VMM uses device tensor maps even when particular
+operands lie in device-backed sections. There is no public descriptor/storage
+selector or per-operand VMM mapping policy. None of these inference views
+creates saved activation state, and concat remains the default weight layout.
+
+G8 with GPU offsets requires the source high-throughput producer topology.
+Its padded allocation row bound is at least `16 * num_sms`, and the
+`(D, F) = (4096, 4096)` square shape is excluded. The narrow topology lacks the
+required buffer-output path and raises before launch. `COMPACT_DECODE_ROWS`,
+explicit `SCHEDULER_RELAY`, and `ACTIVATION_RING_CHUNKS` also require static
+storage and are excluded with offsets; automatic relay is ineligible and
+native tails are normalized off. These constraints do not create public
+mapping or descriptor switches, and no VMM/G8 runtime support is implied
+outside the admitted source combinations.
+
+Compact G8 additionally requires host descriptors, not merely static views;
+the internal source admission rule still decides whether that descriptor path
+is legal.
+
+<a id="publication-and-readiness"></a>
+## Publication and readiness
+
+Quantization writers publish their generic-proxy global stores to the async
+proxy before releasing a tile counter that gates TMA. The wide-row producer
+topology joins all writers at its quant-group barrier before an elected lane
+releases the counter; other topologies retain their corresponding source
+fences and synchronization. A consumer-side fence cannot publish another
+thread's writes.
+
+Counter plans use logical receive capacity, not the larger compact qdata/scale
+extent. Ordinary device tensor-map preparation resets the work counter and
+the extra quantization counters before compute. If preparation is folded into
+the Mega kernel, builders publish each expert/GEMM descriptor pair through a
+separate ready counter, and consumers acquire all pairs. Supplied counters
+must be precleared. With no supplied counters, static host-tensormap storage
+is zeroed on the caller stream; ordinary device-tensormap preparation keeps
+its own reset path.
+
+Before shared epilogue storage is reused, the issuing warp drains pending TMA
+store reads with `cp_async_bulk_wait_group(0, read=True)` and the epilogue
+writers synchronize. This protects the shared-memory lifetime; it is distinct
+from peer publication and is not an overlap measurement. The common Mega
+backward [lane-parallel WGRAD readiness protocol](mxfp8_kernel_design.md#quantization-readiness)
+belongs to MXFP8 training, not to NVFP4's supported surface.
 
 <a id="compare-with-mxfp8"></a>
 ## Compare with MXFP8
@@ -99,7 +233,10 @@ dispatch or scale layouts.
 <a id="preserve-numerical-and-layout-invariants"></a>
 ## Preserve numerical and layout invariants
 
-FP4 packing orientation, E4M3 scale rounding behavior, global-scale application
-order, and direct peer store order are part of the validated numerical contract. A
-generic transpose, `repeat_interleave`, or scale-layout reinterpretation is not
-equivalent to the prepared operand.
+FP4 packing orientation, round-to-nearest E4M3 block scales and E2M1 qdata,
+global-scale application order, and peer-store ordering are part of the kernel
+contract. Activation and weight inverse global scales are applied in the
+source operation order, not combined into a reassociated factor. A generic
+transpose, `repeat_interleave`, or scale-layout reinterpretation is not
+equivalent to the prepared operand. Changes to these rules require numerical,
+capture, communication, and storage-lifetime validation.

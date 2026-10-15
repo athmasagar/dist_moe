@@ -954,11 +954,15 @@ class VmmOwnershipTest(unittest.TestCase):
         self.assertNotIn(device.index, api_impl._VMM_ACTIVE_DEVICES)
 
 
-@pytest.mark.gpus_needed_1
+@pytest.mark.gpus_needed_4
 @pytest.mark.gb10x
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA required")
 class DistMoeVmmAllocationTest(unittest.TestCase):
-    """CUDA allocation tests for the host-backed VMM-backed activation buffer."""
+    """Exercise small host-backed VMM cases on an exclusively reserved host.
+
+    Only one GPU executes these cases. Reserving all four GB300 GPUs prevents
+    a colocated GPU workload from concurrently exercising host-backed WGRAD.
+    """
 
     def tearDown(self) -> None:
         """Release VMM state and the fake process group after each test."""

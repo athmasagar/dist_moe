@@ -7,10 +7,7 @@
 import cutlass
 import cutlass.cute as cute
 
-from ..formats import (
-    SWIGLU_CLAMP_ALPHA_DEFAULT,
-    SWIGLU_CLAMP_LIMIT_DEFAULT,
-)
+from ..formats import SWIGLU_CLAMP_ALPHA_DEFAULT, SWIGLU_CLAMP_LIMIT_DEFAULT
 from ._grouped_gemm_config import (
     BLOCKSCALED_SWIZZLE_GROUP_SIZE,
 )
@@ -243,9 +240,10 @@ def store_interleaved_swiglu_smem_tile(
                     output_words[pair] = _cvt_f32x2_to_f16x2_rn(
                         vals[0, 2 * pair], vals[0, 2 * pair + 1], sC_stage.element_type
                     )
+                # Int64: m_output_words may have a static row stride.
                 _copy_store_u32_words(
                     m_output_words,
-                    cm_start + row_in_group,
+                    cutlass.Int64(cm_start + row_in_group),
                     input_col // cutlass.Int32(4),
                     output_words,
                     packed_words,
@@ -656,8 +654,9 @@ def _signal_output_tile(
     is_leader,
     EPILOG_WG_THREADS: cutlass.Constexpr[int],
 ) -> None:
-    cute.arch.fence_acq_rel_gpu()
-    # The counter publishes stores issued by the entire epilogue warpgroup.
+    # The counter publishes stores issued by the entire epilogue warpgroup:
+    # bar.sync orders them before the elected thread's cumulative gpu-scope
+    # release, so only that thread waits for the stores to drain.
     cute.arch.barrier(
         barrier_id=_BAR_EPILOG_SYNC,
         number_of_threads=EPILOG_WG_THREADS,

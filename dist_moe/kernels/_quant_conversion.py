@@ -6,14 +6,18 @@
 
 """Scalar numeric conversion and register-level pack/unpack primitives.
 
-Bottom layer of the CuTe quant helper stack; format dispatch and multi-value
-packing live in ``_quant_packing.py``.
+Bottom layer of the CuTe quant helper stack. Deterministic conversion lives
+here; format-specific packing lives in ``_quant_packing.py``.
 """
 
 from typing import Tuple
 
 import cutlass
 import cutlass.cute as cute
+
+# Installs the sys.path shim that makes ``quack`` importable; kept here (the
+# bottom module of the quant helper stack) so every transitive importer keeps
+# the guarantee the monolithic ``common`` module used to provide.
 from cutlass import (
     BFloat16,
     Float8E8M0FNU,
@@ -21,7 +25,6 @@ from cutlass import (
     Float32,
     Int16,
     Int32,
-    Int64,
     Uint8,
     Uint16,
     Uint32,
@@ -37,11 +40,6 @@ from cutlass._mlir.dialects import (
 from cutlass.cutlass_dsl import dsl_user_op, T
 
 from ..formats import E8M0_EXP_BIAS
-
-# Installs the sys.path shim that makes ``quack`` importable; kept here (the
-# bottom module of the quant helper stack) so every transitive importer keeps
-# the guarantee the monolithic ``common`` module used to provide.
-from . import _dsl_compat as _cute_extern  # noqa: F401
 from ._dsl_compat import (
     absf,
     cvt_packfloat,
@@ -284,11 +282,6 @@ def _unpack_b64_to_i32x2(x: Uint64) -> tuple:
 # -----------------------------------------------------------------------------
 # Numeric conversion helpers.
 # -----------------------------------------------------------------------------
-@dsl_user_op
-def _cvt_i64_bits_to_u64(x: Int64, *, loc=None, ip=None) -> Uint64:
-    return Uint64(Int64(x).ir_value(loc=loc, ip=ip))
-
-
 @dsl_user_op
 def _cvt_bf16x2_to_f32x2(
     word: Uint32,

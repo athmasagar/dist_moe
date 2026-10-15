@@ -39,6 +39,8 @@ Use the narrowest real execution that proves the behavior:
 - FakePG only for shape, allocation, and tracing behavior; it is not numerical
   communication evidence.
 - Isolated scheduled Blackwell workers for real VMM allocation and host spill.
+  The small GB300 VMM suite reserves all four host GPUs but executes on one
+  GPU, preventing a concurrent host-backed WGRAD workload on the same host.
 
 ## Debugging
 

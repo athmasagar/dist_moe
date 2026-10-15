@@ -24,14 +24,9 @@ import cutlass.torch as cutlass_torch
 import torch
 from cutlass.cute.runtime import from_dlpack
 
-from ..formats import (
-    CUBLAS_BLOCKED_SCALE_COLS_PER_ATOM,
-    SWIGLU_CLAMP_ALPHA_DEFAULT,
-    SWIGLU_CLAMP_LIMIT_DEFAULT,
-)
+from ..formats import SWIGLU_CLAMP_ALPHA_DEFAULT, SWIGLU_CLAMP_LIMIT_DEFAULT
 from ._environment import num_sms_per_device
 from .activation_buffer import (
-    _ceil_div,
     _qdata_words,
     _row_quant_tuple,
     activation_buffer_placeholder as _activation_buffer_placeholder,
@@ -53,11 +48,9 @@ from .blockscaled_grouped_gemm import (
     _compile_or_get,
     _config_cache_key,
     _format_uses_fp4,
-    _host_tensormaps_available,
     _make_launch_tensor_bundle,
     _make_pointer_stride_args,
     _parse_blockscaled_problem,
-    _ParsedGemmProblem,
     _resolve_output_tensor,
     _set_swiglu_clamp_config,
     _torch_dtype,
@@ -65,12 +58,10 @@ from .blockscaled_grouped_gemm import (
     _validate_2d_operand_layout,
     _validate_3d_operand_layout,
     _validate_blockscaled_launch_inputs,
-    auto_blockscaled_config,
     blockscaled_mega_decode_config,
     blockscaled_staged_decode_config,
     blockscaled_training_config,
     BlockScaledFormatSpec,
-    inference_fprop_static_scheduler,
     make_mixed_blockscaled_format,
     MXFP4,
     MXFP8_E4M3,
@@ -79,17 +70,24 @@ from .blockscaled_grouped_gemm import (
 )
 from .blockscaled_quantize import get_nvfp4_recip_lut
 from .config import (
-    _blockscaled_ab_stage_storage_bytes,
-    BLACKWELL_DYNAMIC_SMEM_BUDGET_BYTES,
     BLOCKSCALED_DISPATCH_DIM_ALIGNMENT,
-    BLOCKSCALED_GROUPED_GEMM_M_ALIGNMENT,
     DEFAULT_BLOCKSCALED_GROUPED_GEMM_M_MULTIPLE_OF,
-    derive_blockscaled_dist_combine_config,
-    derive_blockscaled_epilogue_tile_n,
-    derive_blockscaled_num_tmem_buffers,
-    SM100_TMEM_COLS,
-    SMEM_LAUNCH_SAFETY_MARGIN_BYTES,
-    uses_paged_blockscaled_scale_rows,
+)
+from .dist_blockscaled_config import (
+    _blockscaled_split_size_alignment,
+    _can_use_fused_combine_swiglu_quant,
+    _can_use_fused_dispatch_quant,
+    _dispatch_scale_copy_atom_aligned,
+    _make_dist_combine_config,
+    _select_blockscaled_config,
+    _staged_fp4_mma_atom_n,
+    _staged_use_device_tensormaps,
+    _use_nvfp4_high_throughput_producers,
+    _use_t6_mxfp8_prefill_fc13_unroll,
+    _uses_derived_staged_pipeline,
+    _validate_swap_ab_row_multiple,
+    _verify_staged_smem_estimate,
+    derive_staged_blockscaled_pipeline_config as derive_staged_blockscaled_pipeline_config,
 )
 from .dist_blockscaled_grouped_gemm_kernel import (
     _FP4_FORMAT_NAMES,
@@ -117,94 +115,7 @@ __all__ = [
 
 _DEFAULT_M_MULTIPLE_OF: int = DEFAULT_BLOCKSCALED_GROUPED_GEMM_M_MULTIPLE_OF
 _MXFP8_FORMAT_NAMES: frozenset[str] = frozenset({"mxfp8_e4m3", "mxfp8_e5m2"})
-
-
-def _blockscaled_split_size_alignment(m_multiple_of: int) -> int:
-    return (
-        m_multiple_of
-        if uses_paged_blockscaled_scale_rows(m_multiple_of)
-        else _DEFAULT_M_MULTIPLE_OF
-    )
-
-
-def _validate_swap_ab_row_multiple(config: dict, m_multiple_of: int) -> None:
-    if not config.get("SWAP_AB", False):
-        return
-    block_size_n = int(config["BLOCK_SIZE_N"])
-    if not uses_paged_blockscaled_scale_rows(block_size_n):
-        if block_size_n % 128 != 0:
-            raise ValueError(
-                "SWAP_AB block-scaled scale storage supports BLOCK_SIZE_N "
-                f"32, 64, or a multiple of 128; got BLOCK_SIZE_N={block_size_n}"
-            )
-        return
-    if m_multiple_of != block_size_n:
-        raise ValueError(
-            "SWAP_AB paged scale storage requires m_multiple_of to equal "
-            f"BLOCK_SIZE_N; got m_multiple_of={m_multiple_of}, "
-            f"BLOCK_SIZE_N={block_size_n}"
-        )
-
-
-def _make_dist_combine_config(
-    *,
-    config: dict,
-    format: BlockScaledFormatSpec,
-    auto_selected: bool,
-    c_stage_dtype: torch.dtype,
-    num_c_stages: int,
-) -> dict:
-    cfg = dict(config)
-    cfg["NUM_C_STAGES"] = num_c_stages
-    if auto_selected and format.name not in _FP4_FORMAT_NAMES:
-        cfg = derive_blockscaled_dist_combine_config(
-            cfg,
-            sf_vec_size=format.sf_vec_size,
-            a_dtype=_torch_dtype(format.a_dtype),
-            b_dtype=_torch_dtype(format.b_dtype),
-            c_stage_dtype=c_stage_dtype,
-            num_c_stages=num_c_stages,
-        )
-    return cfg
-
-
-def _staged_use_device_tensormaps(
-    cfg: dict,
-    *,
-    activation_buffer: torch.Tensor | None,
-    problem_type: int,
-    m_multiple_of: int,
-    n: int,
-    groups: int,
-) -> bool:
-    return (
-        (cfg.get("SWAP_AB", False) and cfg.get("BLOCK_SIZE_N") in (32, 64))
-        or activation_buffer is not None
-        or not _host_tensormaps_available(
-            cfg,
-            problem_type=problem_type,
-            m_multiple_of=m_multiple_of,
-            N=n,
-            G=groups,
-        )
-    )
-
-
-def _staged_fp4_mma_atom_n(
-    *,
-    config: dict,
-    format: BlockScaledFormatSpec,
-    n: int,
-    k: int,
-    mixed_operand_widths: bool,
-) -> int:
-    block_n = int(config["BLOCK_SIZE_N"])
-    if mixed_operand_widths or (
-        format is MXFP4 and (n, k) in ((8192, 4096), (4096, 4096))
-    ):
-        return block_n
-    preferred_atom_n = min(128, block_n)
-    return preferred_atom_n if block_n % preferred_atom_n == 0 else block_n
+_INT32_MAX = 2**31 - 1
 
 
 def _flatten_last_dim(t: torch.Tensor, dim: int, name: str) -> torch.Tensor:
@@ -305,42 +216,14 @@ def allocate_decode_counter_storage(
     )
 
 
-def _can_use_fused_dispatch_quant(
-    *,
-    rows: int,
-    dim: int,
-    dtype: torch.dtype,
-    format: BlockScaledFormatSpec,
-    blockscaled_dispatch: bool = False,
-    m_multiple_of: int = BLOCKSCALED_GROUPED_GEMM_M_ALIGNMENT,
-) -> bool:
-    supported_formats = (MXFP8_E4M3, MXFP8_E5M2, MXFP4)
-    if blockscaled_dispatch:
-        supported_formats += (NVFP4,)
-    return (
-        format in supported_formats
-        and dtype in (torch.bfloat16, torch.float16)
-        and m_multiple_of > 0
-        and rows % m_multiple_of == 0
-        and dim % BLOCKSCALED_DISPATCH_DIM_ALIGNMENT == 0
+def _q_words_tensor(words: torch.Tensor, *, wide: bool, format: BlockScaledFormatSpec):
+    tensor = from_dlpack(
+        words.detach(), assumed_align=16, enable_tvm_ffi=_format_uses_fp4(format)
     )
-
-
-def _can_use_fused_combine_swiglu_quant(
-    *,
-    rows: int,
-    dim: int,
-    dtype: torch.dtype,
-    format: BlockScaledFormatSpec,
-    allow_nvfp4: bool = False,
-) -> bool:
-    return _can_use_fused_dispatch_quant(
-        rows=rows,
-        dim=dim,
-        dtype=dtype,
-        format=format,
-        blockscaled_dispatch=allow_nvfp4,
-    )
+    # Quant producers index q-words with Int32 rows; past 2**31 words the row
+    # stride must be dynamic (Int64) so row * stride cannot wrap. Smaller buffers
+    # keep the static layout, which is cheaper in the register-bound fused kernels.
+    return tensor.mark_layout_dynamic(leading_dim=1) if wide else tensor
 
 
 def _maybe_slice_output(output: torch.Tensor, num_output_tokens: int | None):
@@ -441,437 +324,6 @@ def _validate_global_scale_inv(
         )
 
 
-# Measured crossover for the fused chunked-mega path (EP4,
-# 100-iter CUDA-graph means): high-throughput producers win -17.8% at 8,192
-# routed rows and -36.8% at 16,384 vs the legacy topology, and are neutral
-# at 2,048-4,096 rows, so the mega floor admits everything down to 16
-# rows/SM while decode-size batches stay legacy.
-_NVFP4_HIGH_THROUGHPUT_MEGA_MIN_ROWS_PER_SM: int = 16
-# Staged crossover depends on the hidden dim (dispatch K / combine N): with
-# 16,384 routed rows at EP4, high-throughput producers measured -10.8% on
-# D=12288 and -4.4% at D=14336 but +18.7% at D=4096;
-# (D=4096); 8,192 rows were +18% or worse on every shape.
-_NVFP4_HIGH_THROUGHPUT_STAGED_LARGE_HIDDEN_MIN_DIM: int = 12288
-_NVFP4_HIGH_THROUGHPUT_STAGED_LARGE_HIDDEN_MIN_ROWS_PER_SM: int = 64
-
-
-def _use_nvfp4_high_throughput_producers(
-    *,
-    format: BlockScaledFormatSpec,
-    rows: int,
-    num_sms: int,
-    hidden_dim: int,
-    mega: bool = False,
-) -> bool:
-    # Small routed batches cannot amortize the extra producer state and work
-    # groups; the floors are the measured crossovers documented at the
-    # constants above. The mega floor still keeps decode-size batches on the
-    # legacy topology.
-    if mega:
-        rows_per_sm_floor = _NVFP4_HIGH_THROUGHPUT_MEGA_MIN_ROWS_PER_SM
-    elif hidden_dim >= _NVFP4_HIGH_THROUGHPUT_STAGED_LARGE_HIDDEN_MIN_DIM:
-        rows_per_sm_floor = _NVFP4_HIGH_THROUGHPUT_STAGED_LARGE_HIDDEN_MIN_ROWS_PER_SM
-    else:
-        rows_per_sm_floor = DEFAULT_BLOCKSCALED_GROUPED_GEMM_M_MULTIPLE_OF
-    return format is NVFP4 and rows >= num_sms * rows_per_sm_floor
-
-
-def _staged_epilogue_shape(
-    config: dict,
-    *,
-    format: BlockScaledFormatSpec,
-    c_stage_dtype: torch.dtype,
-) -> tuple[int, int]:
-    block_m = int(config["BLOCK_SIZE_M"])
-    block_n = int(config["BLOCK_SIZE_N"])
-    num_ctas = int(config["NUM_CTAS"])
-    epi_m = min(block_m // num_ctas, 128)
-    epilogue_subtile = int(config["EPILOGUE_SUBTILE"])
-    if epilogue_subtile == 0:
-        epi_n = derive_blockscaled_epilogue_tile_n(
-            block_m=block_m,
-            block_n=block_n,
-            num_ctas=num_ctas,
-            c_stage_dtype=c_stage_dtype,
-        )
-    else:
-        bytes_scale = max(1, c_stage_dtype.itemsize * 8 // format.a_dtype.width)
-        epi_n = block_n // (epilogue_subtile * bytes_scale)
-    return epi_m, epi_n
-
-
-def _staged_c_smem_bytes(
-    config: dict,
-    *,
-    format: BlockScaledFormatSpec,
-    mode: int,
-    c_stage_dtype: torch.dtype,
-) -> tuple[int, int, int]:
-    epi_m, epi_n = _staged_epilogue_shape(
-        config,
-        format=format,
-        c_stage_dtype=c_stage_dtype,
-    )
-    num_c_stages = int(config["NUM_C_STAGES"])
-    if mode == DistBlockScaledGroupedGemmKernel.DISPATCH_MODE:
-        elements = epi_m * epi_n
-        stage_stride = elements
-    else:
-        skew = DistBlockScaledGroupedGemmKernel._c_smem_skew(
-            int(config["NUM_TMEM_BUFFERS"])
-        )
-        if bool(config.get("SWAP_AB", False)):
-            major_stride = epi_m + skew
-            elements = (epi_n - 1) * major_stride + epi_m
-            stage_stride = epi_n * major_stride
-        else:
-            major_stride = epi_n + skew
-            elements = (epi_m - 1) * major_stride + epi_n
-            stage_stride = epi_m * major_stride
-    elements += (num_c_stages - 1) * stage_stride
-    return elements * c_stage_dtype.itemsize, epi_m, epi_n
-
-
-def _staged_operand_smem_bytes(
-    config: dict,
-    *,
-    format: BlockScaledFormatSpec,
-) -> tuple[int, int, int, int]:
-    block_m = int(config["BLOCK_SIZE_M"])
-    block_n = int(config["BLOCK_SIZE_N"])
-    block_k = int(config["BLOCK_SIZE_K"])
-    num_ctas = int(config["NUM_CTAS"])
-    num_smem = int(config["NUM_SMEM_BUFFERS"])
-    cta_m = block_m // num_ctas
-    sf_k_blocks = block_k // format.sf_vec_size
-    needs_unpack_tma = format.a_dtype.width != format.b_dtype.width
-    a_smem_width = (
-        8 if needs_unpack_tma and format.a_dtype.width < 8 else format.a_dtype.width
-    )
-    b_smem_width = (
-        8 if needs_unpack_tma and format.b_dtype.width < 8 else format.b_dtype.width
-    )
-    return (
-        cta_m * block_k * a_smem_width // 8 * num_smem,
-        block_n // num_ctas * block_k * b_smem_width // 8 * num_smem,
-        cta_m * sf_k_blocks * num_smem,
-        _ceil_div(block_n, 128) * 128 * sf_k_blocks * num_smem,
-    )
-
-
-def _staged_producer_storage_counts(
-    *,
-    format: BlockScaledFormatSpec,
-    mode: int,
-    blockscaled_dispatch: bool,
-    nvfp4_high_throughput: bool,
-    combine_swiglu_k: int | None,
-) -> tuple[int, int]:
-    _, dispatch_groups = DistBlockScaledGroupedGemmKernel._dispatch_quant_topology(
-        format=format,
-        blockscaled_dispatch=blockscaled_dispatch,
-        nvfp4_high_throughput=nvfp4_high_throughput,
-    )
-    producer_modes = (
-        DistBlockScaledGroupedGemmKernel.DISPATCH_MODE,
-        DistBlockScaledGroupedGemmKernel.COMBINE_SWIGLU_FWD_MODE,
-        DistBlockScaledGroupedGemmKernel.COMBINE_SWIGLU_BWD_MODE,
-    )
-    n_dispatch_tiles = dispatch_groups if mode in producer_modes else 0
-    if (
-        format is NVFP4
-        and mode == DistBlockScaledGroupedGemmKernel.COMBINE_SWIGLU_FWD_MODE
-    ):
-        _, quant_groups = DistBlockScaledGroupedGemmKernel._nvfp4_swiglu_quant_topology(
-            nvfp4_high_throughput=nvfp4_high_throughput,
-            combine_swiglu_k=combine_swiglu_k,
-        )
-        n_dispatch_tiles = max(
-            n_dispatch_tiles,
-            quant_groups * DistBlockScaledGroupedGemmKernel.NVFP4_ROW_REDUCTION_SLOTS,
-        )
-    n_gather_ptrs = (
-        dispatch_groups * format.sf_vec_size
-        if (
-            mode == DistBlockScaledGroupedGemmKernel.DISPATCH_MODE
-            and blockscaled_dispatch
-        )
-        else 0
-    )
-    return n_dispatch_tiles, n_gather_ptrs
-
-
-def _append_aligned_smem_regions(offset: int, regions: tuple[int, ...]) -> int:
-    for region_bytes in regions:
-        offset = _ceil_div(offset, 1024) * 1024 + region_bytes
-    return offset
-
-
-def _finish_staged_smem_allocation(
-    config: dict,
-    *,
-    offset: int,
-    groups: int,
-) -> int:
-    tensormap_bytes = max(5 * 128, 8 * ((groups + 1) // 2))
-    offset = _ceil_div(offset, 128) * 128 + tensormap_bytes
-    num_ctas = int(config["NUM_CTAS"])
-    barrier_count = (
-        2 * int(config["NUM_SMEM_BUFFERS"])
-        + 2 * int(config["NUM_TMEM_BUFFERS"])
-        + 2 * int(config["NUM_TILE_BUFFERS"])
-        + (3 if num_ctas == 2 else 0)
-        + int(bool(config.get("OVERLAPPING_ACCUM", False)))
-    )
-    return _ceil_div(offset + 8 * barrier_count + 4, 1024) * 1024
-
-
-def _estimate_staged_dist_smem_bytes(
-    config: dict,
-    *,
-    format: BlockScaledFormatSpec,
-    groups: int,
-    mode: int,
-    blockscaled_dispatch: bool,
-    nvfp4_high_throughput: bool,
-    use_global_scale_inv: bool,
-    combine_swiglu_k: int | None,
-    c_stage_dtype: torch.dtype,
-) -> int:
-    block_m = int(config["BLOCK_SIZE_M"])
-    block_n = int(config["BLOCK_SIZE_N"])
-    num_ctas = int(config["NUM_CTAS"])
-    num_tile = int(config["NUM_TILE_BUFFERS"])
-    c_smem_bytes, epi_m, epi_n = _staged_c_smem_bytes(
-        config,
-        format=format,
-        mode=mode,
-        c_stage_dtype=c_stage_dtype,
-    )
-    cta_m = block_m // num_ctas
-    offset = _append_aligned_smem_regions(
-        0,
-        (c_smem_bytes, *_staged_operand_smem_bytes(config, format=format)),
-    )
-    n_dispatch_tiles, n_gather_ptrs = _staged_producer_storage_counts(
-        format=format,
-        mode=mode,
-        blockscaled_dispatch=blockscaled_dispatch,
-        nvfp4_high_throughput=nvfp4_high_throughput,
-        combine_swiglu_k=combine_swiglu_k,
-    )
-    if use_global_scale_inv:
-        offset = _ceil_div(offset, 128) * 128
-        offset += 4 * (block_n if config.get("SWAP_AB", False) else cta_m)
-    offset += 4 * num_tile
-    offset += 4 * n_dispatch_tiles
-    offset += 8 * n_gather_ptrs
-    offset += 8 * max(epi_m, epi_n)
-    return _finish_staged_smem_allocation(config, offset=offset, groups=groups)
-
-
-def _verify_staged_smem_estimate(
-    kernel: DistBlockScaledGroupedGemmKernel,
-    config: dict,
-    *,
-    format: BlockScaledFormatSpec,
-    groups: int,
-    mode: int,
-    blockscaled_dispatch: bool,
-    nvfp4_high_throughput: bool,
-    use_global_scale_inv: bool,
-    combine_swiglu_k: int | None,
-    c_stage_dtype: torch.dtype,
-) -> None:
-    if getattr(kernel, "_smem_estimate_verified", False) or not hasattr(
-        kernel, "shared_storage"
-    ):
-        return
-    estimated = _estimate_staged_dist_smem_bytes(
-        config,
-        format=format,
-        groups=groups,
-        mode=mode,
-        blockscaled_dispatch=blockscaled_dispatch,
-        nvfp4_high_throughput=nvfp4_high_throughput,
-        use_global_scale_inv=use_global_scale_inv,
-        combine_swiglu_k=combine_swiglu_k,
-        c_stage_dtype=c_stage_dtype,
-    )
-    actual = kernel.shared_storage.size_in_bytes()
-    if estimated < actual:
-        raise AssertionError(
-            "staged block-scaled SMEM estimate undercounts kernel storage: "
-            f"estimated={estimated}, actual={actual}, mode={mode}, config={config}"
-        )
-    if estimated > actual:
-        logger.warning(
-            "Staged block-scaled SMEM estimate is conservative: "
-            f"estimated={estimated}, actual={actual}, mode={mode}, config={config}"
-        )
-    kernel._smem_estimate_verified = True
-
-
-def _initialize_staged_pipeline_depths(
-    config: dict,
-    *,
-    format: BlockScaledFormatSpec,
-    weight_format: BlockScaledFormatSpec | None = None,
-    num_c_stages: int | None = None,
-) -> dict:
-    cfg = dict(config)
-    if num_c_stages is None:
-        num_c_stages = int(
-            blockscaled_staged_decode_config(
-                format,
-                weight_dtype=weight_format,
-            )["NUM_C_STAGES"]
-        )
-    cfg["NUM_C_STAGES"] = num_c_stages
-    block_n = int(cfg["BLOCK_SIZE_N"])
-    num_mmas = int(cfg["NUM_MMAS"])
-    max_tmem = min(
-        int(cfg["NUM_TMEM_BUFFERS"]),
-        max(1, SM100_TMEM_COLS // (block_n * num_mmas)),
-    )
-    cfg["NUM_TMEM_BUFFERS"] = derive_blockscaled_num_tmem_buffers(
-        block_m=int(cfg["BLOCK_SIZE_M"]),
-        block_n=block_n,
-        num_mmas=num_mmas,
-        overlapping_accum=bool(cfg.get("OVERLAPPING_ACCUM", False)),
-        max_tmem_buffers=max_tmem,
-    )
-    cfg["NUM_TILE_BUFFERS"] = int(cfg["NUM_TMEM_BUFFERS"]) + 1
-    return cfg
-
-
-def _uses_derived_staged_pipeline(
-    config: dict,
-    *,
-    format: BlockScaledFormatSpec,
-    weight_format: BlockScaledFormatSpec | None = None,
-) -> bool:
-    base_config = blockscaled_staged_decode_config(
-        format,
-        weight_dtype=weight_format,
-    )
-    geometry_keys = (
-        "BLOCK_SIZE_M",
-        "BLOCK_SIZE_N",
-        "NUM_MMAS",
-        "EPILOGUE_SUBTILE",
-    )
-    return any(int(config[key]) != int(base_config[key]) for key in geometry_keys)
-
-
-def _staged_smem_search_limit(
-    config: dict,
-    *,
-    format: BlockScaledFormatSpec,
-    budget: int,
-) -> int:
-    cta_m = int(config["BLOCK_SIZE_M"]) // int(config["NUM_CTAS"])
-    cta_n = int(config["BLOCK_SIZE_N"]) // int(config["NUM_CTAS"])
-    block_k = int(config["BLOCK_SIZE_K"])
-    a_dtype = _torch_dtype(format.a_dtype)
-    b_dtype = _torch_dtype(format.b_dtype)
-    per_stage_floor = _blockscaled_ab_stage_storage_bytes(
-        block_mn=cta_m,
-        block_k=block_k,
-        dtype=a_dtype,
-        other_dtype=b_dtype,
-    ) + _blockscaled_ab_stage_storage_bytes(
-        block_mn=cta_n,
-        block_k=block_k,
-        dtype=b_dtype,
-        other_dtype=a_dtype,
-    )
-    return max(2, budget // max(1, per_stage_floor))
-
-
-def derive_staged_blockscaled_pipeline_config(
-    config: dict,
-    *,
-    format: BlockScaledFormatSpec,
-    activation_format: BlockScaledFormatSpec | None = None,
-    weight_format: BlockScaledFormatSpec | None = None,
-    num_c_stages: int | None = None,
-    groups: int,
-    mode: int,
-    blockscaled_dispatch: bool,
-    nvfp4_high_throughput: bool,
-    use_global_scale_inv: bool,
-    combine_swiglu_k: int | None,
-    c_stage_dtype: torch.dtype,
-) -> dict:
-    cfg = _initialize_staged_pipeline_depths(
-        config,
-        format=format if activation_format is None else activation_format,
-        weight_format=weight_format,
-        num_c_stages=num_c_stages,
-    )
-    budget = BLACKWELL_DYNAMIC_SMEM_BUDGET_BYTES - SMEM_LAUNCH_SAFETY_MARGIN_BYTES
-    max_smem = min(
-        max(8, int(cfg["NUM_SMEM_BUFFERS"])),
-        _staged_smem_search_limit(cfg, format=format, budget=budget),
-    )
-    for num_smem in range(max_smem, 1, -1):
-        cfg["NUM_SMEM_BUFFERS"] = num_smem
-        if (
-            _estimate_staged_dist_smem_bytes(
-                cfg,
-                format=format,
-                groups=groups,
-                mode=mode,
-                blockscaled_dispatch=blockscaled_dispatch,
-                nvfp4_high_throughput=nvfp4_high_throughput,
-                use_global_scale_inv=use_global_scale_inv,
-                combine_swiglu_k=combine_swiglu_k,
-                c_stage_dtype=c_stage_dtype,
-            )
-            <= budget
-        ):
-            return cfg
-    raise ValueError(
-        "no staged block-scaled pipeline fits "
-        f"BLOCK_M={cfg['BLOCK_SIZE_M']}, BLOCK_N={cfg['BLOCK_SIZE_N']}"
-    )
-
-
-def _use_t6_mxfp8_prefill_fc13_unroll(
-    *,
-    format: BlockScaledFormatSpec,
-    weight_format: BlockScaledFormatSpec | None = None,
-    rows: int,
-    num_sms: int,
-    n: int,
-    k: int,
-    interleaved_fc13: bool,
-) -> bool:
-    # Two-way K-loop unrolling is retained only for measured T6 MXFP8 FC13
-    # prefill; it adds register pressure without a win on other contractions.
-    return (
-        (weight_format is None or format is weight_format)
-        and format is MXFP8_E4M3
-        and interleaved_fc13
-        and n == 2 * 3072
-        and k == 12288
-        and rows >= num_sms * DEFAULT_BLOCKSCALED_GROUPED_GEMM_M_MULTIPLE_OF
-    )
-
-
-def _dispatch_scale_copy_atom_aligned(
-    *,
-    format: BlockScaledFormatSpec,
-    hidden_dim: int,
-) -> bool:
-    # The vector scale copy moves whole 4-column scale atoms and its tail
-    # guard only predicates the first column of each atom, so the hidden dim
-    # must cover a multiple of CUBLAS_BLOCKED_SCALE_COLS_PER_ATOM scale
-    # columns; partial atoms must stay on the scalar path.
-    return hidden_dim % (CUBLAS_BLOCKED_SCALE_COLS_PER_ATOM * format.sf_vec_size) == 0
-
-
 def _get_dist_blockscaled_kernel(
     *,
     config: dict,
@@ -887,6 +339,7 @@ def _get_dist_blockscaled_kernel(
     combine_swiglu_k: int | None = None,
     interleaved_fc13: bool = False,
     vector_dispatch_scale_copy: bool = False,
+    schedule_rotation: bool = True,
 ) -> DistBlockScaledGroupedGemmKernel:
     nvfp4_high_throughput = nvfp4_high_throughput and (
         blockscaled_dispatch
@@ -906,6 +359,7 @@ def _get_dist_blockscaled_kernel(
         combine_swiglu_k,
         interleaved_fc13,
         vector_dispatch_scale_copy,
+        schedule_rotation,
     )
     inst = _DIST_BLOCKSCALED_KERNEL_CACHE.get(key)
     if inst is None:
@@ -922,47 +376,12 @@ def _get_dist_blockscaled_kernel(
             nvfp4_high_throughput=nvfp4_high_throughput,
             combine_swiglu_k=combine_swiglu_k,
             interleaved_fc13=interleaved_fc13,
+            schedule_rotation=schedule_rotation,
         )
         if vector_dispatch_scale_copy:
             inst.VECTOR_DISPATCH_SCALE_COPY = True
         _DIST_BLOCKSCALED_KERNEL_CACHE[key] = inst
     return inst
-
-
-def _select_blockscaled_config(
-    *,
-    problem: _ParsedGemmProblem,
-    num_sms: int,
-    format: BlockScaledFormatSpec,
-    weight_format: BlockScaledFormatSpec | None,
-    m_multiple_of: int,
-    problem_type: int,
-    activation_buffer: torch.Tensor | None,
-    derive_pipeline_depth: bool,
-) -> dict:
-    """Pin the training config when persisting bundles to an activation buffer;
-    otherwise defer to the auto selector (with the inference static scheduler)."""
-    if activation_buffer is not None and not derive_pipeline_depth:
-        return blockscaled_training_config(format)
-    return auto_blockscaled_config(
-        GM=problem.GM,
-        G=problem.G,
-        N=problem.N,
-        K=problem.K,
-        num_sms=num_sms,
-        format=format,
-        weight_format=weight_format,
-        m_multiple_of=m_multiple_of,
-        problem_type=problem_type,
-        static_scheduler=inference_fprop_static_scheduler(
-            inference_mode=derive_pipeline_depth,
-            format=format,
-            weight_format=weight_format,
-            N=problem.N,
-            K=problem.K,
-            problem_type=problem_type,
-        ),
-    )
 
 
 def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
@@ -1003,6 +422,7 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
     a_global_scale_inv: torch.Tensor | None = None,
     b_global_scale_inv: torch.Tensor | None = None,
     derive_pipeline_depth: bool = False,
+    pre_shuffled_rows: bool = False,
 ) -> torch.Tensor:
     weight_format = format if weight_format is None else weight_format
     kernel_format = make_mixed_blockscaled_format(format, weight_format)
@@ -1314,6 +734,7 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
         dispatch_source_dtype=dispatch_source_dtype,
         nvfp4_high_throughput=nvfp4_high_throughput,
         combine_swiglu_k=combine_swiglu_k,
+        schedule_rotation=not pre_shuffled_rows,
     )
 
     # Quant producers derive their schedule from the runtime split tensor.
@@ -1396,10 +817,14 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
         )
         dispatch_quant_work_runtime = dispatch_quant_work_compile
         dispatch_quant_done_runtime = dispatch_quant_done_compile
-        row_q_words_compile = from_dlpack(
-            a.view(torch.uint32).detach(),
-            assumed_align=16,
-            **dlpack_kwargs,
+        col_q_bytes = (
+            0
+            if combine_swiglu_col_q_storage is None
+            else combine_swiglu_col_q_storage.nbytes
+        )
+        wide_q_words = max(a.nbytes, col_q_bytes) // 4 > _INT32_MAX
+        row_q_words_compile = _q_words_tensor(
+            a.view(torch.uint32), wide=wide_q_words, format=kernel_format
         )
         row_scale_compile = from_dlpack(
             sfa.view(torch.uint8).detach(),
@@ -1420,10 +845,10 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
         else:
             assert combine_swiglu_col_q_storage is not None
             assert combine_swiglu_col_scale is not None
-            col_q_words_compile = from_dlpack(
-                _qdata_words(combine_swiglu_col_q_storage).detach(),
-                assumed_align=16,
-                **dlpack_kwargs,
+            col_q_words_compile = _q_words_tensor(
+                _qdata_words(combine_swiglu_col_q_storage),
+                wide=wide_q_words,
+                format=kernel_format,
             )
             col_scale_compile = from_dlpack(
                 combine_swiglu_col_scale.view(-1).view(torch.uint8).detach(),
@@ -1436,6 +861,7 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
         col_q_words_runtime = col_q_words_compile
         col_scale_runtime = col_scale_compile
     else:
+        wide_q_words = False
         combine_swiglu_x_compile = launch_tensors.compile_tensors[5]
         combine_swiglu_y_compile = launch_tensors.compile_tensors[5]
         combine_swiglu_x_runtime = launch_tensors.runtime_tensors[5]
@@ -1632,7 +1058,9 @@ def _fused_dist_blockscaled_grouped_gemm_combine_impl(  # noqa: C901
         nvfp4_high_throughput,
         combine_swiglu_x_layout,
         combine_swiglu_y_layout,
+        pre_shuffled_rows,
         fp4_rows_cache_key,
+        wide_q_words,
     )
     _PROBLEM_NAMES = {
         _FPROP: "fprop",
@@ -1707,6 +1135,7 @@ def _fused_dist_blockscaled_grouped_gemm_dispatch_quant_impl(  # noqa: C901
     swiglu_alpha: float = SWIGLU_CLAMP_ALPHA_DEFAULT,
     swiglu_limit: float = SWIGLU_CLAMP_LIMIT_DEFAULT,
     derive_pipeline_depth: bool = False,
+    pre_shuffled_rows: bool = False,
 ) -> (
     tuple[
         torch.Tensor,
@@ -2045,6 +1474,7 @@ def _fused_dist_blockscaled_grouped_gemm_dispatch_quant_impl(  # noqa: C901
             and format is not NVFP4
             and _dispatch_scale_copy_atom_aligned(format=format, hidden_dim=problem.K)
         ),
+        schedule_rotation=not pre_shuffled_rows,
     )
 
     dispatch_quant_done_counter_size = max(1, rows // format.sf_vec_size)
@@ -2257,6 +1687,7 @@ def _fused_dist_blockscaled_grouped_gemm_dispatch_quant_impl(  # noqa: C901
         interleaved_fc13,
         "dist_dispatch_quant",
         fp4_rows_cache_key,
+        pre_shuffled_rows,
     )
     _PROBLEM_NAMES = {
         _FPROP: "fprop",
@@ -2333,6 +1764,7 @@ def dist_blockscaled_grouped_gemm_fprop_dispatch(
     swiglu_alpha: float = SWIGLU_CLAMP_ALPHA_DEFAULT,
     swiglu_limit: float = SWIGLU_CLAMP_LIMIT_DEFAULT,
     derive_pipeline_depth: bool = False,
+    pre_shuffled_rows: bool = False,
 ):
     """Gather+quantize A over NVLink, then run block-scaled FPROP GEMM.
 
@@ -2391,6 +1823,7 @@ def dist_blockscaled_grouped_gemm_fprop_dispatch(
             swiglu_alpha=swiglu_alpha,
             swiglu_limit=swiglu_limit,
             derive_pipeline_depth=derive_pipeline_depth,
+            pre_shuffled_rows=pre_shuffled_rows,
         )
         if interleaved_fc13:
             return result
@@ -2426,6 +1859,7 @@ def dist_blockscaled_grouped_gemm_dgrad_dispatch(
     activation_buffer: torch.Tensor | None = None,
     activation_offsets: torch.Tensor | None = None,
     conditional_execution: torch.Tensor | None = None,
+    pre_shuffled_rows: bool = False,
 ):
     """Gather+quantize dy over NVLink, then run block-scaled DGRAD GEMM.
 
@@ -2468,6 +1902,7 @@ def dist_blockscaled_grouped_gemm_dgrad_dispatch(
                 activation_buffer=activation_buffer,
                 activation_offsets=activation_offsets,
                 conditional_execution=conditional_execution,
+                pre_shuffled_rows=pre_shuffled_rows,
             )
         )
         if return_wgrad_quant:
@@ -2482,7 +1917,7 @@ def dist_blockscaled_grouped_gemm_dgrad_dispatch(
     )
 
 
-def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_combine(
+def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_combine(  # noqa: C901
     h1: torch.Tensor | None,
     w: torch.Tensor,
     sfb: torch.Tensor,
@@ -2518,6 +1953,7 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_combine(
     precomputed_swiglu: bool = False,
     return_row_quant: bool = False,
     derive_pipeline_depth: bool = False,
+    pre_shuffled_rows: bool = False,
 ):
     """Run SwiGLU fwd + activation quant + FC2 FPROP GEMM + peer scatter.
 
@@ -2573,6 +2009,7 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_combine(
             a_global_scale_inv=h2_global_scale_inv,
             b_global_scale_inv=b_global_scale_inv,
             derive_pipeline_depth=derive_pipeline_depth,
+            pre_shuffled_rows=pre_shuffled_rows,
         )
     if h1 is None:
         raise ValueError("h1 is required when h2_quant is not provided")
@@ -2717,6 +2154,7 @@ def dist_blockscaled_grouped_gemm_fprop_swiglu_fwd_combine(
         a_global_scale_inv=a_global_scale_inv,
         b_global_scale_inv=b_global_scale_inv,
         derive_pipeline_depth=derive_pipeline_depth,
+        pre_shuffled_rows=pre_shuffled_rows,
     )
     if return_wgrad_quant:
         assert col_q_storage is not None
@@ -2757,6 +2195,7 @@ def dist_blockscaled_grouped_gemm_dgrad_swiglu_bwd_combine(
     activation_offsets: torch.Tensor | None = None,
     conditional_execution: torch.Tensor | None = None,
     num_recv_tokens: int | None = None,
+    pre_shuffled_rows: bool = False,
 ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
     """Run SwiGLU bwd quant + W13 DGRAD GEMM + peer scatter.
 
@@ -2871,6 +2310,7 @@ def dist_blockscaled_grouped_gemm_dgrad_swiglu_bwd_combine(
         activation_buffer=activation_buffer,
         activation_offsets=activation_offsets,
         conditional_execution=conditional_execution,
+        pre_shuffled_rows=pre_shuffled_rows,
     )
     return out, (
         _column_quantized_output(dxy_col_q_storage, format),

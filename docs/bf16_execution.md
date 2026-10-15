@@ -138,8 +138,8 @@ the same context without a reset. This is distinct from
 | 2 | symmetric-memory barrier | published payloads and signal workspace | peer-visible ordering state | device signal storage | EP device barrier; no CPU synchronization |
 | 3 | `dist_dispatch_routing()` | route IDs and peer base pointers | expert row counts plus gather/scatter pointer tables | ordinary local HBM, saved through backward | follows the publication barrier |
 | 4 | `get_forward_plan()` | row counts and selected activation slot | `need_recompute` plus five byte offsets and a slot-ID snapshot | device planner state, saved through backward | launch ordered; no host read |
-| 5 | `dist_grouped_gemm_fprop_dispatch()` | peer/local BF16 dispatch rows and W13 | gathered `x` and BF16 `h1` at planned offsets | saved activation slot or shared scratch | pointer-driven peer reads after barrier |
-| 6 | `swiglu_fwd()` | BF16 `h1` | BF16 `h2` | saved activation slot or shared scratch | same-stream dependency |
+| 5 | `dist_grouped_gemm_fprop_dispatch()` | peer/local BF16 dispatch rows and W13 | gathered `x`, BF16 `h1`, and eligible fused `h2` | `x`/`h1` in the slot or scratch; `h2` always scratch | pointer-driven peer reads after barrier |
+| 6 | standalone `swiglu_fwd()`, when required | BF16 `h1` | BF16 `h2` and optional clip counters | the same planned `h2` destination | same-stream dependency |
 | 7 | `dist_grouped_gemm_fprop_combine()` | BF16 `h2` and W2 | BF16 route outputs in peer combine buffers | symmetric peer HBM, optionally copied to the slot | remote stores complete before the following barrier |
 | 8 | postprocess plus `scale_and_sum()` | local route outputs and router scores | BF16 `output_TD` | ordinary local HBM returned to the caller | consumes combine rows after the EP barrier |
 
@@ -158,7 +158,7 @@ contains `C` and `D`.
 
 ### 2. Build routing metadata
 
-`dist_dispatch_routing()` runs GPU routing metadata kernels that count and pad
+`dist_dispatch_routing()` runs GPU routing metadata kernels that count and pack
 rows per local expert and produce:
 
 - `num_tokens_per_local_experts`;
@@ -168,7 +168,8 @@ rows per local expert and produce:
 - `num_tokens_per_rank` and the local received-row count.
 
 These tensors live in ordinary local HBM or context-owned routing workspace.
-The operation never transfers route counts to the CPU.
+The BF16 path does not add per-expert row padding. The operation never
+transfers route counts to the CPU.
 
 Expert ID `-1` marks an inactive route. Routing does not produce a pointer or
 expert row for that slot, and the later score/reduction kernels mask its
@@ -188,37 +189,61 @@ slot ID. The offsets are device `int64` byte positions within
 `ActivationBuffer.buffer`; the final scalar is the immutable slot snapshot
 for the matching backward.
 
-If the layer can retain all WGRAD inputs, persistent offsets grow through the
-activation slot. If not, only `x` is retained and `x_gathered/h1/h2/h3` use
-the shared scratch stack.
+If the slot has space, it retains `x_gathered`, `h1`, and `h3`. Otherwise it
+retains only `x`, and backward reconstructs those intermediates in scratch.
+`h2` is always temporary scratch, including the full-save case: it can be
+recreated from `h1` without retaining another activation. Its recorded offset
+does not preserve its contents across later forwards.
 
-### 4. Dispatch plus W13
+### 4. Dispatch, W13, and native SwiGLU
 
 `dist_grouped_gemm_fprop_dispatch()` follows each `fwd_gather_ptr`, reads a BF16
 row from local or peer symmetric dispatch HBM, and stores the gathered row at
-`x_gathered_offset` in the local activation buffer. It then runs the grouped W13 GEMM and
-stores BF16 `h1` at `h1_offset`:
+`x_gathered_offset` in the local activation buffer. It then runs the grouped
+W13 GEMM and stores BF16 `h1` at `h1_offset`. Eligible launches also write `h2_offset`
+from the same native epilogue:
 
 ```text
 peer/local dispatch BF16 -> local x_gathered BF16
   -> W13 BF16 x BF16, FP32 accumulation
-  -> h1 BF16 [received_rows, 2F]
+  -> round-to-nearest h1 BF16 [received_rows, 2F]
+  -> SwiGLU on those BF16 values, in FP32 registers
+  -> h2 BF16 [received_rows, F]
 ```
 
 Rank 0 now owns expert-local `h1` rows for `E0[A,C]` and `E1[B,D]`. The rows
 are local even when their source token was remote.
 
-### 5. SwiGLU
+W13 and `h1` remain in canonical `[gate; up]` order. The kernel uses an
+interleaved TMA view to bring each gate/up pair into one epilogue subtile;
+it does not allocate or retain a second weight or activation layout. Both
+`h1` and `h2` are written to the existing planner destinations. Their
+`int64[1]` byte offsets are read on device, not copied to the host.
 
-`swiglu_fwd()` reads `h1_offset`, evaluates the nonlinear expression in FP32
-registers, and writes BF16 `h2` at `h2_offset`. When an optional caller-owned
-FP32 `[3]` clip-stat tensor is supplied through `dist_moe.ExecutionOptions`,
-the same kernel resets and writes gate, up-projection, and valid-element
+Forward fusion is selected only when clip counters are absent and the
+resolved preset passes the native geometry check: `F` is divisible by 32,
+the preset is non-swapped, its epilogue subtile is 64 columns, and its M tile
+contains 128 rows per CTA MMA atom. Both default training presets meet this
+contract. An incompatible explicit preset or unresolved inference-auto preset
+retains the standalone activation. Existing weight, expert-output, and WGRAD
+callbacks keep their original boundaries and do not themselves disable this
+fusion. See [the kernel flow](bf16_kernel_design.md#swiglu) for the inline and
+deferred epilogues.
+
+### 5. Activation variants and clip observation
+
+The standalone `swiglu_fwd()` reads `h1_offset`, evaluates the nonlinear
+expression in FP32 registers, and writes the same BF16 `h2_offset`. When a
+caller-owned FP32 `[3]` clip-stat tensor is supplied through
+`dist_moe.ExecutionOptions`,
+this variant resets and writes gate, up-projection, and valid-element
 counters. Training returns those counters as functional private state and the
 public wrapper records an explicit `aten.copy_` into the caller tensor;
 inference exposes the tensor as a mutated input of `dist_moe::bf16`.
+`swiglu_clip_limit` sets the counting threshold; it does not clamp the
+activation. The native fused epilogue does not collect these counters.
 
-With `dist_moe.Config(activation="swiglu_clamped")`, the same kernel instead
+With `dist_moe.Config(activation="swiglu_clamped")`, either execution variant
 evaluates `min(g, limit) * sigmoid(alpha * min(g, limit)) *
 (clamp(u, -limit, limit) + 1)`. `swiglu_alpha` and `swiglu_limit` are static
 context values used identically in forward, backward, and conditional forward
@@ -274,12 +299,12 @@ weights.
 | Order | API or kernel | Reads | Writes | Residency and lifetime | Synchronization |
 | ---: | --- | --- | --- | --- | --- |
 | 1 | `get_backward_plan()` | saved forward offsets and planner state | saved-or-scratch offsets for this layer | device-only planner decision | launch ordered; no host read |
-| 2 | conditional forward recompute | saved `x` and fixed scratch offsets | `x_gathered`, `h1`, `h2`, and `h3` when needed | shared scratch; launches are fixed and device-predicated | conditional peer publication and barrier |
+| 2 | conditional FC13/W2 recompute plus standalone SwiGLU | saved `x` or `h1` and fixed scratch offsets | reconstructed intermediates and fresh scratch `h2` | fixed launches; GEMMs are device-predicated, SwiGLU always runs | conditional peer publication and barrier |
 | 3 | postprocess backward / `broadcast_and_scale()` | `grad_output_TD`, router scores, and `h3` | BF16 `grad_h3` in symmetric combine HBM plus `grad_topk_scores_TK` | peer-visible until W2 DGRAD completes | combine barrier precedes peer reads |
 | 4 | `dist_grouped_gemm_dgrad_dispatch()` | peer `grad_h3` rows and W2 | BF16 `grad_h2` and gathered `grad_h3` | shared scratch | pointer-driven peer reads |
 | 5 | `grouped_gemm_wgrad()` | `grad_h3` and `h2` offsets | W2 gradient | caller-selected BF16/FP32 output or owned destination | same-stream dependency |
-| 6 | `swiglu_bwd()` | `grad_h2` and `h1` | BF16 `grad_h1` | shared scratch | same-stream dependency |
-| 7 | `dist_grouped_gemm_dgrad_combine()` | `grad_h1` and W13 | peer route input gradients | symmetric dispatch HBM | remote stores complete before the dispatch barrier |
+| 6 | `dist_grouped_gemm_dgrad_swiglu_bwd_combine()` when `F % 256 == 0` | `grad_h2`, `h1`, and W13 | planned BF16 `grad_h1` plus peer route input gradients | existing scratch and symmetric dispatch HBM | producer counters order SwiGLU stores before W13 TMA reads |
+| 7 | otherwise `swiglu_bwd()` then `dist_grouped_gemm_dgrad_combine()` | the same inputs | the same `grad_h1` and peer destinations | the same planned storage | same-stream dependency; scatter precedes the dispatch barrier |
 | 8 | `grouped_gemm_wgrad()` + `reduce_from_topk()` | `grad_h1`, `x_gathered`, and peer route gradients | W13 gradient and BF16 `grad_x_TD` | gradient outputs returned to autograd | reduction follows the dispatch barrier |
 
 ### 1. Resolve the backward plan and optional recompute
@@ -290,12 +315,17 @@ launches the fixed recompute sequence:
 
 1. `copy_activation_to_dispatch()` republishes saved `x` when required.
 2. Conditional `dist_grouped_gemm_fprop_dispatch()` recreates
-   `x_gathered/h1`.
-3. `swiglu_fwd()` recreates `h2`.
+   `x_gathered/h1` without forward activation fusion.
+3. Standalone `swiglu_fwd()` always recreates scratch `h2` from the selected
+   saved or recomputed `h1`.
 4. Conditional `dist_grouped_gemm_fprop_combine()` recreates `h3`.
 
-Device predicates make these launches no-ops when the values were saved. No
-CPU branch or allocator decision occurs during graph replay.
+The host never reads `need_recompute`. FC13 and W2 recompute launches are
+device-predicated no-ops when their state was saved, but SwiGLU must still
+rebuild `h2`: another forward may have overwritten that shared scratch. This
+is why recompute keeps the standalone activation even when the original
+forward was fused. It does not recollect clip counters. No host branch on the
+saved-state decision or new activation allocation occurs during graph replay.
 
 ### 2. Router-score gradient and route output gradient
 
@@ -319,15 +349,26 @@ parameter's declared `grad_dtype` and existing gradient storage. The
 underlying grouped-GEMM kernel also accepts an explicit destination and
 overwrite or reduce-add semantics.
 
+W2 WGRAD must consume `h2` before the next step writes `grad_h1`. The scratch
+plan reuses the former `h2` range for `grad_h1`; forward fusion and backward
+fusion do not change that lifetime or add another gradient allocation.
+
 ### 4. SwiGLU backward, W13 DGRAD, and W13 WGRAD
 
-`swiglu_bwd()` reads `grad_h2` and `h1`, computes the derivative in FP32
-registers, and writes BF16 interleaved `grad_h1` to scratch.
+For `F` divisible by 256, `dist_grouped_gemm_dgrad_swiglu_bwd_combine()` reads
+the planned `grad_h2` and saved or recomputed `h1` offsets. Its native producer
+computes the derivative in FP32, stores BF16 `grad_h1` in canonical
+`[gate; up]` order, and signals each completed activation M tile. The same
+launch runs W13 DGRAD after the corresponding signal and scatters route input
+gradients to peer symmetric dispatch HBM through `bwd_gather_ptrs`.
 
-`dist_grouped_gemm_dgrad_combine()` runs W13 DGRAD and scatters route input
-gradients directly to peer symmetric dispatch HBM through
-`bwd_gather_ptrs`. `grouped_gemm_wgrad()` consumes `grad_h1` and
-`x_gathered` offsets to produce W13 WGRAD.
+Other intermediate widths use `swiglu_bwd()` followed by
+`dist_grouped_gemm_dgrad_combine()`. Forward and backward eligibility are
+independent: forward needs a 32-column half-subtile, while the native backward
+producer needs complete 256-column passes. Both backward variants write the
+same `grad_h1_offset`; neither allocates a second `grad_h1`.
+`grouped_gemm_wgrad()` then consumes that canonical `grad_h1` and
+`x_gathered` to produce W13 WGRAD.
 
 After the dispatch barrier, `reduce_from_topk()` sums the K route gradients for
 each local token and returns BF16 `grad_x`.
@@ -350,6 +391,8 @@ before each forward. Here `slot_depth` is the selected stage's MoE depth for
 stage-microbatch coloring; microbatch coloring instead passes the total number
 of local MoE layers sharing that slot. Backward uses the slot and layer-depth
 bound saved by forward.
+See [activation-slot scheduling](pipeline_activation_slots.md) for sizing and
+static assignment.
 
 Call `context.close()` only after all eager work, traced execution, and CUDA
 graph replay that reference the context have stopped.
@@ -358,14 +401,29 @@ graph replay that reference the context have stopped.
 ## Grouped-GEMM presets
 
 `dist_moe.Config.bf16_grouped_gemm_preset` accepts a named compile-time launch
-preset for BF16 FPROP and DGRAD. Names use
+preset for BF16 grouped GEMMs. Names use
 `<cluster CTAs>cta<MMA atoms>mma_bm<M>_bn<N>`; for example,
 `2cta1mma_bm256_bn256` means a two-CTA cluster, one MMA atom per CTA, and a
-256-by-256 output tile. The WGRAD kernel has a separate tuned schedule and is
-not changed by this option.
+256-by-256 output tile. An explicit preset is passed to FPROP, DGRAD, and
+WGRAD; it also overrides the separate default W2-combine choice.
 
-Leave the value as `None` for the production shape-aware default. An explicit
-preset is appropriate only after benchmarking the exact received-row
+With no explicit preset, training uses the retained native policy with
+`R = max(1, T * top_k)` and `E_local` local experts:
+
+| Launch | BM256 selection | Otherwise |
+| --- | --- | --- |
+| W13 FPROP and both DGRADs | `R <= 8192` or `R < 512 * E_local` | BM512, one TMEM buffer |
+| W2 FPROP combine | the same small-row condition, or `R >= 16384 * E_local` | BM512, one TMEM buffer |
+| WGRAD | `R <= 8192` | its BM512 preset, with two C stages |
+
+The BM256 training preset has two TMEM buffers. These are source launch
+policies, not a speedup guarantee. `R` uses the current invocation's local
+`T`, not the context maximum or a host copy of received counts. Actual routed
+rows remain device-selected and may differ from the estimate; the hard
+capacity bound comes from [the memory plan](memory_planner.md), not `R`.
+Inference with no explicit preset leaves selection to the shape-aware launcher.
+
+An explicit preset is appropriate only after benchmarking the exact received-row
 distribution, hidden and intermediate dimensions, local expert count, and GPU
 architecture. A preset changes launch geometry, not arithmetic or the memory
 planner contract.

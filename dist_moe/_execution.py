@@ -55,15 +55,19 @@ class _KernelAutogradContext:
     autograd function contains only opaque custom-op calls.
     """
 
+    forward_offsets: torch.Tensor
+    w13_input_shape: torch.Size
+    w2_input_shape: torch.Size
+
     def __init__(self) -> None:
         """Initialize an empty saved-tensor collection."""
-        self.saved_tensors: tuple[torch.Tensor, ...] = ()
+        self.saved_tensors: tuple[torch.Tensor | None, ...] = ()
 
-    def save_for_backward(self, *tensors: torch.Tensor) -> None:
+    def save_for_backward(self, *tensors: torch.Tensor | None) -> None:
         """Retain tensors produced by the CUDA forward implementation.
 
         Args:
-            *tensors: Tensors consumed by the explicit backward kernels.
+            *tensors: Tensors or absent optional state consumed by backward.
         """
         self.saved_tensors = tensors
 
@@ -272,6 +276,7 @@ class PreparedWeight:
     dgrad_scale: torch.Tensor | None
     global_scale: torch.Tensor | None = None
     global_scale_inv: torch.Tensor | None = None
+    _interleaved_fc13: bool = False
 
     def __init__(self) -> None:
         """Reject construction outside :func:`prepare_block_scaled_weight`.
@@ -293,6 +298,7 @@ class PreparedWeight:
         dgrad_scale: torch.Tensor | None,
         global_scale: torch.Tensor | None = None,
         global_scale_inv: torch.Tensor | None = None,
+        interleaved_fc13: bool = False,
     ) -> PreparedWeight:
         """Construct one validated prepared-weight owner.
 
@@ -307,6 +313,8 @@ class PreparedWeight:
             dgrad_scale: Optional DGRAD-oriented scale storage.
             global_scale: Optional per-expert global scale.
             global_scale_inv: Optional reciprocal global scale.
+            interleaved_fc13: Whether FPROP rows contain adjacent gate/up
+                groups for the inference-only fused SwiGLU kernels.
 
         Returns:
             Factory-owned prepared-weight state.
@@ -321,6 +329,7 @@ class PreparedWeight:
             ("dgrad_scale", dgrad_scale),
             ("global_scale", global_scale),
             ("global_scale_inv", global_scale_inv),
+            ("_interleaved_fc13", interleaved_fc13),
         ):
             object.__setattr__(prepared, name, value)
         return prepared
@@ -367,6 +376,7 @@ class PreparedWeight:
             dgrad_scale=self.dgrad_scale,
             global_scale=self.global_scale,
             global_scale_inv=self.global_scale_inv,
+            interleaved_fc13=self._interleaved_fc13,
         )
 
 

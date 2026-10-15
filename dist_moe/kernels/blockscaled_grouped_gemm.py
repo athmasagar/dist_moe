@@ -6,10 +6,11 @@
 
 """CuTeDSL block-scaled grouped GEMM (MXFP8 / NVFP4 / MXFP4) for dist_moe.
 
-This persistent, warp-specialized SM100 kernel extends the BF16/FP16 grouped
-GEMM with two block-scaled requirements: (1) the MMA path uses Blackwell's
-tcgen05 variant and reads SFA/SFB from TMEM; (2) the TMA producer loads SFA/SFB
-before A/B onto the same combined ``ab_full_mbar``.
+Persistent, warp-specialized SM100 kernel. Mirrors
+``grouped_gemm.py`` (bf16/fp16) with two deltas:
+(1) MMA path is Blackwell's block-scaled tcgen05 variant reading SFA/SFB
+from TMEM; (2) the TMA producer loads SFA/SFB before A/B onto the same
+combined ``ab_full_mbar``.
 
 Per-CTA warp layout (8 total): 4 epilog + 1 MMA + 1 TMA + 2 idle.
 
@@ -34,7 +35,11 @@ import cutlass.torch as cutlass_torch
 import torch
 from cutlass.cute.runtime import from_dlpack
 
-from ..formats import canonical_swiglu_clamp
+from ..formats import (
+    canonical_swiglu_clamp,
+    CUBLAS_BLOCKED_ROWS_PER_ATOM,
+    CUBLAS_BLOCKED_SCALE_COLS_PER_ATOM,
+)
 from . import sm103_blockscaled_helpers as sm103
 from ._environment import num_sms_per_device
 from ._kernel_name_prefix import scoped_kernel_name_prefixes
@@ -51,6 +56,7 @@ from .blockscaled_config import (  # noqa: F401
     _copy_config,
     _cutlass_dtype_from_torch,
     _format_has_fp4_a,
+    _format_has_fp4_b,
     _format_uses_fp4,
     _FP4_COMPUTE_CONFIG,
     _FP4_FALLBACK_CONFIG,
@@ -81,24 +87,24 @@ from .blockscaled_config import (  # noqa: F401
     blockscaled_mega_decode_config,
     blockscaled_staged_decode_config,
     blockscaled_training_config,
+    BlockScaledProductionConfig,
     build_blockscaled_config,
     inference_fprop_static_scheduler,
     make_mixed_blockscaled_format,
     MXFP4,
+    MXFP8_E4M3,
     MXFP8_E5M2,
     NVFP4,
     PRODUCTION_BLOCKSCALED_CONFIGS,
 )
 from .blockscaled_grouped_gemm_kernel import (  # noqa: F401
-    _format_has_fp4_b,
     _LaunchTensorBundle,
     _ParsedGemmProblem,
     BlockScaledFormatSpec,
     BlockScaledGroupedGemmKernel,
-    BlockScaledProductionConfig,
-    MXFP8_E4M3,
 )
 from .config import (  # noqa: F401
+    _align_up,
     _MXFP4_STAGED_COMPACT_MIN_FEATURE_WAVES,
     BLOCKSCALED_GROUPED_GEMM_M_ALIGNMENT,
     DEFAULT_BLOCKSCALED_GROUPED_GEMM_M_MULTIPLE_OF,
@@ -666,7 +672,8 @@ def _make_pointer_stride_args(
     weight_format = _resolve_weight_format(format, weight_format)
     make_mixed_blockscaled_format(format, weight_format)
     elem_sizes = (a.element_size(), b.element_size(), c.element_size())
-    sf_cols = K // format.sf_vec_size
+    sf_cols = _align_up(K // format.sf_vec_size, CUBLAS_BLOCKED_SCALE_COLS_PER_ATOM)
+    padded_n = _align_up(N, CUBLAS_BLOCKED_ROWS_PER_ATOM)
     a_strides = (
         cutlass.Int32(_logical_stride(a, format, 0)),
         cutlass.Int32(_logical_stride(a, format, 1)),
@@ -709,7 +716,7 @@ def _make_pointer_stride_args(
                     cutlass.Int64(c_group_stride),
                 ),
             ),
-            (cutlass.Int32(sf_cols), cutlass.Int32(N * sf_cols)),
+            (cutlass.Int32(sf_cols), cutlass.Int32(padded_n * sf_cols)),
         ),
         elem_sizes,
     )
