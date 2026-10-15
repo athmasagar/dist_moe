@@ -35,7 +35,7 @@ uses modern browser APIs including native dialogs. Publishing is a separate step
 
 ## Browser presentation
 
-The **Present** link switches the article into a 21-slide presentation. The
+The **Present** link switches the article into a 26-slide presentation. The
 deck uses a 16:9 canvas with stable diagram framing and the same live controls.
 A generic MoE setup precedes the capability comparison (slide 3) and GPU
 placement. The comparison table and its visible qualifications come directly
@@ -85,7 +85,7 @@ parameters and modes; step navigation stays in the presentation controls.
 PDF export follows the same curated steps as the presentation, including the
 short pipeline sequences. Each page carries its slide, step, and PDF page number,
 the current step's summary, and its fixed diagram framing. The default Mega
-deck produces 57 pages; selecting Staged produces 59. Static slides appear
+deck produces 70 pages; selecting Staged produces 72. Static slides appear
 once. Shape, format, packing, tile, and other figure settings carry into the print
 tab. The capacity-policy slide intentionally walks all three shared presets.
 The print tab keeps SVG graphics and text; it does not rasterize the slides.
@@ -102,6 +102,22 @@ maintain a second article or duplicate the SVG renderers.
 calculations, graphics, code examples, and interaction logic to both views.
 Changes to these shared sources appear after refreshing either view. Figure
 settings also carry between views when using Present and Article.
+
+`results-data.js` is the canonical 63-case measurement snapshot.
+`results.js` generates the same result diagrams, tables, numerical prose, and
+step summaries for the article and deck. The five result slides cover
+inference, training, routing skew, expert width, and memory policy. Peak
+references are theoretical NVIDIA datasheet values, with dense compute
+denominators and one-direction NVLink bandwidth. HBM is an analytical traffic
+estimate. The eight-layer packing view is explicitly a projection from
+measured single-layer footprints, rather than a multi-layer benchmark.
+
+After editing the measurement snapshot, regenerate the downloadable numerical
+exports with `python3 site/data/export_results.py`. The JSON includes timing
+windows and per-rank routing/saved-state arrays; CSV contains the raw summary
+numbers. Inference and training retain their independently selected EP settings
+when entering the deck or exporting steps. Full timing ranges remain in the
+article and speaker notes; the slide table uses medians beside plotted ranges.
 
 `presentation.js` defines the slide sequence, source selectors, camera windows,
 and navigation. `presentation.css` defines the slide layout. If you move

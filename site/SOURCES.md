@@ -113,3 +113,58 @@ Pipeline liveness checkpoints select 0F0, 2B0, 0F4, 0B7 to show acquisition,
 individual-stage release, the whole-trace peak, and final completion. The next
 slide selects 2F0, 2B0, 0F3 to show a physical slot’s acquisition, release, and
 next owner. Both views use the same schedule and source-derived lifetime rules.
+
+## Standalone measurements
+
+The authors supplied `report_isolated_v6/report.html`, 63 result summaries,
+153 phase summaries, and cached measurement/routing/allocator records dated
+15 October 2026. The public snapshot contains numerical fields and neutral
+case descriptors. Article plots, tables, prose, and slides share
+`results-data.js`; JSON and CSV downloads are generated from it.
+
+- T = 2,048 per rank; D = 7,168; E = 384; top-k = 6; F = 3,072 by default,
+  with width controls 1,536/3,072/6,144. One routed layer, no shared expert,
+  TP/PP/DP = 1. The published workload dimensions follow the
+  [MoK benchmark defaults](https://github.com/cursor/mixture-of-kittens/blob/f3a8bd2432457c5a2a2ea13915f0dcd0224581e4/benchmarks/bench_mok.py).
+  All measurements in this snapshot are Dist-MoE.
+- Five 30-iteration CUDA-graph windows follow ten warmups. Each window uses
+  the maximum rank, followed by the median across windows. Forward, backward,
+  and combined medians are independently reduced; they need not add exactly.
+- Useful forward GEMM work is 6TKDF per GPU on average. Backward is 2× forward;
+  complete training is 3× forward. Useful throughput excludes padding/replay
+  FLOPs and includes communication time. It is not a hardware utilization
+  counter or a model-quality result.
+- The supplied NVIDIA GB300/Blackwell Ultra theoretical references are
+  2,500 TFLOP/s BF16, 5,000 TFLOP/s FP8, and explicitly 15,000 TFLOP/s dense
+  FP4 per GPU. The listed sparse values are not the normalization denominator.
+  HBM is 8,000 GB/s. NVLink is 1,800 GB/s bidirectional, or 900 GB/s per direction.
+  These are theoretical datasheet peaks, not benchmarked ceilings.
+- NVLink TX/RX come from a separate hardware-counter collection of at least
+  one second, converted to decimal GB/s. HBM is modeled useful bytes over
+  latency; training uses the report's coarse 3× forward byte model. It cannot
+  establish actual DRAM utilization or communication/compute overlap.
+- EP32 and EP64 training use different sites. Some allocations shared a
+  fabric and overlapped in lifetime; actual timing-window overlap is unknown.
+  The results describe their observed allocation conditions and do not
+  establish uncontended peak performance or fixed-global-batch strong scaling.
+- Training uses one slot with activation/scratch factors 8, no host backing,
+  and no capacity-triggered recompute. Arena reservations and PyTorch peak
+  allocation counters are distinct views and must not be summed.
+
+The EP64/F3072 MXFP8 policy example has equal saved-slot reservations.
+The additional Mega scratch is 341,950,464 bytes: at padded capacity R = 98,944,
+row h2 qdata is R × F = 303,955,968 bytes, and its allocated scale extent is
+4 × R × ceil(F/32) = 37,994,496 bytes. The format still has one logical E8M0
+scale per 32 values; the row allocator reserves 4× that natural extent.
+This equality is specific to the shown complete-context scratch peak; other
+shapes can have a different largest live scratch set.
+
+The packing view repeats the measured balanced EP64 BF16 footprint:
+480 MiB eligible state/layer, 28 MiB source input/layer, and a fixed 3,644 MiB
+slot. An eight-layer look-ahead reserves future inputs. Seven full states and
+one replay input use 3,388 MiB, with 256 MiB remaining. Layer start offsets are
+prefix byte sums, as in Figure 04A. The comparison of eight separate arenas
+with one shared arena is a projection using identical per-context capacities
+and sequential scratch reuse. It excludes caller weights, gradients,
+symmetric buffers, and graph-pool storage; it is not a measured stack, total
+GPU-memory saving, or measured recompute speedup.

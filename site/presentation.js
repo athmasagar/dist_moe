@@ -40,6 +40,11 @@
     { id: 'mega-pipeline', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], title: 'key-idea', setup: '#fusion-config' },
     { id: 'pipeline-prefix', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [0, 31], actions: ['0F0','2B0','0F4','0B7'], slotDisplay: 'liveness', parts: ['liveness-svg'], setup: '#slots-config' },
     { id: 'slot-reuse', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [2, 6], actions: ['2F0','2B0','0F3'], slotDisplay: 'reuse', camera: [0, 0, 1146, 406], pane: true, parts: ['slots-svg','slot-selection'] },
+    { id: 'results-inference', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,1], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="inference"]', setup: '#efficiency-config', title: 'key-idea' },
+    { id: 'results-training', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,1], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="training"]', setup: '#efficiency-config', title: 'key-idea' },
+    { id: 'results-skew', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,2], parts: ['skew-svg','skew-table'], setup: '#skew-config', title: 'key-idea' },
+    { id: 'results-width', figure: 'results-width-figure', controller: 'width', chapter: 'results', range: [0,2], parts: ['width-svg','width-table'], setup: '#width-config', title: 'key-idea' },
+    { id: 'results-memory', figure: 'results-memory-figure', controller: 'result-memory', chapter: 'results', range: [0,2], parts: ['result-memory-svg','result-memory-table'], setup: '#result-memory-config', title: 'key-idea' },
     { id: 'configuration', kind: 'code', chapter: 'start', excerpt: 'config' },
     { id: 'expert-call', kind: 'code', chapter: 'start', excerpt: 'call' },
     { id: 'reading', kind: 'resources', chapter: 'start' }
@@ -106,6 +111,7 @@
     if (scene.kind === 'resources') return 'Execution modes and documentation';
     if (scene.kind === 'code') return scene.excerpt === 'config' ? 'dist_moe.Config' : (current&&app.state.code==='memory'?'dist_moe.plan_memory':'dist_moe.routed_experts');
     const figure = figures[scene.figure];
+    if(current && scene.controller==='efficiency')return source(`[data-slide-summary="results-${app.state.resultMode}"]`).previousElementSibling.textContent;
     if (scene.title === 'precision-reference') return figure.querySelector('.inside-heading').textContent;
     if (scene.title === 'allocation') return figure.querySelector('.inside-heading').textContent;
     if (scene.title === 'costs') return figure.querySelectorAll('.inside-heading')[1].textContent;
@@ -307,6 +313,8 @@
           for(const format of ['bf16','mxfp8','nvfp4'])for(const direction of ['forward','backward'])for(const outlier of [false,true])for(const byte of [0,7,31]){
             app.state.format=format;app.state.direction=direction;app.state.quantByte=byte;$('quant-outlier').checked=outlier;app.renderPrecision();pass();
           }
+        }else if(scene.chapter==='results'){
+          window.ResultsApp.sample(scene.controller,pass);
         }else if(scene.controller==='packing'){
           for(const rank of [0,1])for(const budget of [4096,24576,35840]){app.state.packingRank=rank;app.state.packingBudget=budget;pass();}
         }else if(scene.figure==='recompute-figure'){
@@ -508,6 +516,7 @@
   }
   function scopeFor(scene){
     const f=figures[scene.figure];if(!f)return '';
+    if(scene.chapter==='results')return window.ResultsApp.scope(scene.controller,app.controllers[scene.controller].phase);
     if(scene.id==='capabilities')return source('#capability-scope').textContent;
     const text=f.querySelector('figcaption').textContent;
     let sentences;
@@ -556,7 +565,7 @@
     if(calibrating)return;
     applyCamera(scene);
     $('deck-notes-caption')?.replaceChildren(...(caption ? [cleanClone(caption)] : []));
-    const evidence=$('deck-notes-evidence');if(evidence){evidence.replaceChildren();const ids=scene.id==='precision'?['intermediate-table']:scene.id==='memory-costs'?['calculation-table']:scene.figure==='recompute-figure'?['offset-table']:scene.figure==='packing-figure'?['packing-table']:[];ids.forEach(id=>{const table=$(id);if(table)evidence.append(cleanClone(table));});}
+    const evidence=$('deck-notes-evidence');if(evidence){evidence.replaceChildren();const ids=scene.id==='precision'?['intermediate-table']:scene.id==='memory-costs'?['calculation-table']:scene.figure==='recompute-figure'?['offset-table']:scene.figure==='packing-figure'?['packing-table']:[];if(scene.chapter==='results')ids.push(scene.controller+'-table');ids.forEach(id=>{const table=$(id);if(table)evidence.append(cleanClone(table));});}
     updatePresenter();
 
   }

@@ -219,3 +219,27 @@ resolve physical CUDA mapping granularity on a GPU.
   deck passes 3,246 checks, and the revised peak-budget PDF page was rendered
   and inspected. The comparison uses the same computed slot counts, depths,
   and per-layer budgets as the ownership diagram.
+
+## Standalone result figures and shared data
+
+- Added four article figures and five shared result slides: inference and
+  training hardware references, routing skew, expert width, and arena/policy
+  behavior. The deck has 26 slides and 70 default Mega PDF builds (72 with
+  Staged). New diagrams retain their full framing across steps and modes.
+- Checked 2,988 source/export comparisons across 63 cases and 153 phase
+  summaries. Published measurements match the supplied summary and cached
+  timing windows. Script, JSON, and CSV snapshots agree. Numerical fields are
+  exported without native environment paths or infrastructure identifiers.
+- Dense theoretical references are 2.5/5/15 PFLOP/s per GPU for BF16/FP8/FP4.
+  NVLink uses 900 GB/s per direction. HBM is explicitly modeled; derived
+  busiest-rank rates are distinguished from hardware counters. The packing
+  view is explicitly a projection, not an empirical multi-layer result.
+- The full deck passes 3,040/3,037/3,037 layout checks at 1600/1280/390 px.
+  Focused result checks pass 2,098 comparisons per viewport, covering every
+  supported mode and step, numerical invariants, table coverage, remembered
+  EP settings, reset, source identity, and article restoration.
+- The printable deck passes 3,677 checks. The 70-page PDF was assembled,
+  verified for titles/counters and page dimensions, and rendered for visual
+  inspection of compute, bandwidth, skew, width, policy, and packing views.
+  Graphics and mathematical text remain vector/selectable. No GPU benchmark
+  was rerun by the website work.
