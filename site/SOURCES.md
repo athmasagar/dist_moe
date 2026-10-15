@@ -69,7 +69,7 @@ this is validation of the educational page, not GPU correctness or performance.
 
 The header uses the [official PyTorch logo assets](https://github.com/pytorch-fdn/artwork/blob/main/projects/PyTorch/info.md): the full-color/white horizontal variant for dark mode, full-color horizontal variant for light mode, and full-color icon for compact layouts. Transparent canvas margins are reduced for the header while preserving the artwork and surrounding clear space. Assets are bundled locally in `assets/`.
 
-The blog byline names Sanket Purandare. The visible copyright notice follows the Meta Platforms, Inc. and affiliates wording in the supplied repository license.
+The blog byline names Shikai Li and Sanket Purandare. The visible copyright notice follows the Meta Platforms, Inc. and affiliates wording in the supplied repository license.
 
 ## Presentation view
 

@@ -137,8 +137,8 @@ scratch factor 1.5, and total scratch factor 2. For BF16 this gives 25.85 GiB
 of saved slots, 6.94 GiB of device scratch, and 2.31 GiB of host overflow.
 The figure scales these regions from their calculated bytes.
 
-The page credits Sanket Purandare as the blog author and includes the Meta
-copyright notice. The header uses official PyTorch artwork: a horizontal logo
+The page credits Shikai Li and Sanket Purandare as the blog authors and includes
+the Meta copyright notice. The header uses official PyTorch artwork: a horizontal logo
 on desktop and its icon on smaller screens.
 
 Dark is the default. Light mode persists after an explicit toggle. Use Previous,

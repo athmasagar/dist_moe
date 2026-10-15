@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="An illustrated guide to Dist-MoE’s speed-of-light distributed Mixture-of-Experts kernels: symmetric memory, NVLink, tensor cores, quantization, activation planning, and pipeline lifetimes.">
   <meta name="theme-color" content="#0c0e12">
-  <meta name="author" content="Sanket Purandare">
+  <meta name="author" content="Shikai Li, Sanket Purandare">
   <meta name="copyright" content="Meta Platforms, Inc. and affiliates.">
   <title>Dist-MoE · Speed-of-light distributed expert kernels</title>
   <script>if(new URLSearchParams(location.search).get('view')==='print'){document.documentElement.classList.add('deck-print-mode');document.querySelector('meta[name="viewport"]').content='width=1440';}</script>
@@ -20,7 +20,7 @@
   <h1>Dist-MoE</h1>
   <p class="deck">Speed-of-light distributed<br class="desktop-break"> Mixture-of-Experts kernels.</p>
   <p class="intro">Fused communication–compute pipelines combine token dispatch, grouped expert GEMMs, and token combine for high-throughput training and inference.</p>
-  <p class="author-byline">Written by <strong>Sanket Purandare</strong></p>
+  <p class="author-byline">Written by <strong>Shikai Li, Sanket Purandare</strong></p>
   <div class="article-meta"><span>SM100 and newer GPUs</span><span>BF16 · MXFP8 · NVFP4</span><span><i class="status-dot"></i> Interactive figures · step through and inspect</span></div>
   <div class="moe-primer" id="moe-primer">
     <h2>Mixture-of-Experts, before GPU placement</h2>
