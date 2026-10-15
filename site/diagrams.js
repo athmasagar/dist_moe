@@ -199,8 +199,8 @@ window.Views = (() => {
     const math={
       xg:['xg = gather routed x','grad_xg = W13^T grad_h1','grad_W13 += grad_h1 xg^T'],
       h1:['h1 = W13 xg = [g; u]','grad_h1 = [dg; du]','Backward needs the gate/up values'],
-      h2:['h2 = SiLU(g) * u','grad_h2 = W2^T grad_h3','grad_W2 += grad_h3 h2^T'],
-      h3:['h3 = W2 h2','grad_h3 = score * grad_y','grad_score = grad_y^T h3'],
+      h2:['h2 = SiLU(g) ⊙ u','grad_h2 = W2^T grad_h3','grad_W2 += grad_h3 h2^T'],
+      h3:['h3 = W2 h2','grad_h3 = score × grad_y','grad_score = grad_y^T h3'],
       x:['x = caller input','Replay gathers x into expert rows','grad_x = sum routed grad_xg'],
       row:['Qrow(xg), Qrow(h2)','W13 and W2 forward operands','Row bytes can be reused after MMA']
     };
@@ -210,16 +210,16 @@ window.Views = (() => {
     const x0=560,unit=107.5;let s=t(16,20,'FORWARD PRODUCER / BACKWARD DEPENDENCE','small bold');
     const headers=[['W13','forward'],['SwiGLU','forward'],['W2','forward'],['Setup /','rebuild'],['W2','grad_h2'],['SwiGLU','grad_h1'],['W13','grad_xg'],['Release','slot']];
     headers.forEach((h,i)=>{s+=t(x0+i*unit+unit/2,20,h[0],'dependency-heading','middle')+t(x0+i*unit+unit/2,41,h[1],'dependency-subhead','middle');});
-    s+=l(x0+3*unit-4,51,x0+3*unit-4,501,'line','stroke-dasharray="3 3"');
+    s+=l(x0+3*unit-4,51,x0+3*unit-4,565,'line','stroke-dasharray="3 3"');
     rows.forEach((row,i)=>{
-      const y=65+i*86;s+=t(16,y+15,row[0],'dependency-name');
-      math[row[3]].forEach((equation,j)=>s+=t(16,y+37+j*20,equation,'equation-text'+(j===0?' blue-text':' muted')));
+      const y=65+i*100;s+=t(16,y+15,row[0],'dependency-name');
+      math[row[3]].forEach((equation,j)=>s+=t(j===0?260:16,y+[15,45,77][j],equation,(j===0||equation.includes('=')?'equation-text':'dependency-detail')+(j===0?' blue-text':' muted')));
       s+=l(x0,y+67,1420,y+67);
       for(const[a,b,color]of row[1])s+=r(x0+a*unit,y+13,(b-a)*unit-8,29,`${color}-fill`);
       const xx=x0+(row[2]+.5)*unit;s+=`<path d="M${xx},${y+7} l6,8 -6,8 -6,-8Z" fill="${C('purple')}"/>`;
     });
-    s+=r(16,509,1408,69,'purple-fill')+t(29,531,"dg = grad_h2 * u * SiLU'(g);  du = grad_h2 * SiLU(g)",'equation-text')+t(29,558,"SiLU'(g) = sigmoid(g) * (1 + g * (1 - sigmoid(g)))",'equation-text');
-    s+=t(16,600,'xg = x_gathered · column-vector math for one route · WGRAD sums expert rows · owner grad_x sums routes','small muted');
+    s+=r(16,575,1408,69,'purple-fill')+t(29,597,'dg = grad_h2 ⊙ u ⊙ SiLU′(g);  du = grad_h2 ⊙ SiLU(g)','equation-text')+t(29,624,'SiLU′(g) = sigmoid(g) ⊙ (1 + g ⊙ (1 − sigmoid(g)))','equation-text');
+    s+=t(16,666,'xg = x_gathered · column-vector math for one route · WGRAD sums expert rows · owner grad_x sums routes','small muted');
     return finish(s);
   }
   function kernel(p,bm,bn,tail,kSlice){start('kernel');const bk=64,valid=tail?Math.floor(bm*.703125):bm,scale=140/256,aw=bk*scale,ah=bm*scale,bw=bn*scale,bh=bk*scale,cw=bn*scale,ch=bm*scale;let s='';

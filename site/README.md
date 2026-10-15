@@ -26,7 +26,7 @@ Deploy these files and the artwork folder together to a static host:
 - `presentation.css`
 - `pdf-export.js`
 - `pdf-export.css`
-- `assets/` (the bundled official PyTorch logo variants)
+- `assets/` (official PyTorch logos, STIX Two Math, and its font license)
 
 There is no build step or third-party browser dependency. Fonts, SVG diagrams,
 syntax highlighting, numerical examples, and animation run locally. The page

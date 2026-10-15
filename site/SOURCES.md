@@ -70,7 +70,7 @@ this is validation of the educational page, not GPU correctness or performance.
 The motivation table is shared by the article and presentation slide 3. Its
 source-evidence fold links to the reviewed public snapshots: Dist-MoE
 `60ce816`, MoK `f3a8bd2`, Comet/Flux `19831ca`, and Mega MoE/DeepGEMM `1fc9c66`.
-It preserves the unconfirmed CUDA graph entries for MoK and Mega MoE, scopes
+It records CUDA graph compatibility for MoK and Mega MoE, scopes
 Comet's graph limitation to the reviewed dynamic-routing path, distinguishes
 MoK macrobatch replay from Dist-MoE's layer-budget policy, and distinguishes
 Comet training primitives from Mega MoE's forward-only fused API. The additional
@@ -82,6 +82,11 @@ comparison, with no measured throughput ranking.
 The header uses the [official PyTorch logo assets](https://github.com/pytorch-fdn/artwork/blob/main/projects/PyTorch/info.md): the full-color/white horizontal variant for dark mode, full-color horizontal variant for light mode, and full-color icon for compact layouts. Transparent canvas margins are reduced for the header while preserving the artwork and surrounding clear space. Assets are bundled locally in `assets/`.
 
 The blog byline names Shikai Li and Sanket Purandare. The visible copyright notice follows the Meta Platforms, Inc. and affiliates wording in the supplied repository license.
+
+Figure 04B's equations use the bundled STIX Two Math Regular typeface. The
+unmodified font preserves its embedded STIX Project copyright and SIL Open
+Font License 1.1 notices. The full license is bundled in `assets/STIX-OFL.txt`.
+Diagram labels and descriptive annotations use the guide's ordinary text font.
 
 ## Presentation view
 

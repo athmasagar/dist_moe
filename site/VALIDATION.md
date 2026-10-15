@@ -173,7 +173,7 @@ resolve physical CUDA mapping granularity on a GPU.
 ## Source-reviewed motivation comparison
 
 - The article and slide 3 use the same live comparison table. All six rows,
-  four implementation columns, and three qualifications remain visible.
+  four implementation columns, and two qualifications remain visible.
   Speaker notes and the article evidence fold contain 14 pinned source links.
 - The 22-slide deck passes the full 58-step layout sequence at 1600, 1280,
   and 390 px. Focused interaction checks cover source identity, table bounds,

@@ -35,7 +35,7 @@
     { id: 'precision', figure: 'precision-figure', chapter: 'precision', parts: ['intermediate-table'], title: 'precision-reference', table: true },
     { id: 'allocation', figure: 'memory-figure', chapter: 'memory', parts: ['memory-policy-summary','consumption-svg', 'memory-stats'], setup: '#memory-shape', title: 'allocation', builds: ['#memory-examples [data-memory-example="saved"]','#memory-examples [data-memory-example="scratch"]','#memory-examples [data-memory-example="fixed"]'] },
     { id: 'memory-costs', figure: 'memory-figure', chapter: 'memory', parts: ['memory-svg'], setup: '#memory-config', title: 'costs' },
-    { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['recompute-svg', 'lifetime-legend'], prepare: 'lifetime', title: 'key-idea', setup: '.config-summary', bounds: [0,0,1440,610] },
+    { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['recompute-svg', 'lifetime-legend'], prepare: 'lifetime', title: 'key-idea', setup: '.config-summary', bounds: [0,0,1440,690] },
     { id: 'layer-packing', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [0, 8], parts: ['packing-svg'], display: 'packing', title: 'key-idea', setup: '#packing-brief' },
     { id: 'gpu-tile', figure: 'kernel-figure', controller: 'kernel', chapter: 'kernels', range: [0, 5], title: 'key-idea', setup: '#tile-address' },
     { id: 'mega-pipeline', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], title: 'key-idea', setup: '#fusion-config' },
@@ -79,7 +79,7 @@
       node.querySelectorAll?.('svg[id]').forEach(svg => {
         app.finishTransition(svg);
         const old = savedCamera.get(svg);
-        if (svg.id==='recompute-svg') svg.setAttribute('viewBox',app.state.retentionDisplay==='lifetime'?'0 0 1440 610':'0 0 1040 400');
+        if (svg.id==='recompute-svg') svg.setAttribute('viewBox',app.state.retentionDisplay==='lifetime'?'0 0 1440 690':'0 0 1040 400');
         else if (old) svg.setAttribute('viewBox', old);
         svg.querySelectorAll('.deck-camera-clipped').forEach(n => n.classList.remove('deck-camera-clipped'));
         svg.classList.remove('deck-map');
