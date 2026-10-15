@@ -119,7 +119,7 @@ window.Views = (() => {
     }
     s+=t(520,458,['One source row has two route slots; the caller supplies expert IDs and scores.','Blue arrows read a peer row over NVLink; green arrows read a local row.','Result address = owner rank + token index + top-k slot; expert order is different.','The owner reduces each token’s route slots. Two of the 256 output components are shown.'][step],'small muted','middle');return finish(s);
   }
-  function consumption(c,plan){start('consumption');const total=plan.virtual,act=plan.activation,host=plan.hostScratch,hot=plan.deviceScratch,scale=1008/total;let s=t(16,22,'One activation-buffer address range · low address → high address','bold')+t(1024,45,`Combined allocation: ${bytes(total)}`,'small muted','end');
+  function consumption(c,plan){start('consumption');const total=plan.virtual,act=plan.activation,host=plan.hostScratch,hot=plan.deviceScratch,scale=1008/total;let s=t(16,22,c.vmm?`VMM on: one GPU virtual range · ${host?'HBM + pinned host backing':'device HBM backing'}`:'VMM off: one GPU allocation · device HBM only','bold')+t(1024,45,`Combined allocation: ${bytes(total)}`,'small muted','end');
     const regions=[{name:'Activation slots',value:act,color:'green',location:'Device HBM',detail:`${c.N} × ${bytes(plan.slot)} per slot`},{name:'Host overflow scratch',value:host,color:'purple',location:c.vmm?'Pinned host physical pages':'VMM disabled',detail:'Scratch beyond the hot device tier'},{name:'Hot shared scratch',value:hot,color:'amber',location:'Device HBM',detail:'Reused across sequential local calls'}];
     let x=16;for(const region of regions){const width=region.value*scale;if(width>0)s+=`<g><title>${esc(region.name+': '+num(region.value)+' bytes')}</title>`+r(x,65,width,42,`${region.color}-fill`,'rx="0"')+(width>180?t(x+width/2,92,region.name,'small bold','middle'):'')+'</g>';x+=width;}
     s+=r(16,65,1008,42,'','fill="none" stroke="var(--line)"')+t(16,127,'saved slots grow →','small green-text')+t(1024,127,'← scratch grows from the high end','small amber-text','end');
@@ -303,8 +303,9 @@ window.Views = (() => {
     for(let c=0;c<3;c++){const y=390+c*45,st=step(c);s+=t(20,y+25,`chunk ${c}${c===focus?' ←':''}`,c===focus?'mono amber-text':'mono');Object.values(st).forEach((at,i)=>{const state=p>at?'done':p===at?'working':'waiting',color=['blue','orange','green','orange','blue'][i];s+=r(200+i*164,y,150,34,p>=at?`${color}-fill`:'box',p>at?'opacity=".65"':'')+t(213+i*164,y+23,state,'small');});}
     s+=t(20,530,'Ready counters order reads; consumption credits protect stage reuse. Storage remains context-owned and allocated.','small purple-text');return finish(s);
   }
+  const slotColors=['blue','green','orange','purple','pink','cyan'];
   function liveness(p){
-    start('liveness');const stage=Moe.lifetimes('stage'),microbatch=Moe.lifetimes('microbatch'),action=Moe.schedule[p],stageId=Number(action[0]),kind=action[1],mb=Number(action.slice(2));
+    start('liveness');const stage={...Moe.lifetimes('stage'),...Moe.intervals('stage')},microbatch={...Moe.lifetimes('microbatch'),...Moe.intervals('microbatch')},action=Moe.schedule[p],stageId=Number(action[0]),kind=action[1],mb=Number(action.slice(2));
     const pairRemainder=stage.list.filter(iv=>iv.mb===mb&&iv.start<=p&&iv.end>p+1),whole=microbatch.list.find(iv=>iv.mb===mb),stillLive=whole.start<=p&&whole.end>p+1;
     const summaries={
       stage:[`${action} ${kind==='F'?'starts':'ends'} (stage ${stageId}, microbatch ${mb}).`,stage.counts[p]===0?'No stage–microbatch lifetimes remain live.':kind==='B'&&pairRemainder.length?`Stage ${pairRemainder[0].stage} / MB ${mb} is still a live pair.`:stage.counts[p]===stage.peak?`${stage.peak} pairs overlap: the whole-trace maximum.`:`${stage.counts[p]} stage–microbatch pairs now overlap.`],
@@ -317,29 +318,32 @@ window.Views = (() => {
       const startX=x+68,step=408/32;s+=r(x,40,492,533,'panel');
       s+=t(x+14,63,mode==='stage'?'Stage–microbatch lifetimes':'Whole-microbatch lifetimes','bold');
       s+=t(x+14,87,`Live: ${info.counts[p]}`,'large bold')+t(x+278,87,`Max live: ${info.peak}`,'large bold');
-      if(mode==='stage')s+=r(x+14,104,11,11,'blue-fill')+t(x+31,115,'Stage 0','small')+r(x+134,104,11,11,'orange-fill')+t(x+151,115,'Stage 2','small');
-      else s+=r(x+14,104,11,11,'purple-fill')+t(x+31,115,'Earliest local F → last local B','small');
+      s+=t(x+14,116,'Slots','small muted');
+      for(let slot=0;slot<info.slots;slot++){const xx=x+70+slot*65,color=slotColors[slot];s+=r(xx,105,11,11,`${color}-fill`)+t(xx+17,116,`S${slot}`,'small');}
       for(let i=0;i<=32;i+=4)s+=t(startX+i*step,136,String(i),'tiny muted','middle');
       for(let b=0;b<8;b++){
         const y=151+b*31;s+=t(x+14,y+18,`MB ${b}`,'small bold')+l(startX,y+28,startX+408,y+28);
         for(const iv of info.list.filter(iv=>iv.mb===b)){
-          const live=iv.start<=p&&iv.end>p+1,color=mode==='microbatch'?'purple':iv.stage===0?'blue':'orange',yy=mode==='microbatch'?y+6:y+(iv.stage===0?2:15),h=mode==='microbatch'?17:10;
-          s+=r(startX+iv.start*step,yy,(iv.end-iv.start)*step-1,h,`${color}-fill`,live?'stroke-width="2"':iv.start>p?'opacity=".2"':'opacity=".4"');
+          const live=iv.start<=p&&iv.end>p+1,color=slotColors[iv.slot],yy=mode==='microbatch'?y+6:y+(iv.stage===0?2:15),h=mode==='microbatch'?17:10;
+          if(mode==='stage')s+=t(startX-6,yy+9,String(iv.stage),'tiny muted','end');
+          s+=r(startX+iv.start*step,yy,(iv.end-iv.start)*step-1,h,`${color}-fill`,`data-lifetime-policy="${mode}" data-slot="${iv.slot}" data-owner="${iv.key}" ${live?'stroke-width="2"':iv.start>p?'opacity=".2"':'opacity=".4"'}`);
         }
       }
       const pointer=startX+(p+1)*step;s+=l(pointer,142,pointer,402,'amber','stroke-dasharray="4 3"');
       s+=t(x+14,418,'LIVE AFTER EACH ACTION','small bold');const baseline=487,scale=40/sharedPeak,peakY=baseline-info.peak*scale;
-      s+=l(startX,peakY,startX+408,peakY,mode==='stage'?'blue':'purple','stroke-dasharray="3 4"')+t(x+14,peakY+4,`${info.peak} max`,'tiny muted');
-      info.counts.forEach((n,i)=>{s+=`<rect x="${startX+i*step}" y="${baseline-n*scale}" width="${step-1}" height="${n*scale}" fill="${C(i===p?'amber':mode==='stage'?'blue':'purple')}" opacity="${i>p?.25:.85}"/>`;});
+      s+=l(startX,peakY,startX+408,peakY,'line','stroke-dasharray="3 4"')+t(x+14,peakY+4,`${info.peak} max`,'tiny muted');
+      info.counts.forEach((n,i)=>{const live=info.list.filter(iv=>iv.start<=i&&iv.end>i+1).sort((a,b)=>a.slot-b.slot);live.forEach((iv,j)=>s+=`<rect x="${startX+i*step}" y="${baseline-(j+1)*scale}" width="${step-1}" height="${scale}" fill="${C(slotColors[iv.slot])}" opacity="${i>p?.25:.85}"/>`);});
       s+=l(pointer,438,pointer,493,'amber','stroke-dasharray="4 3"')+t(startX+(p+.5)*step,baseline-info.counts[p]*scale-5,String(info.counts[p]),'small bold','middle');
       summaries[mode].forEach((line,i)=>s+=t(x+14,531+i*22,line,'small'));
     }
-    s+=t(16,602,'MB means microbatch. Counts follow completed actions; lifetimes end after terminal backward.','small muted');
+    s+=t(16,602,'Color = slot, reused after release. Left rows label stages 0 / 2; right rows span all local stages.','small muted');
     return {svg:finish(s),stage,microbatch,summaries,takeaway};
   }
   function slots(policy,p){start('slots');const info=Moe.intervals(policy),x0=129,step=60;let s='',sticky='';
-    Moe.schedule.forEach((a,i)=>{const x=x0+i*step;s+=t(x+25,24,String(i),'small muted','middle')+r(x,37,52,32,i===p?'amber-fill':a[1]==='F'?(a[0]==='0'?'blue-fill':'orange-fill'):'purple-fill',i>p?'opacity=".4"':'')+t(x+26,59,a,'mono','middle');});
-    for(let slot=0;slot<info.slots;slot++){const y=104+slot*47;sticky+=r(0,y-5,122,48,'panel','stroke="none"')+t(15,y+24,`SLOT ${slot}`,'mono muted');s+=l(x0,y+36,2050,y+36);info.list.filter(iv=>iv.slot===slot).forEach(iv=>{const x=x0+iv.start*step,w=(iv.end-iv.start)*step-7,live=iv.start<=p&&iv.end>p+1,acquire=iv.start===p;const label=policy==='stage'?`stage ${iv.stage} / mb ${iv.mb}`:`mb ${iv.mb} · all local stages`;s+=r(x,y,w,34,acquire?'amber-fill':`${['blue','green','orange','purple','amber','blue'][slot%6]}-fill`,live||acquire?'':iv.start>p?'opacity=".2"':'opacity=".45"')+t(x+10,y+23,label,'small','start','data-owner-label');});}
+    Moe.schedule.forEach((a,i)=>{const x=x0+i*step;s+=t(x+25,24,String(i),'small muted','middle')+r(x,37,52,32,i===p?'amber-fill':'box',i>p?'opacity=".4"':'')+t(x+26,59,a,'mono','middle');});
+    s+=t(x0,93,'Outline = acquire · dashed line = completed action','small muted');
+    sticky+=t(15,93,'COLOR = SLOT','small muted');
+    for(let slot=0;slot<info.slots;slot++){const y=104+slot*47,color=slotColors[slot];sticky+=r(0,y-5,122,48,'panel','stroke="none"')+r(12,y+12,11,11,`${color}-fill`)+t(31,y+24,`SLOT ${slot}`,'mono');s+=l(x0,y+36,2050,y+36);info.list.filter(iv=>iv.slot===slot).forEach(iv=>{const x=x0+iv.start*step,w=(iv.end-iv.start)*step-7,live=iv.start<=p&&iv.end>p+1,acquire=iv.start===p;const label=policy==='stage'?`stage ${iv.stage} / mb ${iv.mb}`:`mb ${iv.mb} · all local stages`;s+=r(x,y,w,34,`${color}-fill${acquire?' slot-acquired':''}`,`data-slot="${slot}" data-owner="${iv.key}" ${live||acquire?'':iv.start>p?'opacity=".2"':'opacity=".45"'}`)+t(x+10,y+23,label,'small','start','data-owner-label');});}
     const counts=Moe.lifetimes(policy).counts;
     s+=l(x0+(p+1)*step-5,76,x0+(p+1)*step-5,104+info.slots*47,'amber','stroke-dasharray="4 4"')+`<g data-sticky-slot>${r(0,0,122,78,'panel','stroke="none"')}${t(15,31,'ACTION','small muted')}${sticky}</g>`;return {svg:finish(s),info,counts,height:124+info.slots*47};
   }

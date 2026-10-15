@@ -67,10 +67,12 @@ body.presentation-mode{overflow:hidden;height:100vh}
 .deck-author-name{white-space:nowrap}.deck-author-separator{margin-inline:.65em}
 .deck-static{align-self:center;width:100%;max-width:1700px;font-size:31px;line-height:1.55}
 .deck-static>p{max-width:none;margin:20px 0 45px}
-.deck-math .equation{border:0;background:none;max-width:none;padding:25px 0;margin:0}
-.deck-math .equation .small-label{font-size:21px}
-.deck-math .equation p{font-size:38px;line-height:1.7;max-width:none;white-space:normal}
-.deck-math .equation small{font-size:26px;line-height:1.6;margin-top:20px}
+.deck-canvas[data-kind=moe] .deck-visual{flex-direction:column;gap:16px}
+.deck-canvas[data-kind=moe] .deck-visual>figure{flex:1;min-height:0;height:auto}
+.deck-visual>.equation{flex:none;border:0;border-top:1px solid var(--line);background:none;max-width:none;width:100%;padding:15px 0 0;margin:0}
+.deck-visual>.equation .small-label{font-size:18px}
+.deck-visual>.equation p{font-size:32px;line-height:1.4;max-width:none;white-space:normal;margin:8px 0}
+.deck-visual>.equation small{font-size:20px;line-height:1.4;margin:0}
 .deck-visual>.orientation-panel{border:0;background:transparent;max-width:none;width:100%;margin:0;padding:0;gap:90px;align-items:center;grid-template-columns:1fr 1fr}
 .deck-visual>.orientation-panel h4{font-size:32px;margin:0 0 18px;font-weight:600}
 .deck-visual>.orientation-panel p{font-size:26px;line-height:1.5;margin:17px 0;max-width:none}

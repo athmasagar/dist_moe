@@ -72,6 +72,10 @@ svg .edge-payload-label{pointer-events:none}svg .edge-label-bg{stroke-width:1;st
 .phase-caption .packing-step-summary{display:block;margin:5px 0}
 
 svg.liveness-visual{font-size:16px}.liveness-visual .small{font-size:15px}.liveness-visual .tiny{font-size:13px}.liveness-visual .large{font-size:20px}
+:root{--pink-soft:#382333;--cyan:#78d6e6;--cyan-soft:#163239}
+:root.light{--pink-soft:#fceaf3;--cyan:#16677b;--cyan-soft:#e7f7fa}
+svg .pink-fill{fill:var(--pink-soft);stroke:var(--pink)}svg .cyan-fill{fill:var(--cyan-soft);stroke:var(--cyan)}
+svg .slot-acquired{stroke:var(--ink);stroke-width:2.5}
 
 .motivation{margin:56px 0 48px}.motivation>h2{margin-bottom:22px}
 .capability-table{table-layout:fixed;min-width:920px;width:100%;font-size:16px;line-height:1.4}

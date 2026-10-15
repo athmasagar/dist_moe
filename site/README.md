@@ -35,7 +35,7 @@ uses modern browser APIs including native dialogs. Publishing is a separate step
 
 ## Browser presentation
 
-The **Present** link switches the article into a 22-slide presentation. The
+The **Present** link switches the article into a 21-slide presentation. The
 deck uses a 16:9 canvas with stable diagram framing and the same live controls.
 A generic MoE setup precedes the capability comparison (slide 3) and GPU
 placement. The comparison table and its visible qualifications come directly
@@ -85,7 +85,7 @@ parameters and modes; step navigation stays in the presentation controls.
 PDF export follows the same curated steps as the presentation, including the
 short pipeline sequences. Each page carries its slide, step, and PDF page number,
 the current step's summary, and its fixed diagram framing. The default Mega
-deck produces 58 pages; selecting Staged produces 60. Static slides appear
+deck produces 57 pages; selecting Staged produces 59. Static slides appear
 once. Shape, format, packing, tile, and other figure settings carry into the print
 tab. The capacity-policy slide intentionally walks all three shared presets.
 The print tab keeps SVG graphics and text; it does not rasterize the slides.
@@ -139,6 +139,17 @@ The default allocation example uses a slot capacity factor of 0.35, device
 scratch factor 1.5, and total scratch factor 2. For BF16 this gives 25.85 GiB
 of saved slots, 6.94 GiB of device scratch, and 2.31 GiB of host overflow.
 The figure scales these regions from their calculated bytes.
+
+The capacity-policy slide walks three shared presets: more saved state,
+less saved state with VMM overflow scratch, and an exact activation cap.
+The second uses activation factor 0.5, device scratch factor 4, and total
+scratch factor 16. The diagram shows the hot HBM tier and pinned host backing
+within one GPU virtual address range. The other two presets disable VMM.
+
+The setup slide includes the article's typeset expert equations beside the
+routing explanation. Pipeline diagrams use one fixed color per reusable slot
+under each policy; stage IDs remain text labels. An outline marks acquisition
+without changing the slot color.
 
 The page credits Shikai Li and Sanket Purandare as the blog authors and includes
 the Meta copyright notice. The header uses official PyTorch artwork: a horizontal logo

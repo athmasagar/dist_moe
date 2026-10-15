@@ -11,7 +11,7 @@
     title: source('h1'), tagline: source('.deck'), intro: source('.intro'),
     author: source('.author-byline'), brand: document.querySelector('.wordmark'),
     copyright: source('.copyright'), outline: source('.reading-map'),
-    mlp: source('#precision .equation'), mlpIntro: source('#precision > p'),
+    mlp: source('#precision .equation'),
     orientation: source('#orientation-panel'), resources: source('.source-grid'),
     support: source('.support-table'), code: source('.code-block')
   };
@@ -29,7 +29,6 @@
     { id: 'assignments', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 0] },
     { id: 'expert-rows', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [1, 1] },
     { id: 'return-slots', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [2, 3] },
-    { id: 'expert-math', kind: 'mlp', chapter: 'precision' },
     { id: 'quantization', figure: 'precision-figure', chapter: 'precision', parts: ['precision-svg', 'quant-detail'] },
     { id: 'quantization-axis', kind: 'orientation', chapter: 'precision' },
     { id: 'precision', figure: 'precision-figure', chapter: 'precision', parts: ['intermediate-table'], title: 'precision-reference', table: true },
@@ -46,7 +45,7 @@
     { id: 'reading', kind: 'resources', chapter: 'start' }
   ];
 
-  const sceneAliases = {'dynamic-recompute':'layer-packing',offsets:'layer-packing','gather-tiles':'gpu-tile','tensor-cores':'gpu-tile','warp-groups':'mega-pipeline','chunk-readiness':'mega-pipeline'};
+  const sceneAliases = {'expert-math':'moe','dynamic-recompute':'layer-packing',offsets:'layer-packing','gather-tiles':'gpu-tile','tensor-cores':'gpu-tile','warp-groups':'mega-pipeline','chunk-readiness':'mega-pipeline'};
   /** Preserve links to examples that now share one complete slide. */
   function sceneIndex(id) { return scenes.findIndex(scene=>scene.id===(sceneAliases[id]||id)); }
 
@@ -103,7 +102,6 @@
   }
   function titleFor(scene, current = false) {
     if (scene.kind === 'cover') return original.title.textContent;
-    if (scene.kind === 'mlp') return original.mlp.querySelector('.small-label').textContent.split(' · ')[0];
     if (scene.kind === 'orientation') return source('#precision > h3').textContent;
     if (scene.kind === 'resources') return 'Execution modes and documentation';
     if (scene.kind === 'code') return scene.excerpt === 'config' ? 'dist_moe.Config' : (current&&app.state.code==='memory'?'dist_moe.plan_memory':'dist_moe.routed_experts');
@@ -383,6 +381,10 @@
       if(scene.builds)setBuild(scene,lastStep?scene.builds.length-1:0);
       if (c) c.set(lastStep ? range(scene)[1] : range(scene)[0]);
       figure.querySelectorAll('svg[id]').forEach(app.finishTransition);
+      if (scene.id === 'moe') {
+        move(original.mlp, $('deck-visual'));
+        original.mlp.classList.add('deck-part');
+      }
 
     } else if (scene.kind === 'cover') {
       const box = document.createElement('div'); box.className = 'deck-cover';
@@ -399,9 +401,6 @@
       });
       box.append(author);
       $('deck-visual').append(box);
-    } else if (scene.kind === 'mlp') {
-      const box = document.createElement('div'); box.className = 'deck-static deck-math';
-      box.append(cleanClone(original.mlpIntro), cleanClone(original.mlp)); $('deck-visual').append(box);
     } else if (scene.kind === 'orientation') {
       move(original.orientation, $('deck-visual'));
     } else if (scene.kind === 'resources') {

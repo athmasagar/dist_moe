@@ -193,3 +193,18 @@ resolve physical CUDA mapping granularity on a GPU.
   The printable deck passes 3,138 layout and glyph-bound checks. The exported
   equation page was rendered and inspected; its mathematical text remains
   selectable in the PDF.
+
+## Combined setup, VMM preset, and stable slot colors
+
+- Removed the separate expert-math slide. Slide 2 uses the original article
+  equation node; navigation restores it to the precision section. The deck
+  now has 21 slides and 57 default Mega builds (59 with Staged).
+- The full sequence passes layout checks at 1600, 1280, and 390 px.
+  Focused interactions check all three capacity presets, VMM backing and
+  generated configuration, shared-source restoration, unique slot colors,
+  color agreement across both lifetime policies and both diagrams, and
+  focused/full framing through slot transitions.
+- The 57-page printable deck passes 3,238 layout, glyph, and reference checks.
+  Rendered PDF pages were inspected for the combined setup, host VMM example,
+  maximum liveness, and physical-slot reuse. Page counters and slide titles
+  were verified after assembly. Text and equations remain selectable.
