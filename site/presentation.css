@@ -64,6 +64,7 @@ body.presentation-mode{overflow:hidden;height:100vh}
 .deck-cover p.deck{font-size:54px;line-height:1.35;letter-spacing:-.5px;max-width:1550px;margin:0 0 34px}
 .deck-cover p.intro{font-size:30px;line-height:1.5;max-width:1500px;margin:0 0 30px}
 .deck-cover .author-byline{font-size:28px;margin:0}
+.deck-author-name{white-space:nowrap}.deck-author-separator{margin-inline:.65em}
 .deck-static{align-self:center;width:100%;max-width:1700px;font-size:31px;line-height:1.55}
 .deck-static>p{max-width:none;margin:20px 0 45px}
 .deck-math .equation{border:0;background:none;max-width:none;padding:25px 0;margin:0}

@@ -385,7 +385,17 @@
     } else if (scene.kind === 'cover') {
       const box = document.createElement('div'); box.className = 'deck-cover';
       [original.title, original.tagline, original.intro].forEach(node => box.append(cleanClone(node)));
-      const author=cleanClone(original.author);author.textContent=original.author.querySelector('strong')?.textContent||original.author.textContent.replace(/^Written by\s+/i,'');box.append(author);
+      const author = cleanClone(original.author);
+      const names = (original.author.querySelector('strong')?.textContent || original.author.textContent.replace(/^Written by\s+/i, '')).split(',').map(name => name.trim());
+      author.replaceChildren();
+      names.forEach((name, i) => {
+        if (i) {
+          const separator = document.createElement('span'); separator.className = 'deck-author-separator'; separator.textContent = ' · ';
+          author.append(separator);
+        }
+        const credit = document.createElement('span'); credit.className = 'deck-author-name'; credit.textContent = name; author.append(credit);
+      });
+      box.append(author);
       $('deck-visual').append(box);
     } else if (scene.kind === 'mlp') {
       const box = document.createElement('div'); box.className = 'deck-static deck-math';
