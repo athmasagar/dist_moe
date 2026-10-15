@@ -26,9 +26,10 @@ Deploy these files and the artwork folder together to a static host:
 - `presentation.css`
 - `pdf-export.js`
 - `pdf-export.css`
-- `assets/` (official PyTorch logos, STIX Two Math, and its font license)
+- `assets/` (official PyTorch logos, bundled KaTeX, fonts, and licenses)
 
-There is no build step or third-party browser dependency. Fonts, SVG diagrams,
+There is no build step or external browser dependency. KaTeX and its fonts are
+bundled locally for mathematical typesetting. Fonts, SVG diagrams,
 syntax highlighting, numerical examples, and animation run locally. The page
 uses modern browser APIs including native dialogs. Publishing is a separate step.
 

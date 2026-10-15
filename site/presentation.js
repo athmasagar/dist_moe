@@ -452,6 +452,7 @@
       }
       if (svg.id === 'slots-svg') svg.querySelector('[data-sticky-slot]')?.setAttribute('transform', `translate(${x},0)`);
       svg.classList.remove('deck-map');
+      window.Views.positionMath(svg);
     }
     $('deck-fit').hidden = !scene.camera;
     $('deck-fit').textContent = fullView ? 'Focused view · V' : 'Full diagram · V';

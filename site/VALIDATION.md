@@ -182,3 +182,14 @@ resolve physical CUDA mapping granularity on a GPU.
   appears once in either sequence. The default print-layout audit passes
   2,911 checks. The rendered comparison PDF page was reviewed with all columns,
   qualifiers, footer counts, and source-review date intact.
+
+## KaTeX equation typography
+
+- Figure 04B uses locally bundled KaTeX and fonts. Tests cover all four
+  BF16/MXFP8 and save/recompute combinations at desktop and narrow sizes,
+  including equation bounds, tensor-label spacing, address-view cleanup,
+  article restoration, and MathML output.
+- The full 58-step deck passes layout checks at 1600, 1280, and 390 px.
+  The printable deck passes 3,138 layout and glyph-bound checks. The exported
+  equation page was rendered and inspected; its mathematical text remains
+  selectable in the PDF.

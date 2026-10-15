@@ -15,6 +15,44 @@ window.Views = (() => {
     return html;
   }
   const t=(x,y,s,cls='',anchor='start',extra='')=>`<text x="${x}" y="${y}" class="${cls}" text-anchor="${anchor}" ${extra}>${mathSVG(s)}</text>`;
+  const equationCache=new Map();
+  /** Record shared TeX and its baseline in SVG coordinates. */
+  function equation(x,y,tex,cls='',size=26,width=520){
+    return `<g class="math-equation ${cls}" data-tex="${esc(tex)}" data-x="${x}" data-baseline="${y}" data-size="${size}" data-width="${width}"></g>`;
+  }
+  const mathLayers=new WeakMap();
+  /** Match the equation layer to its SVG viewport, including scroll and slide scaling. */
+  function positionMath(svg){
+    const entry=mathLayers.get(svg);if(!entry)return;
+    const parent=svg.parentElement,box=svg.getBoundingClientRect(),container=parent.getBoundingClientRect(),view=svg.viewBox.baseVal;
+    if(!container.width||!container.height||!view.width)return;
+    const sx=parent.clientWidth/container.width,sy=parent.clientHeight/container.height;
+    const scale=Math.min(svg.clientWidth/view.width,svg.clientHeight/view.height);
+    const left=(box.left-container.left)*sx+parent.scrollLeft+(svg.clientWidth-view.width*scale)/2;
+    const top=(box.top-container.top)*sy+parent.scrollTop+(svg.clientHeight-view.height*scale)/2;
+    const style=`left:${left}px;top:${top}px;width:${view.width*scale}px;height:${view.height*scale}px;`;
+    if(entry.style!==style){entry.layer.style.cssText=style;entry.style=style;}
+    const stageStyle=`width:${view.width}px;height:${view.height}px;transform:scale(${scale}) translate(${-view.x}px,${-view.y}px);`;
+    if(entry.stageStyle!==stageStyle){entry.stage.style.cssText=stageStyle;entry.stageStyle=stageStyle;}
+  }
+  /** Typeset each shared equation in an HTML layer that follows the SVG. */
+  function renderMath(svg){
+    const markers=[...svg.querySelectorAll('.math-equation')];let entry=mathLayers.get(svg);
+    if(!markers.length){if(entry){entry.observer.disconnect();entry.layer.remove();mathLayers.delete(svg);}return;}
+    if(!entry){
+      const layer=document.createElement('div');layer.className='math-layer';const stage=document.createElement('div');stage.className='math-stage';layer.append(stage);svg.after(layer);
+      const observer=new ResizeObserver(()=>positionMath(svg));observer.observe(svg);
+      entry={layer,stage,observer,markup:''};mathLayers.set(svg,entry);
+    }
+    const markup=markers.map(marker=>{
+      const tex=marker.dataset.tex,size=Number(marker.dataset.size);
+      if(!equationCache.has(tex))equationCache.set(tex,{tree:window.katex.__renderToHTMLTree(tex,{throwOnError:true,strict:'error'}),markup:window.katex.renderToString(tex,{throwOnError:true,strict:'error',output:'htmlAndMathml'})});
+      const cached=equationCache.get(tex),top=Number(marker.dataset.baseline)-cached.tree.height*size;
+      return `<div class="math-tex ${marker.classList.contains('blue-text')?'math-forward':'math-backward'}" data-tex="${esc(tex)}" data-x="${marker.dataset.x}" data-baseline="${marker.dataset.baseline}" style="left:${marker.dataset.x}px;top:${top}px;font-size:${size}px">${cached.markup}</div>`;
+    }).join('');
+    if(entry.markup!==markup){entry.stage.innerHTML=markup;entry.markup=markup;}
+    positionMath(svg);
+  }
   const r=(x,y,w,h,cls='box',extra='')=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5" class="${cls}" ${extra}/>`;
   const l=(x1,y1,x2,y2,color='line',extra='')=>`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${C(color)}" stroke-width="1.4" ${extra}/>`;
   let prefix='',motion=[];
@@ -197,12 +235,12 @@ window.Views = (() => {
   function lifetimes(layout){
     start('lifetimes');const bf=layout.precision==='bf16',save=layout.mode==='save';let rows;
     const math={
-      xg:['xg = gather routed x','grad_xg = W13^T grad_h1','grad_W13 += grad_h1 xg^T'],
-      h1:['h1 = W13 xg = [g; u]','grad_h1 = [dg; du]','Backward needs the gate/up values'],
-      h2:['h2 = SiLU(g) ⊙ u','grad_h2 = W2^T grad_h3','grad_W2 += grad_h3 h2^T'],
-      h3:['h3 = W2 h2','grad_h3 = score × grad_y','grad_score = grad_y^T h3'],
-      x:['x = caller input','Replay gathers x into expert rows','grad_x = sum routed grad_xg'],
-      row:['Qrow(xg), Qrow(h2)','W13 and W2 forward operands','Row bytes can be reused after MMA']
+      xg:[String.raw`x_{\mathrm g}=\operatorname{gather}(x)`,String.raw`\mathrm{grad}_{x_{\mathrm g}}=W_{13}^{\mathsf T}\mathrm{grad}_{h_1}`,String.raw`\mathrm{grad}_{W_{13}}\mathrel{+{=}}\mathrm{grad}_{h_1}x_{\mathrm g}^{\mathsf T}`],
+      h1:[String.raw`h_1=W_{13}x_{\mathrm g}=[g;u]`,String.raw`\mathrm{grad}_{h_1}=[dg;du]`,'Backward needs the gate/up values'],
+      h2:[String.raw`h_2=\operatorname{SiLU}(g)\odot u`,String.raw`\mathrm{grad}_{h_2}=W_2^{\mathsf T}\mathrm{grad}_{h_3}`,String.raw`\mathrm{grad}_{W_2}\mathrel{+{=}}\mathrm{grad}_{h_3}h_2^{\mathsf T}`],
+      h3:[String.raw`h_3=W_2h_2`,String.raw`\mathrm{grad}_{h_3}=\mathrm{score}\,\mathrm{grad}_y`,String.raw`\mathrm{grad}_{\mathrm{score}}=\mathrm{grad}_y^{\mathsf T}h_3`],
+      x:[String.raw`x=\text{caller input}`,String.raw`\mathrm{grad}_x=\sum_{\mathrm{routes}}\mathrm{grad}_{x_{\mathrm g}}`,'Replay gathers x into expert rows'],
+      row:[String.raw`Q_{\mathrm{row}}(x_{\mathrm g}),\;Q_{\mathrm{row}}(h_2)`,'W13 and W2 forward operands','Row bytes can be reused after MMA']
     };
     if(save&&bf)rows=[['x_gathered',[[0,8,'green']],6,'xg'],['h1',[[0,8,'green']],5,'h1'],['h2 · scratch',[[1,3,'amber'],[3,5,'amber']],4,'h2'],['h3',[[2,8,'green']],3,'h3']];
     else if(save)rows=[['x column bundle',[[0,8,'green']],6,'xg'],['h1',[[0,8,'green']],5,'h1'],['h2 column bundle',[[1,8,'green']],4,'h2'],['h3',[[2,8,'green']],3,'h3'],['x/h2 row scratch',[[0,1,'amber'],[1,3,'amber']],2,'row']];
@@ -213,13 +251,13 @@ window.Views = (() => {
     s+=l(x0+3*unit-4,51,x0+3*unit-4,565,'line','stroke-dasharray="3 3"');
     rows.forEach((row,i)=>{
       const y=65+i*100;s+=t(16,y+15,row[0],'dependency-name');
-      math[row[3]].forEach((equation,j)=>s+=t(j===0?260:16,y+[15,45,77][j],equation,(j===0||equation.includes('=')?'equation-text':'dependency-detail')+(j===0?' blue-text':' muted')));
+      math[row[3]].forEach((tex,j)=>s+=j===0||tex.includes('=')?equation(j===0?260:16,y+[15,45,77][j],tex,j===0?'blue-text':'muted',26,j===0?290:532):t(16,y+(row[3]==='x'&&j===2?87:[15,45,77][j]),tex,'dependency-detail muted'));
       s+=l(x0,y+67,1420,y+67);
       for(const[a,b,color]of row[1])s+=r(x0+a*unit,y+13,(b-a)*unit-8,29,`${color}-fill`);
       const xx=x0+(row[2]+.5)*unit;s+=`<path d="M${xx},${y+7} l6,8 -6,8 -6,-8Z" fill="${C('purple')}"/>`;
     });
-    s+=r(16,575,1408,69,'purple-fill')+t(29,597,'dg = grad_h2 ⊙ u ⊙ SiLU′(g);  du = grad_h2 ⊙ SiLU(g)','equation-text')+t(29,624,'SiLU′(g) = sigmoid(g) ⊙ (1 + g ⊙ (1 − sigmoid(g)))','equation-text');
-    s+=t(16,666,'xg = x_gathered · column-vector math for one route · WGRAD sums expert rows · owner grad_x sums routes','small muted');
+    s+=r(16,575,1408,74,'purple-fill')+equation(29,600,String.raw`dg=\mathrm{grad}_{h_2}\odot u\odot\operatorname{SiLU}'(g),\qquad du=\mathrm{grad}_{h_2}\odot\operatorname{SiLU}(g)`,'',26,1360)+equation(29,633,String.raw`\operatorname{SiLU}'(g)=\operatorname{sigmoid}(g)\odot\bigl(1+g\odot(1-\operatorname{sigmoid}(g))\bigr)`,'',26,1360);
+    s+=equation(16,668,String.raw`x_{\mathrm g}=\texttt{x\_gathered}\;;\quad h_1=\texttt{h1}\;;\quad \mathrm{grad}_{h_1}=\texttt{grad\_h1}`,'muted',18,1360);
     return finish(s);
   }
   function kernel(p,bm,bn,tail,kSlice){start('kernel');const bk=64,valid=tail?Math.floor(bm*.703125):bm,scale=140/256,aw=bk*scale,ah=bm*scale,bw=bn*scale,bh=bk*scale,cw=bn*scale,ch=bm*scale;let s='';
@@ -305,5 +343,5 @@ window.Views = (() => {
     const counts=Moe.lifetimes(policy).counts;
     s+=l(x0+(p+1)*step-5,76,x0+(p+1)*step-5,104+info.slots*47,'amber','stroke-dasharray="4 4"')+`<g data-sticky-slot>${r(0,0,122,78,'panel','stroke="none"')}${t(15,31,'ACTION','small muted')}${sticky}</g>`;return {svg:finish(s),info,counts,height:124+info.slots*47};
   }
-  return {esc,mathHTML,num,hex,bytes,t,r,l,card,grid,badge,moe,overview,tokens,tokenPhases,consumption,calculations,packing,lookahead,retention,lifetimes,kernel,precision,orientation,fusion,liveness,slots};
+  return {esc,mathHTML,num,hex,bytes,t,r,l,card,grid,badge,moe,overview,tokens,tokenPhases,consumption,calculations,packing,lookahead,retention,lifetimes,renderMath,positionMath,kernel,precision,orientation,fusion,liveness,slots};
 })();
