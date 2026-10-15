@@ -208,3 +208,14 @@ resolve physical CUDA mapping granularity on a GPU.
   Rendered PDF pages were inspected for the combined setup, host VMM example,
   maximum liveness, and physical-slot reuse. Page counters and slide titles
   were verified after assembly. Text and equations remain selectable.
+
+## Peak liveness and slot depth
+
+- Both liveness panels show their reserved budget. The article and the
+  peak-liveness slide step explain why six 2-layer slots reserve 192 MiB,
+  while four 4-layer slots reserve 256 MiB: a 64 MiB (25%) saving at the
+  illustrative 16 MiB per layer.
+- All 57 steps pass layout checks at 1600, 1280, and 390 px. The printable
+  deck passes 3,246 checks, and the revised peak-budget PDF page was rendered
+  and inspected. The comparison uses the same computed slot counts, depths,
+  and per-layer budgets as the ownership diagram.

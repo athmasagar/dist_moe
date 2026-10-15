@@ -306,12 +306,14 @@ window.Views = (() => {
   const slotColors=['blue','green','orange','purple','pink','cyan'];
   function liveness(p){
     start('liveness');const stage={...Moe.lifetimes('stage'),...Moe.intervals('stage')},microbatch={...Moe.lifetimes('microbatch'),...Moe.intervals('microbatch')},action=Moe.schedule[p],stageId=Number(action[0]),kind=action[1],mb=Number(action.slice(2));
+    const stageBudget=stage.slots*stage.depth*stage.layerBytes,microbatchBudget=microbatch.slots*microbatch.depth*microbatch.layerBytes,saving=microbatchBudget-stageBudget,percent=100*saving/microbatchBudget;
+    const comparison=`${stage.slots} stage–microbatch slots × ${bytes(stage.depth*stage.layerBytes)} = ${bytes(stageBudget)}; ${microbatch.slots} whole-microbatch slots × ${bytes(microbatch.depth*microbatch.layerBytes)} = ${bytes(microbatchBudget)}. Smaller stage slots save ${bytes(saving)} (${num(percent)}%) because they hold only one stage’s ${stage.depth} MoE layers, rather than all ${microbatch.depth} MoE layers on this rank.`;
     const pairRemainder=stage.list.filter(iv=>iv.mb===mb&&iv.start<=p&&iv.end>p+1),whole=microbatch.list.find(iv=>iv.mb===mb),stillLive=whole.start<=p&&whole.end>p+1;
     const summaries={
       stage:[`${action} ${kind==='F'?'starts':'ends'} (stage ${stageId}, microbatch ${mb}).`,stage.counts[p]===0?'No stage–microbatch lifetimes remain live.':kind==='B'&&pairRemainder.length?`Stage ${pairRemainder[0].stage} / MB ${mb} is still a live pair.`:stage.counts[p]===stage.peak?`${stage.peak} pairs overlap: the whole-trace maximum.`:`${stage.counts[p]} stage–microbatch pairs now overlap.`],
       microbatch:[kind==='F'?(whole.start===p?`${action} starts microbatch ${mb}’s local lifetime.`:`${action} adds stage ${stageId} to live microbatch ${mb}.`):stillLive?`Microbatch ${mb} remains live after ${action}.`:`${action} ends microbatch ${mb}’s local lifetime.`,kind==='B'&&stillLive?'Its other local stage still needs backward.':microbatch.counts[p]===0?'No whole-microbatch lifetimes remain live.':microbatch.counts[p]===microbatch.peak?`${microbatch.peak} microbatches overlap: the whole-trace maximum.`:`${microbatch.counts[p]} whole microbatches now overlap.`]
     };
-    const takeaway=stage.counts[p]===0&&microbatch.counts[p]===0?'The last terminal backward closes both kinds of lifetime. All local saved-state lifetimes have ended.':stage.counts[p]===stage.peak&&microbatch.counts[p]===microbatch.peak?`${stage.peak} stage–microbatch pairs and ${microbatch.peak} whole microbatches overlap. These are the maximum live counts for this complete local schedule.`:kind==='B'&&stillLive?'A stage’s backward can end its pair’s lifetime while the whole microbatch still has another local stage to finish.':kind==='B'?'This backward completes the microbatch’s final local stage, ending both that stage’s pair and the whole-microbatch interval.':whole.start===p?'A new microbatch opens a whole-microbatch interval and its first stage–microbatch interval.':'Starting another local stage adds a stage–microbatch interval while the existing whole-microbatch lifetime continues.';
+    const takeaway=stage.counts[p]===0&&microbatch.counts[p]===0?'The last terminal backward closes both kinds of lifetime. All local saved-state lifetimes have ended.':stage.counts[p]===stage.peak&&microbatch.counts[p]===microbatch.peak?comparison:kind==='B'&&stillLive?'A stage’s backward can end its pair’s lifetime while the whole microbatch still has another local stage to finish.':kind==='B'?'This backward completes the microbatch’s final local stage, ending both that stage’s pair and the whole-microbatch interval.':whole.start===p?'A new microbatch opens a whole-microbatch interval and its first stage–microbatch interval.':'Starting another local stage adds a stage–microbatch interval while the existing whole-microbatch lifetime continues.';
     let s=t(16,24,`AFTER ${action} · ACTION ${p} COMPLETED`,'bold')+t(1024,24,'Maxima use the complete 32-action trace','small muted','end');
     const sharedPeak=Math.max(stage.peak,microbatch.peak);
     for(const [mode,info,x]of [['stage',stage,16],['microbatch',microbatch,532]]){
@@ -334,10 +336,11 @@ window.Views = (() => {
       s+=l(startX,peakY,startX+408,peakY,'line','stroke-dasharray="3 4"')+t(x+14,peakY+4,`${info.peak} max`,'tiny muted');
       info.counts.forEach((n,i)=>{const live=info.list.filter(iv=>iv.start<=i&&iv.end>i+1).sort((a,b)=>a.slot-b.slot);live.forEach((iv,j)=>s+=`<rect x="${startX+i*step}" y="${baseline-(j+1)*scale}" width="${step-1}" height="${scale}" fill="${C(slotColors[iv.slot])}" opacity="${i>p?.25:.85}"/>`);});
       s+=l(pointer,438,pointer,493,'amber','stroke-dasharray="4 3"')+t(startX+(p+.5)*step,baseline-info.counts[p]*scale-5,String(info.counts[p]),'small bold','middle');
-      summaries[mode].forEach((line,i)=>s+=t(x+14,531+i*22,line,'small'));
+      s+=t(x+14,513,`Budget: ${info.slots} slots × ${info.depth} layers × ${bytes(info.layerBytes)} = ${bytes(info.slots*info.depth*info.layerBytes)}`,'small bold');
+      summaries[mode].forEach((line,i)=>s+=t(x+14,537+i*22,line,'small'));
     }
     s+=t(16,602,'Color = slot, reused after release. Left rows label stages 0 / 2; right rows span all local stages.','small muted');
-    return {svg:finish(s),stage,microbatch,summaries,takeaway};
+    return {svg:finish(s),stage,microbatch,summaries,takeaway,comparison};
   }
   function slots(policy,p){start('slots');const info=Moe.intervals(policy),x0=129,step=60;let s='',sticky='';
     Moe.schedule.forEach((a,i)=>{const x=x0+i*step;s+=t(x+25,24,String(i),'small muted','middle')+r(x,37,52,32,i===p?'amber-fill':'box',i>p?'opacity=".4"':'')+t(x+26,59,a,'mono','middle');});
