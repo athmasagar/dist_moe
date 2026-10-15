@@ -112,7 +112,7 @@ The resulting `dist_moe.PreparedWeight` owns:
 
 | Field | Shape and dtype | Purpose |
 | --- | --- | --- |
-| `source` | grouped BF16 weight | Logical weight identity; no WGRAD is produced in inference. |
+| `source` | grouped BF16 metadata | Logical weight identity; readable storage is not required and no WGRAD is produced. |
 | `fprop_data` | packed FP4, two values per byte | Tensor-core FPROP operand. |
 | `fprop_scale` | CUBLAS-blocked E4M3 | Per-16-value FPROP scales in the kernel-native swizzle. |
 | `global_scale` | FP32 `[E_local]` | Per-expert quantization scale retained for inspection and ownership. |
@@ -123,6 +123,10 @@ Preparation is outside `dist_moe.routed_experts()`. Reusing the prepared object 
 does not requantize weights during each invocation or CUDA-graph replay.
 Non-strict `make_fx` captures the same registered block-scaled forward without
 introducing autograd state.
+
+Planning uses the context's logical dimensions. Packed W2 has physical shape
+`[E_local, D, F/2]`, but its logical intermediate dimension remains `F`; packing
+must not change routing capacity, scratch sizing or automatic kernel selection.
 
 For supported Mega inference, `fuse_swiglu=True` prepares W13 in adjacent gate/up groups
 of eight. Quantization happens before that rearrangement, so each canonical

@@ -1362,8 +1362,9 @@ class _BlockScaledAutograd(torch.autograd.Function):
             x_TD: Local input activations with shape ``[T, D]``.
             topk_expert_ids_TK: Global expert IDs with shape ``[T, K]``.
             topk_scores_TK: Router scores with shape ``[T, K]``.
-            w13_weight: Native fused gate/up grouped weight.
-            w2_weight: Native down-projection grouped weight.
+            w13_weight: Native grouped weight or prepared FPROP storage.
+            w2_weight: Native grouped weight or packed prepared FPROP storage;
+                the context owns its logical intermediate dimension.
             w13_q_fprop: Optional prepared W13 FPROP data.
             w13_scale_fprop: Optional prepared W13 FPROP scales.
             w13_q_dgrad: Optional prepared W13 DGRAD data.
@@ -1421,6 +1422,10 @@ class _BlockScaledAutograd(torch.autograd.Function):
         )
         assert activation_slot_id_1 is not None
         assert num_moe_layers_in_slot is not None
+        # Prepared NVFP4 W2 packs F/2 bytes; dimensions belong to the context,
+        # not the physical FPROP storage passed at the registered boundary.
+        assert activation_buffer.model_config is not None
+        intermediate_dim = activation_buffer.model_config.intermediate_dim
         num_local_experts = _num_local_experts(num_experts, comm_group)
         _validate_compute_config(config)
         compute, save_col_quant = _async_resolve_compute(
@@ -1442,7 +1447,7 @@ class _BlockScaledAutograd(torch.autograd.Function):
                 topk=topk,
                 num_local_experts=num_local_experts,
                 hidden_dim=x_TD.shape[1],
-                intermediate_dim=w2_weight.shape[-1],
+                intermediate_dim=intermediate_dim,
                 num_sms=num_sms,
                 routing_capacity=blockscaled_cfg.routing_capacity,
                 mega=blockscaled_cfg.mega,
@@ -1575,7 +1580,6 @@ class _BlockScaledAutograd(torch.autograd.Function):
         # 3. Planning, routing, and grouped GEMM share one topology-capped
         # receive capacity; no host decision depends on the routed row count.
         hidden_dim = x_TD.shape[1]
-        intermediate_dim = w2_compute_EDF.shape[2]
         routing_m_multiple = _routing_m_multiple(compute, inference_mode=inference_mode)
         routing_world_size = dist.get_world_size(comm_group)
         local_expert_count = w13_compute_EFD.shape[0]
@@ -4446,12 +4450,16 @@ def _run_blockscaled(  # noqa: C901 -- validate and dispatch one public executio
                 context.context_id,
                 options,
             )
+        # Like the autograd path, pass the FPROP data instead of the source:
+        # without a backward the source is only an identity and may hold no
+        # readable storage (e.g. an FSDP unsharded weight that keeps only the
+        # quantized operands).
         output_TD, _state = _block_scaled_forward_op(
             x_TD,
             topk_expert_ids_TK,
             topk_scores_TK,
-            source_w13_EFD,
-            source_w2_EDF,
+            source_w13_EFD if prepared_w13 is None else prepared_w13.fprop_data,
+            source_w2_EDF if prepared_w2 is None else prepared_w2.fprop_data,
             prepared,
             *rmsnorm_args,
             activation_buffer.activation_slot_id_1,

@@ -160,6 +160,13 @@ BF16 weight into a `dist_moe.PreparedWeight`:
 The two scale layouts differ because the contraction axis differs. Sharing the
 qdata does not make the scales interchangeable.
 
+Prepared execution consumes the quantized operands, not the logical source's
+data. The source retains its shape, dtype and gradient identity but need not
+have readable storage, including during training-context `torch.no_grad()`
+evaluation. A Python weight-preprocessing callback that reads the source still
+requires readable storage; supplying prepared weights does not bypass that
+caller-owned callback contract.
+
 Refilling an existing prepared weight quantizes into temporary results and
 copies qdata plus both scale layouts into the caller-owned tensors. This keeps
 the prepared tensor identities stable across FSDP unshard cycles without

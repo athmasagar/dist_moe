@@ -252,7 +252,9 @@ class PreparedWeight:
     Args:
         source: Logical high-precision weight identity. It receives WGRAD for
             training formats; inference-only formats retain it only for
-            ownership and lifecycle coordination.
+            ownership and lifecycle coordination. Prepared execution does not
+            require readable source storage; Python preprocessing callbacks
+            that read the source still require it.
         format: Block-scaled format used by every quantized operand.
         fprop_data: Format-specific contiguous CUDA FPROP qdata. MXFP8 stores
             E4M3 values; NVFP4 stores two packed E2M1 values per byte.

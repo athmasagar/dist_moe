@@ -517,7 +517,9 @@ the exact saved-state contract.
 ### Prepared block-scaled weights
 
 `dist_moe.prepare_block_scaled_weight()` creates caller-owned quantized data
-and scales. The complete
+and scales. Prepared execution can use logical sources without readable
+storage; see [weight ownership and reuse](docs/mxfp8_execution.md#prepare-and-reuse-weights).
+The complete
 [block-scaled inference example](examples/block_scaled_inference.py)
 prepares both expert weights before execution:
 

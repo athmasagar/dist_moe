@@ -2663,47 +2663,105 @@ class DistMoeKernelTest(unittest.TestCase):
                         )
 
     def test_mxfp8_inference_cuda_graph_has_no_autograd_state(self) -> None:
-        """Prepared layouts preserve inference numerics through tracing and capture.
+        """Prepared no-grad calls never read storage-free logical weights.
 
-        Concat and interleaved Mega W13 use the same canonical weights. Each
-        layout replays bitwise with eager and satisfies the format's existing
-        dense-reference bounds without retaining autograd state.
+        Compare ordinary prepared execution with metadata-only sources in
+        eager, make_fx and CUDA graphs. Both context modes preserve slot state;
+        packed NVFP4 must retain logical dimensions for inference planning.
         """
-        for block_format in (
-            dist_moe.BlockScaledFormat.MXFP8_E4M3,
-            dist_moe.BlockScaledFormat.NVFP4,
+
+        class StorageFreeWeight(torch.Tensor):
+            """Logical weight metadata that rejects every dispatched data op."""
+
+            @staticmethod
+            def __new__(cls, source: torch.Tensor) -> torch.Tensor:
+                """Keep grouped shape/dtype/device metadata without storage."""
+                return torch.Tensor._make_wrapper_subclass(
+                    cls,
+                    source.shape,
+                    strides=source.stride(),
+                    dtype=source.dtype,
+                    layout=source.layout,
+                    device=source.device,
+                    requires_grad=source.requires_grad,
+                )
+
+            @classmethod
+            def __torch_dispatch__(
+                cls,
+                func: Any,
+                types: tuple[type, ...],
+                args: tuple[Any, ...] = (),
+                kwargs: dict[str, Any] | None = None,
+            ) -> Any:
+                """Fail before a storage-free source can enter a data operation."""
+                raise RuntimeError(f"storage-free logical weight entered {func}")
+
+        for block_format, inference in (
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, False),
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True),
+            (dist_moe.BlockScaledFormat.NVFP4, True),
         ):
             for pipeline in ("staged", "mega"):
                 policy = dist_moe.BlockScaledConfig(
                     format=block_format, pipeline=pipeline
                 )
                 context, case_a, case_b, w13_EFD, w2_EDF = self._create_case(
-                    inference=True,
+                    inference=inference,
                     block_scaled=policy,
                     num_experts=64 if pipeline == "staged" else 4,
                 )
                 prepared_w2 = dist_moe.prepare_block_scaled_weight(
-                    w2_EDF, policy, inference=True
+                    w2_EDF, policy, inference=inference
                 )
-                for fuse_swiglu in (False, True) if pipeline == "mega" else (False,):
+                activation_buffer = context.activation_buffer
+                assert activation_buffer is not None
+                slot_tensors = (
+                    activation_buffer.buffer_offsets,
+                    activation_buffer.saved_activation_bytes_per_rank,
+                    activation_buffer.moe_layer_id,
+                )
+                initial_slot_state = tuple(tensor.clone() for tensor in slot_tensors)
+                for fuse_swiglu in (
+                    (False, True) if pipeline == "mega" and inference else (False,)
+                ):
                     with self.subTest(
-                        format=block_format, pipeline=pipeline, fuse_swiglu=fuse_swiglu
+                        format=block_format,
+                        pipeline=pipeline,
+                        inference=inference,
+                        fuse_swiglu=fuse_swiglu,
                     ):
                         prepared_w13 = dist_moe.prepare_block_scaled_weight(
                             w13_EFD,
                             policy,
-                            inference=True,
+                            inference=inference,
                             fuse_swiglu=fuse_swiglu,
                         )
-                        run = partial(
+                        reference_run = partial(
                             dist_moe.routed_experts,
                             w13_weight=prepared_w13,
                             w2_weight=prepared_w2,
                             context=context,
                         )
+                        run = partial(
+                            dist_moe.routed_experts,
+                            w13_weight=prepared_w13._with_source(
+                                StorageFreeWeight(w13_EFD)
+                            ),
+                            w2_weight=prepared_w2._with_source(
+                                StorageFreeWeight(w2_EDF)
+                            ),
+                            context=context,
+                        )
                         static_inputs = tuple(tensor.clone() for tensor in case_a)
                         with torch.no_grad():
                             eager_TD = run(*static_inputs)
+                            torch.testing.assert_close(
+                                eager_TD,
+                                reference_run(*static_inputs),
+                                rtol=0,
+                                atol=0,
+                            )
                             traced = make_fx(run)(*static_inputs)
                             self.assertIn(
                                 torch.ops.dist_moe.block_scaled_forward.default,
@@ -2727,7 +2785,10 @@ class DistMoeKernelTest(unittest.TestCase):
                                     static_inputs, inputs, strict=True
                                 ):
                                     static.copy_(value)
-                                eager_TD = run(*inputs)
+                                eager_TD = reference_run(*inputs)
+                                torch.testing.assert_close(
+                                    run(*inputs), eager_TD, rtol=0, atol=0
+                                )
                                 torch.testing.assert_close(
                                     traced(*inputs), eager_TD, rtol=0, atol=0
                                 )
@@ -2745,6 +2806,12 @@ class DistMoeKernelTest(unittest.TestCase):
                                 )
                                 self.assertGreater(
                                     _cosine_similarity(output_TD, expected_TD), cosine
+                                )
+                            for actual, expected in zip(
+                                slot_tensors, initial_slot_state, strict=True
+                            ):
+                                torch.testing.assert_close(
+                                    actual, expected, rtol=0, atol=0
                                 )
 
     def test_non_power_of_two_topk_matches_reference(self) -> None:
