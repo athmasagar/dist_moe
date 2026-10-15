@@ -35,7 +35,7 @@ uses modern browser APIs including native dialogs. Publishing is a separate step
 
 ## Browser presentation
 
-The **Present** link switches the article into a 26-slide presentation. The
+The **Present** link switches the article into a 27-slide presentation. The
 deck uses a 16:9 canvas with stable diagram framing and the same live controls.
 A generic MoE setup precedes the capability comparison (slide 3) and GPU
 placement. The comparison table and its visible qualifications come directly
@@ -85,7 +85,7 @@ parameters and modes; step navigation stays in the presentation controls.
 PDF export follows the same curated steps as the presentation, including the
 short pipeline sequences. Each page carries its slide, step, and PDF page number,
 the current step's summary, and its fixed diagram framing. The default Mega
-deck produces 70 pages; selecting Staged produces 72. Static slides appear
+deck produces 71 pages; selecting Staged produces 73. Static slides appear
 once. Shape, format, packing, tile, and other figure settings carry into the print
 tab. The capacity-policy slide intentionally walks all three shared presets.
 The print tab keeps SVG graphics and text; it does not rasterize the slides.
@@ -105,8 +105,8 @@ settings also carry between views when using Present and Article.
 
 `results-data.js` is the canonical 63-case measurement snapshot.
 `results.js` generates the same result diagrams, tables, numerical prose, and
-step summaries for the article and deck. The five result slides cover
-inference, training, routing skew, expert width, and memory policy. Peak
+step summaries for the article and deck. A metrics primer precedes the five
+result slides covering inference, training, routing skew, expert width, and memory policy. Peak
 references are theoretical NVIDIA datasheet values, with dense compute
 denominators and one-direction NVLink bandwidth. HBM is an analytical traffic
 estimate. The eight-layer packing view is explicitly a projection from

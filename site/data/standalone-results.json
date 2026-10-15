@@ -24,7 +24,20 @@
     "bandwidthNote": "NVLink TX/RX are hardware counters from a separate collection of at least one second. HBM is an analytical useful-byte estimate, not a DRAM-counter measurement.",
     "placementNote": "Four separate allocations. EP64 training ran at a different site from EP32. Some allocations shared an NVLink fabric and overlapped in lifetime; timing-window overlap is unconfirmed. These observations do not establish uncontended peak performance.",
     "memoryNote": "One layer; training has one activation slot and capacity/scratch factors 8. VMM is off and no training layer triggered capacity recompute. Arena budgets and PyTorch allocation peaks are separate accounting views.",
-    "source": "Author-supplied report_isolated_v6/report.html and cached measurements"
+    "source": "Author-supplied report_isolated_v6/report.html and cached measurements",
+    "metricsExample": {
+      "caseID": "training-ep64-mxfp8-mega-single_layer-F3072-i1",
+      "forwardByteBuckets": {
+        "inputs": 29360128,
+        "routed_activations": 327155712,
+        "routed_weights": 408748032,
+        "routing_scores": 49152,
+        "shared_work": 0
+      },
+      "forwardModelBytes": 765313024,
+      "trainingModelBytes": 2295939072,
+      "rank0TXMiBs": 239035.92260694358
+    }
   },
   "cases": [
     {

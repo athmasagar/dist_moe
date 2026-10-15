@@ -243,3 +243,17 @@ resolve physical CUDA mapping granularity on a GPU.
   inspection of compute, bandwidth, skew, width, policy, and packing views.
   Graphics and mathematical text remain vector/selectable. No GPU benchmark
   was rerun by the website work.
+
+## Metrics primer
+
+- Added one shared metrics slide before the result plots. It separates
+  nominal useful GEMM FLOPs, CUDA-event latency, NVML GPM TX/RX rates, and
+  modeled HBM byte rate. Necessary non-GEMM work is distinguished from
+  additional padding/replay arithmetic; neither is silently removed from time.
+- Verified the worked HBM byte sum, 3× training multiplier, and MiB/s-to-GB/s
+  NVLink conversion against the cached record. The additional executed FLOPs
+  are explicitly not separately measured in this report.
+- The 27-slide, 71-step deck passes 3,176/3,173/3,173 checks at 1600/1280/390 px.
+  KaTeX glyph bounds are checked inside their definition and slide; invisible
+  strut overflow is not used as a proxy for visible clipping. The printable
+  deck passes 3,815 checks, and the metrics PDF page was rendered and inspected.

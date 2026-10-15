@@ -40,6 +40,7 @@
     { id: 'mega-pipeline', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], title: 'key-idea', setup: '#fusion-config' },
     { id: 'pipeline-prefix', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [0, 31], actions: ['0F0','2B0','0F4','0B7'], slotDisplay: 'liveness', parts: ['liveness-svg'], setup: '#slots-config' },
     { id: 'slot-reuse', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [2, 6], actions: ['2F0','2B0','0F3'], slotDisplay: 'reuse', camera: [0, 0, 1146, 406], pane: true, parts: ['slots-svg','slot-selection'] },
+    { id: 'results-metrics', figure: 'results-metrics-figure', chapter: 'results', parts: ['metrics-overview'], setup: '#metrics-setup', title: 'key-idea' },
     { id: 'results-inference', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,1], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="inference"]', setup: '#efficiency-config', title: 'key-idea' },
     { id: 'results-training', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,1], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="training"]', setup: '#efficiency-config', title: 'key-idea' },
     { id: 'results-skew', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,2], parts: ['skew-svg','skew-table'], setup: '#skew-config', title: 'key-idea' },
@@ -516,6 +517,7 @@
   }
   function scopeFor(scene){
     const f=figures[scene.figure];if(!f)return '';
+    if(scene.id==='results-metrics')return 'Extra padding/replay FLOPs are not separately instrumented. All routed-operation costs remain in measured latency; effective HBM bandwidth is a model.';
     if(scene.chapter==='results')return window.ResultsApp.scope(scene.controller,app.controllers[scene.controller].phase);
     if(scene.id==='capabilities')return source('#capability-scope').textContent;
     const text=f.querySelector('figcaption').textContent;
@@ -565,7 +567,7 @@
     if(calibrating)return;
     applyCamera(scene);
     $('deck-notes-caption')?.replaceChildren(...(caption ? [cleanClone(caption)] : []));
-    const evidence=$('deck-notes-evidence');if(evidence){evidence.replaceChildren();const ids=scene.id==='precision'?['intermediate-table']:scene.id==='memory-costs'?['calculation-table']:scene.figure==='recompute-figure'?['offset-table']:scene.figure==='packing-figure'?['packing-table']:[];if(scene.chapter==='results')ids.push(scene.controller+'-table');ids.forEach(id=>{const table=$(id);if(table)evidence.append(cleanClone(table));});}
+    const evidence=$('deck-notes-evidence');if(evidence){evidence.replaceChildren();const ids=scene.id==='precision'?['intermediate-table']:scene.id==='memory-costs'?['calculation-table']:scene.figure==='recompute-figure'?['offset-table']:scene.figure==='packing-figure'?['packing-table']:[];if(scene.chapter==='results')ids.push(scene.id==='results-metrics'?'metrics-worked-example':scene.controller+'-table');ids.forEach(id=>{const table=$(id);if(table)evidence.append(cleanClone(table));});}
     updatePresenter();
 
   }

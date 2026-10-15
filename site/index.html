@@ -278,6 +278,34 @@
   <p>Tensor Core peak performance is a reference for arithmetic. A routed layer also gathers remote rows, manages intermediate values, evaluates SwiGLU, returns expert results, and, in training, computes gradients. The following standalone measurements put those costs inside the timed operation. Dist-MoE delivers substantial useful compute through that full path; routing balance and expert width determine how that work is distributed and how communication is amortized.</p>
   <p id="results-shape">Blackwell Ultra · T = 2,048 tokens/rank · D = 7,168 · F = 3,072 unless varied · E = 384 · top-k = 6 · one routed layer · zero shared experts.</p>
   <p class="results-peak-note" id="results-peak-note">Peak values are <strong>theoretical NVIDIA datasheet specifications</strong>, not benchmarked ceilings. Percentages compare measured useful throughput with the corresponding <strong>dense theoretical peak</strong>.</p>
+  <figure class="interactive results-figure" id="results-metrics-figure">
+    <div class="figure-top"><div><span class="fig-number">METRICS</span><h3>Counted work, measured time, and modeled traffic</h3></div></div>
+    <div class="config-summary" id="metrics-setup">Useful GEMM work is counted · latency and NVLink are measured · HBM traffic is modeled</div>
+    <div class="metrics-overview" id="metrics-overview">
+      <section class="metric-definition"><span class="metric-method counted">COUNTED</span><h4>Useful GEMM work</h4>
+        <div class="equation metrics-equation"><p data-tex="U_{\mathrm{fwd}}=6TKDF,\qquad U_{\mathrm{train}}=18TKDF"></p></div>
+        <p>Average per GPU, R = TK. Forward: gate/up/down GEMMs; backward: DGRAD + WGRAD. Multiply–add = 2 FLOPs.</p>
+        <p class="metric-qualification">Padding/replay FLOPs are not separately counted. Quantization, SwiGLU, and communication still contribute time.</p>
+      </section>
+      <section class="metric-definition"><span class="metric-method measured">MEASURED</span><h4>Routed-layer latency</h4>
+        <p class="metric-timing-flow">10 warmups → 5 windows × 30 iterations<br>CUDA events → rank maximum → window median</p>
+        <div class="equation metrics-equation"><p data-tex="t=\operatorname{median}_{w}\!\left(\max_{r}t_{r,w}\right)"></p></div>
+        <p>CUDA events time each 30-iteration CUDA-graph window. Divide by 30; take the maximum rank, then the median of five windows.</p>
+      </section>
+      <section class="metric-definition"><span class="metric-method measured">MEASURED</span><h4>NVLink hardware bandwidth</h4>
+        <p>NVML GPM samples TX/RX in a separate repeated-operation run of at least one second. Figures show rank mean and maximum.</p>
+        <div class="equation metrics-equation"><p data-tex="\mathrm{GB/s}=\mathrm{MiB/s}\times 2^{20}/10^9"></p></div>
+        <p class="metric-qualification">Each direction’s theoretical peak: 900 GB/s.</p>
+      </section>
+      <section class="metric-definition"><span class="metric-method modeled">MODELED</span><h4>Effective HBM byte rate</h4>
+        <div class="equation metrics-equation"><p data-tex="\mathrm{rate}_{\mathrm{HBM,model}}=B_{\mathrm{model}}/t"></p></div>
+        <p>Logical inputs + activations + weights/scales + scores. Backward = 2× forward bytes; training = 3× as a coarse model.</p>
+        <p class="metric-qualification">No DRAM counters: cache effects and extra traffic are unmeasured. This is not HBM utilization.</p>
+      </section>
+    </div>
+    <figcaption id="metrics-scope">“Useful” describes the GEMM numerator. Quantization, nonlinearity, communication, and synchronization are necessary execution costs. Extra padding/replay work remains in latency; no measured FLOP breakdown of that extra work is available.</figcaption>
+  </figure>
+  <details class="technical-fold"><summary>Worked effective-bandwidth calculation</summary><div id="metrics-worked-example"></div></details>
   <details class="technical-fold"><summary>Hardware references, timing, and scope</summary>
     <div class="table-scroll"><table><thead><tr><th>Per-GPU reference</th><th>Value</th><th>Convention</th></tr></thead><tbody><tr><td>BF16 Tensor Core</td><td>2.5 PFLOP/s</td><td>Dense; half the listed 5 PFLOP/s sparse peak</td></tr><tr><td>FP8 Tensor Core</td><td>5 PFLOP/s</td><td>Dense; half the listed 10 PFLOP/s sparse peak</td></tr><tr><td>FP4 Tensor Core</td><td>15 PFLOP/s</td><td>NVIDIA explicitly lists this dense peak; the sparse peak is 20</td></tr><tr><td>HBM</td><td>8 TB/s</td><td>Decimal bytes; theoretical bandwidth</td></tr><tr><td>NVLink TX or RX</td><td>900 GB/s</td><td>One direction; 1.8 TB/s bidirectional</td></tr></tbody></table></div>
     <p>Snapshot: 15 October 2026, 63 completed cases. The supplied report records accepted numerical and changed-input/stable-address CUDA-graph checks for every case. Ten warmups precede five windows of 30 timed iterations. Each window uses the maximum rank; the reported latency is the median of those five maxima. Whiskers show the observed window range, not a confidence interval. Forward, backward, and combined medians are reduced separately and need not add exactly.</p>
@@ -378,6 +406,7 @@
     <dt>Producer/consumer readiness by chunk</dt><dd data-slide-summary="mega-pipeline">Mega pipelines gather/quantization, W13, SwiGLU/quantization, W2, and scatter through chunk-local readiness. The full role graph and chunk-state table show what each consumer is waiting for.</dd>
     <dt>Compare lifetimes and peak live counts</dt><dd data-slide-summary="pipeline-prefix">A stage–microbatch lifetime ends after that stage’s terminal backward. A whole microbatch stays live until all its local stages finish. Their maximum overlaps are counted before assigning memory slots.</dd>
     <dt>Map lifetimes to reusable Dist-MoE slots</dt><dd data-slide-summary="slot-reuse">A completed terminal backward releases a slot to a later non-overlapping owner. Releasing one stage is sufficient only under the stage–microbatch policy.</dd>
+    <dt>How benchmark metrics are constructed</dt><dd data-slide-summary="results-metrics">Useful TFLOP/s divides counted GEMM work by measured layer latency. NVLink uses hardware counters; effective HBM bandwidth uses a logical-byte model.</dd>
     <dt>Inference throughput and bandwidth</dt><dd data-slide-summary="results-inference">Useful throughput compares the full routed operation with dense theoretical GPU peaks. Hardware NVLink rates and modeled HBM traffic provide separate context.</dd>
     <dt>Training throughput and bandwidth</dt><dd data-slide-summary="results-training">Training measures forward and backward together. Dense theoretical peaks frame the useful compute delivered through communication and intermediate-state handling.</dd>
     <dt>The busiest rank under routing skew</dt><dd data-slide-summary="results-skew">Routing concentrates work. Compare cluster-average throughput with the useful work rate derived for the busiest rank, alongside actual received rows and hardware TX rates.</dd>

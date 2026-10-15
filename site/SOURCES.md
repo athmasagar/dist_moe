@@ -168,3 +168,18 @@ with one shared arena is a projection using identical per-context capacities
 and sequential scratch reuse. It excludes caller weights, gradients,
 symmetric buffers, and graph-pool storage; it is not a measured stack, total
 GPU-memory saving, or measured recompute speedup.
+
+The metrics primer separates a counted numerator from measured execution
+time. Padding/replay arithmetic is outside nominal useful GEMM FLOPs and was
+not separately instrumented in this report. Quantization, nonlinearity,
+communication, and synchronization are necessary timed work, not part of that
+GEMM numerator. Unoccupied reserved memory does not imply executed padding work.
+
+The effective-HBM worked example uses the cached EP64 balanced MXFP8 Mega
+record: 765,313,024 forward-model bytes and 2,295,939,072 modeled training bytes,
+divided by 2.6411285400390625 ms, give 869.3022839267198 GB/s. The byte model
+includes input rows, routed activations, local weights with scales, and routing
+scores. Its backward 2×/combined 3× multipliers are coarse assumptions, not
+measured traffic passes. The separate rank-0 NVML GPM TX value is
+239,035.92260694358 MiB/s, converted with 2^20/10^9 to 250.64733158349847 GB/s.
+Rank mean and maximum hardware-counter rates can differ from this rank-0 value.
