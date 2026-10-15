@@ -156,7 +156,7 @@
 - Verified that the lifetime slide does not inherit the address view's crop,
   manual packing budgets and Staged/Mega selection survive navigation, and
   old slide links resolve to their consolidated examples.
-- The PDF sequence now has 57 default Mega pages, or 59 with Staged selected.
+- The PDF sequence at that revision had 57 default Mega pages, or 59 with Staged selected.
   The capacity slide walks all three examples. The print-layout audit passed
   2,893 checks, including source order, page dimensions, label bounds, unique
   SVG references, and constant framing.
@@ -169,3 +169,16 @@ captures of the shared print frames; browser Save as PDF remains a manual check.
 These checks verify the educational page and its stated model. They do not
 execute or benchmark GPU kernels, emulate every precision specialization, or
 resolve physical CUDA mapping granularity on a GPU.
+
+## Source-reviewed motivation comparison
+
+- The article and slide 3 use the same live comparison table. All six rows,
+  four implementation columns, and three qualifications remain visible.
+  Speaker notes and the article evidence fold contain 14 pinned source links.
+- The 22-slide deck passes the full 58-step layout sequence at 1600, 1280,
+  and 390 px. Focused interaction checks cover source identity, table bounds,
+  footnote spacing, theme changes, navigation, and restoration to the article.
+- The default Mega print sequence has 58 pages; Staged has 60. The comparison
+  appears once in either sequence. The default print-layout audit passes
+  2,911 checks. The rendered comparison PDF page was reviewed with all columns,
+  qualifiers, footer counts, and source-review date intact.

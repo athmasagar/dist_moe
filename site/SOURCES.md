@@ -65,6 +65,18 @@ executing CUDA. Additional checks cover FP8 finite-value encoding, worked offset
 non-aliasing. Browser verification and visual review cover all phases/modes;
 this is validation of the educational page, not GPU correctness or performance.
 
+## OSS capability comparison
+
+The motivation table is shared by the article and presentation slide 3. Its
+source-evidence fold links to the reviewed public snapshots: Dist-MoE
+`60ce816`, MoK `f3a8bd2`, Comet/Flux `19831ca`, and Mega MoE/DeepGEMM `1fc9c66`.
+It preserves the unconfirmed CUDA graph entries for MoK and Mega MoE, scopes
+Comet's graph limitation to the reviewed dynamic-routing path, distinguishes
+MoK macrobatch replay from Dist-MoE's layer-budget policy, and distinguishes
+Comet training primitives from Mega MoE's forward-only fused API. The additional
+shared-expert row describes the current public interfaces. It is a capability
+comparison, with no measured throughput ranking.
+
 ## Branding and credits
 
 The header uses the [official PyTorch logo assets](https://github.com/pytorch-fdn/artwork/blob/main/projects/PyTorch/info.md): the full-color/white horizontal variant for dark mode, full-color horizontal variant for light mode, and full-color icon for compact layouts. Transparent canvas margins are reduced for the header while preserving the artwork and surrounding clear space. Assets are bundled locally in `assets/`.
@@ -85,11 +97,11 @@ through Full diagram, and detailed source explanations populate speaker notes.
 The setup figure illustrates one token selecting two of four expert MLPs. It
 separates token data from the router’s expert IDs and combine scores. The
 canonical Key ideas section supplies static slide takeaways; stepped slides
-derive their changing summaries from the shared figure captions. Layer packing
-uses five selected snapshots and dynamic recompute uses three. Their topic
-titles stay stable: packing shows slot/scratch layout, while recompute shows a
-dedicated capacity-test SVG and backward path. Both live views belong to the
-article’s same figure and receive the same source-derived planner records.
+derive their changing summaries from the shared figure captions. The complete
+layer-packing figure follows all nine calls in one slide, showing saved state,
+recompute decisions, planner offsets, and backward releases together. The
+28 KiB default saves L2 and retains only L3's replay input. Article and slides
+use the same source-derived planner records.
 Pipeline liveness checkpoints select 0F0, 2B0, 0F4, 0B7 to show acquisition,
 individual-stage release, the whole-trace peak, and final completion. The next
 slide selects 2F0, 2B0, 0F3 to show a physical slot’s acquisition, release, and

@@ -70,3 +70,16 @@ svg .edge-payload-label{pointer-events:none}svg .edge-label-bg{stroke-width:1;st
 .phase-caption .packing-step-summary{display:block;margin:5px 0}
 
 svg.liveness-visual{font-size:16px}.liveness-visual .small{font-size:15px}.liveness-visual .tiny{font-size:13px}.liveness-visual .large{font-size:20px}
+
+.motivation{margin:56px 0 48px}.motivation>h2{margin-bottom:22px}
+.capability-table{table-layout:fixed;min-width:920px;width:100%;font-size:16px;line-height:1.4}
+.capability-table .capability-label{width:30%}.capability-table col:not(.capability-label){width:17.5%}
+.capability-table th,.capability-table td{padding:14px 16px;text-align:center;vertical-align:middle;white-space:normal}
+.capability-table thead th{font-size:16px;font-weight:650;text-transform:none;letter-spacing:0}
+.capability-table th[scope=row]{font-size:16px;font-weight:500;text-align:left;text-transform:none;letter-spacing:0}
+.capability-table th:first-child{text-align:left}.capability-table :is(th,td):nth-child(2){background:var(--blue-soft)}
+.capability-table thead th:nth-child(2),.capability-table td:nth-child(2) b{color:var(--blue)}
+.capability-table small{display:block;font-size:13px;line-height:1.35;color:var(--muted);font-weight:400;margin-top:4px}
+.capability-table sup,.capability-notes sup{font-size:.7em;color:var(--muted)}.capability-unconfirmed{color:var(--orange)}
+.capability-notes{padding:0 22px 18px;font-size:14px;line-height:1.6;color:var(--muted)}.capability-notes p{margin:5px 0;max-width:none}
+.comparison-evidence{margin-top:14px}.comparison-evidence summary{cursor:pointer;color:var(--ink)}.comparison-evidence li{margin:9px 0}

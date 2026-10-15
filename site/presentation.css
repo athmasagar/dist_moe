@@ -130,3 +130,12 @@ html:fullscreen .deck-drawer{top:0;bottom:0}
 :is(#presentation,.deck-print) .deck-reserved{height:var(--deck-reserved-height);min-height:var(--deck-reserved-height);max-height:var(--deck-reserved-height)}
 :is(#presentation,.deck-print) .deck-visual>figure>.deck-reserved{flex:0 0 var(--deck-reserved-height)}
 .deck-calibrating{visibility:hidden}.deck-calibrating .deck-summary,.deck-calibrating .deck-scope{max-height:none}
+
+.deck-visual .capability-figure .table-scroll{padding:0;overflow:visible}
+.deck-visual .capability-table{min-width:0;font-size:22px;line-height:1.3}
+.deck-visual .capability-table :is(th,td){padding:9px 16px}
+.deck-visual .capability-table thead th{font-size:23px}
+.deck-visual .capability-table th[scope=row]{font-size:22px}
+.deck-visual .capability-table small{font-size:18px;line-height:1.3;margin-top:4px}
+.deck-visual .capability-notes.deck-part{padding:12px 0 0;border-top:1px solid var(--line);font-size:20px;line-height:1.4;flex:none}
+.deck-visual .capability-notes p{margin:4px 0}

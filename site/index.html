@@ -30,7 +30,43 @@
       <div class="diagram-scroll"><svg id="moe-svg" viewBox="0 0 1040 440" role="img" aria-label="One token, a router selecting two of four expert MLPs, and weighted combine"></svg></div>
       <figcaption>One-token illustration with top-2 routing and four experts. Blue paths carry the token, purple paths carry routing metadata, and green paths carry expert results. The router is supplied by the caller; Dist-MoE implements the distributed expert operation.</figcaption>
     </figure>
-    <p>Expert parallelism places experts on different GPUs. A selected expert may therefore need a token from a peer GPU and must return its result to that token's owner. Dist-MoE connects that communication with expert matrix computation. The next figure follows the resulting hardware path.</p>
+    <p>Expert parallelism places experts on different GPUs. A selected expert may therefore need a token from a peer GPU and must return its result to that token's owner. Training must also preserve forward values until backward. Routing changes how many expert rows those saved values contain.</p>
+  </div>
+  <div class="motivation" id="motivation" data-title="Motivation">
+    <h2>Why Dist-MoE also plans activation memory</h2>
+    <p id="motivation-setup">Dist-MoE combines communication-compute overlap, saved forward state, a fixed memory budget, and CUDA graph replay.</p>
+    <p>Dist-MoE connects communication and matrix computation with a device-side activation planner. Successive MoE layers pack saved values into one bounded activation slot. When full state would exceed the budget, a layer retains its input and rebuilds intermediates during backward. Its byte offsets and recompute decisions remain on the GPU.</p>
+    <figure class="interactive capability-figure" id="capability-figure">
+      <div class="figure-top"><div><span class="fig-number">MOTIVATION</span><h3>Execution and memory capabilities</h3></div></div>
+      <div class="table-scroll" id="capability-table">
+        <table class="capability-table" aria-label="Public MoE implementation capabilities, with source-review qualifications">
+          <colgroup><col class="capability-label"><col><col><col><col></colgroup>
+          <thead><tr><th scope="col">Capability</th><th scope="col">Dist-MoE<small>Meta</small></th><th scope="col">MoK<small>Cursor</small></th><th scope="col">Comet / Flux<small>ByteDance</small></th><th scope="col">Mega MoE<small>DeepSeek</small></th></tr></thead>
+          <tbody>
+            <tr><th scope="row">CUDA graph execution</th><td><b>Yes</b></td><td><span class="capability-unconfirmed">Unconfirmed<sup>1</sup></span></td><td><b>No</b><small>reviewed dynamic-routing path</small></td><td><span class="capability-unconfirmed">Unconfirmed<sup>1</sup></span></td></tr>
+            <tr><th scope="row">Saved-state packing across layers into a bounded buffer</th><td><b>Yes</b></td><td>No builtin planner</td><td>No builtin planner</td><td>No training-state planner</td></tr>
+            <tr><th scope="row">Dynamic recompute</th><td><b>Yes</b><small>layer-budget decisions</small></td><td><b>Yes</b><small>macrobatch replay<sup>2</sup></small></td><td>No builtin policy</td><td>No fused training backward</td></tr>
+            <tr><th scope="row">Fused comm-compute</th><td><b>Yes</b></td><td><b>Yes</b></td><td><b>Yes</b></td><td><b>Yes</b></td></tr>
+            <tr><th scope="row">Forward and backward kernels</th><td><b>Yes</b><small>BF16 / MXFP8</small></td><td><b>Yes</b><small>BF16 / MXFP8</small></td><td><b>Yes</b><small>training primitives<sup>3</sup></small></td><td>Fused forward only</td></tr>
+            <tr><th scope="row">Runs without a shared-expert branch</th><td><b>Yes</b></td><td><b>No</b><small>current API requires shared weights</small></td><td><b>Yes</b></td><td><b>Yes</b><small>shared experts optional</small></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="capability-notes" id="capability-notes">
+        <p><sup>1</sup> The reviewed MoK and Mega MoE sources do not directly demonstrate CUDA graph capture/replay. Their code appears compatible.</p>
+        <p><sup>2</sup> MoK replays macrobatches beyond retained capacity and supports manual checkpointing. Dist-MoE uses a shared layer budget.</p>
+        <p><sup>3</sup> Comet provides training primitives. Framework integration coordinates backward.</p>
+      </div>
+      <figcaption><span id="capability-scope">Public-source review, October 14, 2026. “No builtin” describes the reviewed interfaces. This table compares capabilities. Throughput depends on hardware, shapes, precision, and routing.</span>
+        <details class="comparison-evidence"><summary>Reviewed snapshots and source evidence</summary><ul>
+          <li><strong>Dist-MoE · 60ce816:</strong> <a href="https://github.com/meta-pytorch/dist_moe/blob/60ce816d72968e65d90525a914bc35995e59d49f/README.md#supported-modes">Supported modes</a>, <a href="https://github.com/meta-pytorch/dist_moe/blob/60ce816d72968e65d90525a914bc35995e59d49f/docs/memory_planner.md#understand-dynamic-recomputation">activation budget and recompute</a>, <a href="https://github.com/meta-pytorch/dist_moe/blob/60ce816d72968e65d90525a914bc35995e59d49f/tests/test_dist_moe.py#L2315">training CUDA graph test</a>, and <a href="https://github.com/meta-pytorch/dist_moe/blob/60ce816d72968e65d90525a914bc35995e59d49f/dist_moe/api.py#L3772">routed-expert-only API</a>.</li>
+          <li><strong>MoK · f3a8bd2:</strong> <a href="https://github.com/cursor/mixture-of-kittens/blob/f3a8bd2432457c5a2a2ea13915f0dcd0224581e4/mok/functional.py#L470">Required shared-expert weights</a>, <a href="https://github.com/cursor/mixture-of-kittens/blob/f3a8bd2432457c5a2a2ea13915f0dcd0224581e4/csrc/megakernel/backward.cuh#L288">saved versus replayed macrobatches</a>, <a href="https://github.com/cursor/mixture-of-kittens/blob/f3a8bd2432457c5a2a2ea13915f0dcd0224581e4/README.md#manual-activation-checkpointing">manual checkpointing</a>, and <a href="https://github.com/cursor/mixture-of-kittens/blob/f3a8bd2432457c5a2a2ea13915f0dcd0224581e4/tests/test_misc.py#L1262">compiler tracing test</a>. That test uses fake tensors and does not demonstrate CUDA graph replay.</li>
+          <li><strong>Comet / Flux · 19831ca:</strong> <a href="https://github.com/bytedance/flux/blob/19831ca2d820e3e782ed1d15d8b52d0898b78b26/src/moe_ag_scatter/ths_op/gemm_grouped_v3_ag_scatter.cc#L323">Routing-dependent host copies and stream synchronization</a>, <a href="https://github.com/bytedance/flux/blob/19831ca2d820e3e782ed1d15d8b52d0898b78b26/src/moe_gather_rs/ths_op/gemm_grouped_v3_gather_rs.cc#L110">backward use of gather/reduce-scatter</a>, <a href="https://github.com/bytedance/flux/blob/19831ca2d820e3e782ed1d15d8b52d0898b78b26/src/pybind/gemm_only.cc#L141">grouped weight gradients</a>, and <a href="https://github.com/bytedance/flux/blob/19831ca2d820e3e782ed1d15d8b52d0898b78b26/examples/moe_flux_only.py#L112">routed-only example</a>.</li>
+          <li><strong>Mega MoE / DeepGEMM · 1fc9c66:</strong> <a href="https://github.com/deepseek-ai/DeepGEMM/blob/1fc9c66975ee322d628b3288534ca0e9ce12a64d/deep_gemm/mega/__init__.py#L168">Fused forward APIs with optional shared weights</a> and <a href="https://github.com/deepseek-ai/DeepGEMM/blob/1fc9c66975ee322d628b3288534ca0e9ce12a64d/tests/test_mega_moe.py#L363">benchmark calls</a>. The CUDA graph benchmark option belongs to the legacy baseline. DeepGEMM separately provides weight-gradient GEMMs.</li>
+        </ul></details>
+      </figcaption>
+    </figure>
+    <p>MoK’s current interface includes a shared expert whose local computation can run during dispatch. Dist-MoE accepts routed-expert weights alone and overlaps communication with ready routed tiles. The following hardware view traces one such tile. The memory examples later show how its saved values share an activation budget.</p>
   </div>
   <p>A token can start on one GPU while its selected expert lives on another. Follow a remote BF16 row from its symmetric dispatch buffer across NVLink, into expert-local HBM, through shared memory and tensor cores, and back to the owner’s symmetric combine buffer. The expert’s weights stay local.</p>
   <p class="diagram-key"><strong>Reading the diagrams.</strong> HBM is the GPU’s main memory; SMEM is on-chip shared memory; TMEM is Blackwell tensor memory for accumulators. TMA (Tensor Memory Accelerator) stages operand tiles, and MMA is matrix multiply–accumulate. Symmetric dispatch and combine buffers are both peer-addressable device HBM.</p>
@@ -247,6 +283,7 @@
   <details class="technical-fold guide-key-ideas" id="guide-key-ideas"><summary>Key ideas from the guide</summary><dl>
     <dt>Dist-MoE</dt><dd data-slide-summary="title">An MoE layer sends each token to selected expert MLPs. Dist-MoE executes those experts across GPUs.</dd>
     <dt>Mixture-of-Experts</dt><dd data-slide-summary="moe">The router selects experts and provides route scores. Only selected experts run for each token, and their results are combined into one output.</dd>
+    <dt>Execution and memory capabilities</dt><dd data-slide-summary="capabilities">Dist-MoE combines fused routed-expert execution with saved-state packing and budget-driven recompute across layers.</dd>
     <dt>The distributed hardware path</dt><dd data-slide-summary="system">Dist-MoE joins dispatch, expert computation, and combine through GPU memory handoffs.</dd>
     <dt>Caller routing</dt><dd data-slide-summary="assignments">Routing belongs to the caller. Expert IDs and scores create K assignments for each token while reusing its source row.</dd>
     <dt>Expert order</dt><dd data-slide-summary="expert-rows">Gather places local and remote token rows in expert order. Each expert consumes its own contiguous batch.</dd>

@@ -17,12 +17,14 @@
   };
   const figures = Object.fromEntries([...article.querySelectorAll('figure[id]')].map(f => [f.id, f]));
   const paragraphs = Object.fromEntries([...article.querySelectorAll('section[id]')].map(section => [section.id, [...section.children].filter(n => ['P', 'DETAILS'].includes(n.tagName))]));
+  paragraphs.motivation = [...source('#motivation').children].filter(node => node.tagName === 'P');
 
   // Selectors and camera windows define pacing. They contain no duplicate math,
   // prose, numerical values, figure markup, or example programs.
   const scenes = [
     { id: 'title', kind: 'cover', chapter: 'content' },
     { id: 'moe', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
+    { id: 'capabilities', figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes'], setup: '#motivation-setup' },
     { id: 'system', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 8], setup: '.diagram-key' },
     { id: 'assignments', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 0] },
     { id: 'expert-rows', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [1, 1] },
@@ -506,6 +508,7 @@
   }
   function scopeFor(scene){
     const f=figures[scene.figure];if(!f)return '';
+    if(scene.id==='capabilities')return source('#capability-scope').textContent;
     const text=f.querySelector('figcaption').textContent;
     let sentences;
     try{sentences=[...new Intl.Segmenter('en',{granularity:'sentence'}).segment(text)].map(s=>s.segment.trim());}catch{sentences=[text];}
