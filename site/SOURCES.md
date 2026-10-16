@@ -84,9 +84,11 @@ The header uses the [official PyTorch logo assets](https://github.com/pytorch-fd
 The blog byline names Shikai Li and Sanket Purandare. The visible copyright notice follows the Meta Platforms, Inc. and affiliates wording in the supplied repository license.
 
 Figure 04B uses bundled KaTeX 0.16.45 with Computer Modern-style math fonts,
-italic variables, true indices, and mathematical operator spacing. Its SVG
-coordinates position a matching HTML math layer, preserving text and MathML
-accessibility. Code-style tensor labels remain in the guide's ordinary font.
+italic variables, true indices, and mathematical operator spacing. Its equations
+use the same native HTML typesetting as the Section 2 vector equations, with
+MathML accessibility. Code names are shown separately from the notation; the
+lifetime timeline remains SVG. Expand the SwiGLU derivatives for the gate/up
+chain rule.
 The renderer's MIT license and the fonts' original notices and SIL Open Font
 License 1.1 are bundled in `assets/katex/`.
 

@@ -4,7 +4,7 @@ window.Views = (() => {
   const num=n=>n.toLocaleString('en-US'), hex=n=>'0x'+Math.round(n).toString(16).toUpperCase(), bytes=n=>n>=2**30?(n/2**30).toFixed(2)+' GiB':n>=2**20?(n/2**20).toFixed(2)+' MiB':n>=1024?(n/1024).toFixed(2)+' KiB':n+' B';
   const mathHTML=s=>esc(s).replace(/\bB_([MKN])\b/g,'<span class="math-inline">B<sub>$1</sub></span>');
   function mathSVG(s){
-    const escaped=esc(s).replace(/\^T/g,'<tspan baseline-shift="super" font-size="78%">T</tspan>');let html='',cursor=0,lowered=false;
+    const escaped=esc(s).replace(/\^T/g,'<tspan baseline-shift="super" font-size="78%">T</tspan>').replace(/\bW(13|2)\b/g,'W<tspan baseline-shift="-3" font-size="75%" font-style="normal">$1</tspan>').replace(/\bh([123])\b/g,'h<tspan baseline-shift="-3" font-size="75%" font-style="normal">$1</tspan>');let html='',cursor=0,lowered=false;
     for(const match of escaped.matchAll(/\bB_([MKN])\b/g)){
       html+=`<tspan${lowered?' dy="-3"':''}>${escaped.slice(cursor,match.index)}B</tspan>`;
       html+=`<tspan class="tile-subscript" font-size="78%" dy="3">${match[1]}</tspan>`;
@@ -78,13 +78,13 @@ window.Views = (() => {
     s+=t(16,23,'ONE TOKEN · TOP-2 ROUTING · FOUR EXPERTS','small muted');
     s+=card(16,203,150,64,'Input token x','One row [D]','blue-fill');
     s+=card(210,55,210,82,'Router','Scores experts for this token','purple-fill')+t(223,122,'Select E0 and E2','small');
-    for(let e=0;e<4;e++){const y=48+e*95,selected=e===0||e===2;s+=card(485,y,205,64,`Expert E${e}`,selected?'Selected expert MLP':'Not selected for this token',selected?'green-fill':'box');}
+    for(let e=0;e<4;e++){const y=48+e*95,selected=e===0||e===2;s+=card(485,y,205,64,`Expert E${e}`,selected?'W13 → SwiGLU → W2':'Not selected for this token',selected?'green-fill':'box');}
     s+=card(795,203,229,64,'Weighted combine','Σ score × expert(x)','green-fill')+t(808,292,'Output y [D]','small bold');
     s+=wire('M91,203 L91,96 L210,96','blue',true,false)+t(103,182,'Router reads x','small blue-text');
     s+=wire('M166,235 L445,235 L445,96 L485,96','blue',true,false)+wire('M445,235 L445,286 L485,286','blue',true,false)+t(268,258,'Same token row x','small blue-text');
     s+=wire('M420,96 L459,96 L459,70 L485,70','purple',true,false)+wire('M459,96 L459,260 L485,260','purple',true,false)+t(366,165,'Expert IDs','small purple-text');
     s+=wire('M315,55 L315,35 L903,35 L903,203','purple',true,false)+t(768,59,'Route scores','small purple-text');
-    s+=wire('M690,80 L748,80 L748,219 L795,219','green',true,false)+wire('M690,270 L748,270 L748,251 L795,251','green',true,false)+t(758,177,'E0(x), E2(x)','small green-text');
+    s+=wire('M690,80 L748,80 L748,219 L795,219','green',true,false)+wire('M690,270 L748,270 L748,251 L795,251','green',true,false)+t(758,177,'h3 from E0 / E2','small green-text');
     s+=t(16,431,'The caller supplies routing. Dist-MoE executes the selected experts and their distributed dispatch/combine.','small muted');return finish(s);
   }
 
@@ -111,75 +111,37 @@ window.Views = (() => {
   }
   const tokenPhases=['Peer mappings','Publish','Exchange IDs','Build pointers','Gather','Scatter','Reduce'];
   /** Follow publication, local metadata construction, and pointer-driven payload movement. */
-  function tokens(step,focus='all'){
-    start('tokens');const data=Moe.tokenData,chosen=focus==='all'?'C':focus,v=data[chosen],expert=v.experts.find(e=>Math.floor(e/2)!==v.rank),k=v.experts.indexOf(expert),worker=Math.floor(expert/2);let s='';
-    const titles=['Peer mappings · once per context','Publish IDs and source rows','Exchange IDs → count expert rows','Build addresses from rank, token, and k','Gather → expert-major rows','Scatter → original top-k slots','Weight → sum → return'];
-    const symbol=(base,rank)=>base+(rank?'₁':'₀');
-    const cell=(x,y,w,h,label,value,color='box',extra='')=>`<g class="routing-cell">`+r(x,y,w,h,color,extra)+t(x+w/2,y+23,label,'small bold','middle')+(value!==''?t(x+w/2,y+50,value,'mono','middle'):'')+'</g>';
-    const ids=(rank,x,y,filter=false)=>{let out='';for(const [i,name]of ['A','B','C','D'].entries()){
-      out+=t(x,y+i*43+26,`${name} / r${data[name].rank}`,'small');data[name].experts.forEach((id,slot)=>{const active=!filter||Math.floor(id/2)===rank,xx=x+126+slot*251;out+=cell(xx,y+i*43,235,38,`E${id}`, '',active?'purple-fill':'box',active?'':'opacity=".3"');});}return out;};
-    s+=t(20,31,titles[step],'bold');
+  function tokens(step,focus='C'){
+    start('tokens');const data=Moe.tokenData,name=focus==='all'?'C':focus,token=data[name],owner=token.rank,remote=1-owner;let s='';
+    const title=['Map peer-visible buffers','Publish x and expert IDs','Count rows from peer expert IDs','Build gather and return pointers','Gather x → W13 → SwiGLU → W2','Return h3 to the original k slots','Weight h3 rows → sum into y'];
+    const color=(stage,c)=>step===stage?`${c}-fill`:'box';
+    const symbol=(letter,rank)=>letter+(rank?'₁':'₀');
+    const box=(x,y,w,h,cls)=>`<g class="routing-cell">`+r(x,y,w,h,cls);
+    s+=t(16,27,title[step],'bold')+t(1104,27,`Follow ${name} · top-2`,'routing-focus-label small muted','end');
     for(let rank=0;rank<2;rank++){
-      const x=rank?884:16,local=rank?['C','D']:['A','B'],rows=Moe.routingRows(rank);
-      s+=`<g class="routing-gpu" data-rank="${rank}">`+r(x,55,704,465,'panel')+t(x+20,91,`GPU ${rank} · E${rank*2} / E${rank*2+1}`,'large bold');
-      if(step===0){
-        [['Routing','int16 [2,2] · header 128 B','ρ','purple'],['Dispatch','BF16 [2,2,256] capacity','δ','blue'],['Combine','BF16 [2,2,256]','κ','green']].forEach(([name,shape,base,color],i)=>{
-          const yy=124+i*108;s+=t(x+20,yy,`${name} · ${symbol(base,rank)}`,'small bold')+t(x+684,yy,shape,'small muted','end');
-          for(let j=0;j<4;j++)s+=cell(x+20+j*166,yy+13,156,60,name==='Routing'?`k${j%2}`:name==='Dispatch'?`row ${j}`:`t${Math.floor(j/2)} / k${j%2}`,'',`${color}-fill`);
-        });
-        [['ρ₀,ρ₁','Routing'],['δ₀,δ₁','Dispatch'],['κ₀,κ₁','Combine']].forEach(([value,label],i)=>s+=cell(x+20+i*225,449,214,58,label,`[${value}]`,'box'));
-      }
-      if(step===1){
-        s+=t(x+20,126,'Caller IDs / local scores','small bold');
-        local.forEach((name,i)=>data[name].experts.forEach((e,slot)=>{const j=i*2+slot;s+=cell(x+20+j*166,139,156,77,`${name}/k${slot} → E${e}`,`score ${data[name].scores[slot]}`,'purple-fill');}));
-        s+=wire(`M${x+352},216 L${x+352},250`,'purple',true,true,true,'int16 IDs + int32 T')+t(x+385,240,'IDs','small purple-text');
-        s+=cell(x+20,253,664,60,`Routing ${symbol('ρ',rank)} · T = 2`,local.map(n=>`${n}:[${data[n].experts.join(',')}]`).join('  '),'purple-fill');
-        s+=t(x+20,348,`x → dispatch ${symbol('δ',rank)} · BF16 [2,256]`,'small bold');
-        local.forEach((name,i)=>{s+=cell(x+20+i*332,364,318,66,`${name} · ${i*512} B`,'256 values','blue-fill')+grid(x+35+i*332,434,288,16,1,8,'blue');});
-        s+=t(x+352,488,'2 × 512 B = 1,024 B · one copy per token','small muted','middle');
-      }
-      if(step===2){
-        s+=cell(x+20,119,664,61,`Routing ${symbol('ρ',rank)} · int32 T = 2`,local.map(n=>`${n}:[${data[n].experts.join(',')}]`).join('  '),'purple-fill');
-        s+=t(x+20,239,'Local int16 [EP,T,K] · 16 B','small bold')+t(x+684,239,'k0       k1','mono','end');
-        s+=ids(rank,x+20,256,true);
-        for(let e=rank*2;e<rank*2+2;e++){const names=rows.filter(r=>r.expert===e).map(r=>r.name),xx=x+20+(e%2)*332;s+=cell(xx,441,318,64,`E${e} · count 2`,`${names.join(',')} · prefix ${(e%2)*2}`,'green-fill');}
-      }
-      if(step===3){
-        s+=t(x+20,129,'Route','small bold')+t(x+190,129,'Read δ','small blue-text')+t(x+420,129,'Write κ','small green-text');
-        rows.forEach((r0,i)=>{const yy=148+i*64,active=r0.name===chosen;s+=`<g class="routing-cell">`+r(x+20,yy,664,52,active?'amber-fill':'box')+t(x+32,yy+34,`E${r0.expert}(${r0.name}) / k${r0.k}`,'mono')+t(x+190,yy+34,`${symbol('δ',r0.owner)}+${r0.gatherByte}B`,'mono blue-text')+t(x+420,yy+34,`${symbol('κ',r0.owner)}+${r0.returnByte}B`,'mono green-text')+'</g>';});
-        s+=t(x+20,451,'Local int64 pointer tables','small muted')+t(x+20,489,'Counts [2,2] → row starts [0,2]','mono');
-      }
-      if(step===4){
-        s+=t(x+20,130,'Dispatch','small blue-text')+t(x+390,130,'x_gathered · BF16 [4,256]','small green-text');
-        rows.forEach((r0,i)=>{const yy=150+i*71,col=r0.owner===rank?'green':'blue';
-          s+=cell(x+20,yy,270,61,`${r0.name} · ${symbol('δ',r0.owner)}+${r0.gatherByte}B`,'','blue-fill')+grid(x+33,yy+36,244,15,1,8,'blue');
-          s+=cell(x+390,yy,294,61,`E${r0.expert} / ${r0.name}`,`o_xg+${i*512}B`,'green-fill')+wire(`M${x+290},${yy+31} L${x+390},${yy+31}`,col,true,true,true,`${r0.name} row · BF16 [256]`)+t(x+340,yy+16,'512 B','small','middle');
-        });
-        ['W13','SwiGLU','W2'].forEach((label,i)=>{s+=cell(x+20+i*230,455,204,48,label,'','orange-fill');if(i<2)s+=wire(`M${x+224+i*230},479 L${x+250+i*230},479`,'orange',true,false);});
-      }
-      if(step===5){
-        s+=t(x+20,128,`Combine ${symbol('κ',rank)} · BF16 [T,K,D]`,'small green-text');
-        local.forEach((name,i)=>data[name].experts.forEach((e,slot)=>{const xx=x+20+slot*332,yy=161+i*137,offset=(i*2+slot)*512,active=name===chosen&&slot===k;
-          s+=cell(xx,yy,318,114,`${name} / k${slot} ← E${e}(${name})`,`${symbol('κ',rank)}+${offset}B`,active?'amber-fill':'green-fill')+grid(xx+13,yy+67,292,20,1,8,'green')+t(xx+159,yy+105,`${Math.floor(e/2)===rank?'local':'NVLink'} · GPU ${Math.floor(e/2)}`,'small muted','middle');
-        }));
-        if(rank===worker)s+=cell(x+(worker?20:404),446,280,61,`W2 · E${expert}(${chosen})`,'scatter_ptr','orange-fill');
-      }
-      if(step===6){
-        local.forEach((name,i)=>{const q=data[name],yy=158+i*169,out=q.outputs[0].map((n,j)=>Number((n*q.scores[0]+q.outputs[1][j]*q.scores[1]).toFixed(2)));
-          s+=t(x+20,yy-32,name,'bold');q.outputs.forEach((values,slot)=>{const xx=x+20+slot*218;s+=t(xx+96,yy-11,`× ${q.scores[slot]}`,'small purple-text','middle')+cell(xx,yy,192,78,`k${slot} / E${q.experts[slot]}`,`[${values.join(',')}]`,'green-fill');});
-          s+=wire(`M${x+212},${yy+39} L${x+222},${yy+39} L${x+222},${yy+96} L${x+459},${yy+96} L${x+459},${yy+48}`,'orange',true,false)+wire(`M${x+430},${yy+57} L${x+459},${yy+57}`,'orange',true,false)+`<circle cx="${x+480}" cy="${yy+48}" r="23" fill="var(--orange-soft)" stroke="var(--orange)"/>`+t(x+480,yy+58,'Σ','large bold','middle');
-          s+=wire(`M${x+503},${yy+48} L${x+535},${yy+48}`,'orange',true,false)+cell(x+535,yy,149,78,'FP32',`[${out.join(',')}]`,'orange-fill')+wire(`M${x+610},${yy+78} L${x+610},${yy+100}`,'green',true,false)+t(x+610,yy+124,`BF16 y_${name}`,'small green-text','middle');
-        });
-      }
-      s+='</g>';
+      const x=rank?588:16,local=rank?['C','D']:['A','B'],expert=token.experts.find(e=>Math.floor(e/2)===rank),k=token.experts.indexOf(expert),rows=Moe.routingRows(rank),row=rows.find(v=>v.name===name),offset=(token.index*2+k)*512;
+      s+=`<g class="routing-gpu" data-rank="${rank}">`+r(x,48,516,639,'panel')+t(x+16,78,`GPU ${rank}`,'large bold')+t(x+500,78,rank===owner?`${name}’s token owner`:`${name}’s remote expert`,'small muted','end');
+      s+=box(x+16,107,484,132,color(step<3?step:2,'purple'))+t(x+28,130,`Routing ${symbol('ρ',rank)} · IDs [T,K] int16`,'small bold')+t(x+472,130,'T = 2 · int32','tiny muted','end');
+      local.forEach((n,i)=>{const v=data[n],yy=158+i*28;s+=t(x+28,yy,`${n}`,'small bold');v.experts.forEach((e,j)=>{s+=r(x+65+j*89,yy-19,78,25,'purple-fill')+t(x+104+j*89,yy-1,step>=1?`E${e}`:'—','small','middle');});s+=t(x+285,yy-1,step>=1?`scores [${v.scores.join(',')}]`:'local scores','small muted');});
+      s+=t(x+28,220,step>=2?`E${rank*2}: 2 rows · E${rank*2+1}: 2 rows · prefix [0,2]`:'128-byte header + 8-byte ID payload','tiny muted')+'</g>';
+      s+=box(x+16,253,484,102,color(1,'blue'))+t(x+28,276,`Dispatch ${symbol('δ',rank)} · BF16`,'small bold')+t(x+472,276,'capacity [T,K,D] · 2 KiB','tiny muted','end')+t(x+28,299,'Forward x[T,D] · 1 KiB active','small muted');
+      local.forEach((n,i)=>{const xx=x+28+i*229;s+=r(xx,311,214,28,step>=1?'blue-fill':'box')+t(xx+107,330,`${n} · t${i} · +${i*512} B`,'small','middle');});s+='</g>';
+      s+=box(x+16,369,484,147,color(4,'orange'))+t(x+28,387,`Expert E${expert} · ${name}, k${k}`,'small bold')+t(x+472,387,'local HBM','tiny muted','end');
+      [['gather',`${symbol('δ',owner)}+${token.index*512} B`],['scatter',`${symbol('κ',owner)}+${offset} B`],['bwd return',`${symbol('δ',owner)}+${offset} B`]].forEach(([label,value],i)=>{s+=t(x+28+i*158,409,label,'tiny muted')+t(x+28+i*158,429,step>=3?value:'—','mono');});
+      s+=t(x+28,455,'x_gathered [R,D] →','tiny muted');rows.forEach((v,i)=>{const xx=x+195+i*74;s+=r(xx,439,67,24,v.name===name&&step>=4?'blue-fill':'box')+t(xx+33.5,455,v.name,'tiny','middle');});
+      [['W13','h1 [2F]'],['SwiGLU','h2 [F]'],['W2','h3 [D]']].forEach(([op,result],i)=>{const xx=x+28+i*158;s+=r(xx,466,136,32,step>=4?'orange-fill':'box')+t(xx+68,488,op,op==='SwiGLU'?'small':'mlp-operator','middle')+t(xx+68,507,result,'tiny','middle');if(i<2)s+=wire(`M${xx+136},480 L${xx+158},480`,'orange',step>=4,false);});s+='</g>';
+      s+=box(x+16,534,484,139,color(step>=5?step:5,'green'))+t(x+28,557,`Combine ${symbol('κ',rank)} · BF16 [T,K,D] · 2 KiB`,'small bold');
+      local.forEach((n,i)=>data[n].experts.forEach((e,j)=>{const cellX=x+28+(i*2+j)*114,active=n===name&&step>=5;s+=r(cellX,570,104,44,active?'green-fill':'box')+t(cellX+52,587,`${n}/k${j}`,'tiny bold','middle')+t(cellX+52,606,active?`h3,E${e}`:'—','tiny','middle');}));
+      if(rank===owner&&step===6){const out=token.outputs[0].map((v,j)=>Number((v*token.scores[0]+token.outputs[1][j]*token.scores[1]).toFixed(2)));s+=t(x+28,640,`${token.scores[0]} × h3,E${token.experts[0]} + ${token.scores[1]} × h3,E${token.experts[1]} → y_${name}`,'small')+t(x+28,661,`FP32 sum [${out.join(',')}] → BF16 y[T,D]`,'small green-text');}
+      else s+=t(x+28,642,rank===owner?`Return slot = t${token.index} × K + k`:'Results return to each token’s owner','tiny muted');
+      s+='</g></g>';
     }
-    s+=`<g class="routing-fabric" data-stage="${step}" data-owner="${v.rank}" data-worker="${worker}" data-token-index="${v.index}" data-k="${k}">`;
-    if(step===0)s+=wire('M720,302 L884,302','purple',true,false)+t(802,278,'Rendezvous','small purple-text','middle');
-    if(step===2)s+=wire('M700,146 L770,146 L770,279 L904,279','purple',true,true,true,'expert IDs · int16')+wire('M904,166 L834,166 L834,366 L700,366','purple',true,true,true,'expert IDs · int16')+r(754,194,95,42,'edge-label-bg','fill="var(--paper)" stroke="var(--purple)"')+t(802,221,'IDs','small purple-text','middle')+t(802,452,'T₀ = T₁','small green-text','middle');
-    if(step===3){const tuple=`r${v.rank} / t${v.index} / k${k}`,offset=(v.index*2+k)*512;[['Gather',`${symbol('δ',v.rank)} + ${v.index}×512 = ${symbol('δ',v.rank)}+${v.index*512}B`,'blue'],['Scatter',`${symbol('κ',v.rank)} + (${v.index}×2+${k})×512 = ${symbol('κ',v.rank)}+${offset}B`,'green'],['Backward return',`${symbol('δ',v.rank)} + (${v.index}×2+${k})×512 = ${symbol('δ',v.rank)}+${offset}B`,'purple']].forEach(([label,value,color],i)=>s+=cell(16+i*533,541,516,67,`${label} · ${tuple}`,value,`${color}-fill`));}
-    if(step===5){const ownerX=v.rank?884:16,sourceX=worker?904:700,sourceY=477,targetX=ownerX+20+k*332+159,targetY=161+v.index*137;s+=wire(`M${sourceX},${sourceY} L802,${sourceY} L802,${targetY-18} L${targetX},${targetY-18} L${targetX},${targetY}`,'blue',true,true,true,`${chosen}: h3 BF16 [256] · 512 B`)+r(750,382,104,55,'edge-label-bg','fill="var(--paper)" stroke="var(--blue)"')+t(802,405,'BF16','small blue-text','middle')+t(802,428,'512 B','small blue-text','middle');}
-    s+='</g>';
-    if(step!==3)s+='<g class="routing-note">'+t(20,584,['int64 peer bases · physical HBM stays on its GPU','IDs: int16 · token count: int32 · scores stay local','EP publication barrier precedes peer reads','', 'Blue: NVLink read · green: local read','EP combine barrier precedes owner reads','Two components shown · score weighting and sum are illustrated before BF16 rounding'][step],'small muted')+'</g>';
+    s+=`<g class="routing-fabric" data-stage="${step}" data-owner="${owner}" data-worker="${remote}" data-token-index="${token.index}" data-k="${token.experts.indexOf(token.experts.find(e=>Math.floor(e/2)===remote))}">`;
+    if(step===0)s+=wire('M532,180 L588,180','purple',true,false)+t(560,167,'peer bases','tiny purple-text','middle');
+    if(step===2)s+=wire('M516,164 L604,164','purple',true,true,true,'IDs [T,K] · int16')+wire('M604,190 L516,190','purple',true,true,true,'IDs [T,K] · int16')+t(560,151,'NVLink','tiny purple-text','middle');
+    if(step===4){const ownerX=owner?588:16,workerX=remote?588:16,src=ownerX+28+token.index*229+107,targetRow=Moe.routingRows(remote).find(v=>v.name===name).row,tx=workerX+195+targetRow*74+33.5,localRow=Moe.routingRows(owner).find(v=>v.name===name).row,localX=ownerX+195+localRow*74+33.5;s+=wire(`M${src},339 L${src},361 L${workerX+504},361 L${workerX+504},436 L${tx},436 L${tx},439`,'blue',true,true,true,`${name}: x[D] · BF16 · 512 B`)+wire(`M${src},339 L${src},358 L${ownerX+504},358 L${ownerX+504},436 L${localX},436 L${localX},439`,'blue',true,false)+t(560,341,'x[D]','tiny blue-text','middle');}
+    if(step===5){const ownerX=owner?588:16,workerX=remote?588:16,remoteK=token.experts.indexOf(token.experts.find(e=>Math.floor(e/2)===remote)),localK=1-remoteK,tx=ownerX+28+(token.index*2+remoteK)*114+52,localX=ownerX+28+(token.index*2+localK)*114+52;s+=wire(`M${workerX+412},516 L${workerX+412},524 L560,524 L560,563 L${tx},563 L${tx},570`,'blue',true,true,true,`${name}: h3[D] · BF16 · 512 B`)+wire(`M${ownerX+412},516 L${ownerX+412},563 L${localX},563 L${localX},570`,'green',true,false)+r(538,525,44,38,'edge-label-bg','fill="var(--paper)" stroke="var(--blue)"')+t(560,541,'h3[D]','tiny blue-text','middle')+t(560,558,'512 B','tiny blue-text','middle');}
+    s+='</g><g class="routing-note">'+t(16,723,step===6?'The two displayed components illustrate the sum before BF16 rounding.':'T = 2 · K = 2 · D = F = 256 · R = 4 · one row is 512 B · peer transfers use NVLink','small muted')+'</g>';
     return finish(s);
   }
   function consumption(c,plan){start('consumption');const total=plan.virtual,act=plan.activation,host=plan.hostScratch,hot=plan.deviceScratch,scale=1008/total;let s=t(16,22,c.vmm?`VMM on: one GPU virtual range · ${host?'HBM + pinned host backing':'device HBM backing'}`:'VMM off: one GPU allocation · device HBM only','bold')+t(1024,45,`Combined allocation: ${bytes(total)}`,'small muted','end');
@@ -297,30 +259,14 @@ window.Views = (() => {
   }
   function lifetimes(layout){
     start('lifetimes');const bf=layout.precision==='bf16',save=layout.mode==='save';let rows;
-    const math={
-      xg:[String.raw`x_{\mathrm g}=\operatorname{gather}(x)`,String.raw`\mathrm{grad}_{x_{\mathrm g}}=W_{13}^{\mathsf T}\mathrm{grad}_{h_1}`,String.raw`\mathrm{grad}_{W_{13}}\mathrel{+{=}}\mathrm{grad}_{h_1}x_{\mathrm g}^{\mathsf T}`],
-      h1:[String.raw`h_1=W_{13}x_{\mathrm g}=[g;u]`,String.raw`\mathrm{grad}_{h_1}=[dg;du]`,'Backward needs the gate/up values'],
-      h2:[String.raw`h_2=\operatorname{SiLU}(g)\odot u`,String.raw`\mathrm{grad}_{h_2}=W_2^{\mathsf T}\mathrm{grad}_{h_3}`,String.raw`\mathrm{grad}_{W_2}\mathrel{+{=}}\mathrm{grad}_{h_3}h_2^{\mathsf T}`],
-      h3:[String.raw`h_3=W_2h_2`,String.raw`\mathrm{grad}_{h_3}=\mathrm{score}\,\mathrm{grad}_y`,String.raw`\mathrm{grad}_{\mathrm{score}}=\mathrm{grad}_y^{\mathsf T}h_3`],
-      x:[String.raw`x=\text{caller input}`,String.raw`\mathrm{grad}_x=\sum_{\mathrm{routes}}\mathrm{grad}_{x_{\mathrm g}}`,'Replay gathers x into expert rows'],
-      row:[String.raw`Q_{\mathrm{row}}(x_{\mathrm g}),\;Q_{\mathrm{row}}(h_2)`,'W13 and W2 forward operands','Row bytes can be reused after MMA']
-    };
     if(save&&bf)rows=[['x_gathered',[[0,8,'green']],6,'xg'],['h1',[[0,8,'green']],5,'h1'],['h2 · scratch',[[1,3,'amber'],[3,5,'amber']],4,'h2'],['h3',[[2,8,'green']],3,'h3']];
     else if(save)rows=[['x column bundle',[[0,8,'green']],6,'xg'],['h1',[[0,8,'green']],5,'h1'],['h2 column bundle',[[1,8,'green']],4,'h2'],['h3',[[2,8,'green']],3,'h3'],['x/h2 row scratch',[[0,1,'amber'],[1,3,'amber']],2,'row']];
     else rows=[['Saved source x',[[0,8,'green']],3,'x'],[bf?'x_gathered':'x column bundle',[[0,3,'amber'],[3,7,'amber']],6,'xg'],['h1',[[0,3,'amber'],[3,6,'amber']],5,'h1'],[bf?'h2':'h2 column bundle',[[1,3,'amber'],[3,5,'amber']],4,'h2'],['h3 · combine HBM',[[2,3,'blue'],[3,4,'blue']],3,'h3']];
-    const x0=560,unit=107.5;let s=t(16,20,'FORWARD PRODUCER / BACKWARD DEPENDENCE','small bold');
+    const x0=235,unit=108;let s=t(16,20,'VALUE LIFETIMES · OPERATION ORDER','small bold');
     const headers=[['W13','forward'],['SwiGLU','forward'],['W2','forward'],['Setup /','rebuild'],['W2','grad_h2'],['SwiGLU','grad_h1'],['W13','grad_xg'],['Release','slot']];
-    headers.forEach((h,i)=>{s+=t(x0+i*unit+unit/2,20,h[0],'dependency-heading','middle')+t(x0+i*unit+unit/2,41,h[1],'dependency-subhead','middle');});
-    s+=l(x0+3*unit-4,51,x0+3*unit-4,565,'line','stroke-dasharray="3 3"');
-    rows.forEach((row,i)=>{
-      const y=65+i*100;s+=t(16,y+15,row[0],'dependency-name');
-      math[row[3]].forEach((tex,j)=>s+=j===0||tex.includes('=')?equation(j===0?260:16,y+[15,45,77][j],tex,j===0?'blue-text':'muted',26,j===0?290:532):t(16,y+(row[3]==='x'&&j===2?87:[15,45,77][j]),tex,'dependency-detail muted'));
-      s+=l(x0,y+67,1420,y+67);
-      for(const[a,b,color]of row[1])s+=r(x0+a*unit,y+13,(b-a)*unit-8,29,`${color}-fill`);
-      const xx=x0+(row[2]+.5)*unit;s+=`<path d="M${xx},${y+7} l6,8 -6,8 -6,-8Z" fill="${C('purple')}"/>`;
-    });
-    s+=r(16,575,1408,74,'purple-fill')+equation(29,600,String.raw`dg=\mathrm{grad}_{h_2}\odot u\odot\operatorname{SiLU}'(g),\qquad du=\mathrm{grad}_{h_2}\odot\operatorname{SiLU}(g)`,'',26,1360)+equation(29,633,String.raw`\operatorname{SiLU}'(g)=\operatorname{sigmoid}(g)\odot\bigl(1+g\odot(1-\operatorname{sigmoid}(g))\bigr)`,'',26,1360);
-    s+=equation(16,668,String.raw`x_{\mathrm g}=\texttt{x\_gathered}\;;\quad h_1=\texttt{h1}\;;\quad \mathrm{grad}_{h_1}=\texttt{grad\_h1}`,'muted',18,1360);
+    headers.forEach((h,i)=>s+=t(x0+i*unit+unit/2,20,h[0],'dependency-heading','middle')+t(x0+i*unit+unit/2,41,h[1],'dependency-subhead','middle'));
+    s+=l(x0+3*unit-4,52,x0+3*unit-4,268,'line','stroke-dasharray="3 3"');
+    rows.forEach((row,i)=>{const y=55+i*42;s+=t(16,y+24,row[0],'dependency-name')+l(x0,y+38,1105,y+38);for(const [a,b,color]of row[1])s+=r(x0+a*unit,y+9,(b-a)*unit-8,23,`${color}-fill`);const xx=x0+(row[2]+.5)*unit;s+=`<path d="M${xx},${y+3} l6,8 -6,8 -6,-8Z" fill="${C('purple')}"/>`;});
     return finish(s);
   }
   function kernel(p,bm,bn,tail,kSlice){start('kernel');const bk=64,valid=tail?Math.floor(bm*.703125):bm,scale=140/256,aw=bk*scale,ah=bm*scale,bw=bn*scale,bh=bk*scale,cw=bn*scale,ch=bm*scale;let s='';

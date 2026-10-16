@@ -136,3 +136,26 @@ body:not(.presentation-mode) #content .table-scroll{max-width:100%}
 @media(max-width:750px){body:not(.presentation-mode) #content .code-line{white-space:pre-wrap;min-width:0;overflow-wrap:anywhere}body:not(.presentation-mode) #content .code-top{flex-wrap:wrap}body:not(.presentation-mode) #content .code-description{overflow-wrap:anywhere}}
 body:not(.presentation-mode) #content .phase-tabs{flex-wrap:wrap;overflow-x:visible}
 body:not(.presentation-mode) #content .phase-tabs button{white-space:normal;flex:1 1 130px}
+/* The article uses one readable typography scale across its technical figures. */
+body:not(.presentation-mode) #content .diagram-scroll svg.fusion-visual:not(.article-layout-mobile){font-size:17px}
+body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) .bold{font-size:17px}
+body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) .small,body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) .small.bold,body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) .mono{font-size:16px}
+.dependency-equations{padding:0 20px 20px;color:var(--ink)}
+.dependency-equation-header,.dependency-equation-row{display:grid;grid-template-columns:1fr 1fr;gap:30px}
+.dependency-equation-header{font-size:13px;color:var(--muted);padding-bottom:8px}
+.dependency-equation-row{border-top:1px solid var(--line);padding:12px 0;align-items:center}
+.dependency-code-name{display:block;font:12px ui-monospace,Menlo,monospace;color:var(--faint);margin-bottom:7px}
+.dependency-formula{font-size:19px;line-height:1.6;color:var(--ink);padding:3px 0}
+.dependency-equation-note{font-size:13px;color:var(--muted);max-width:none;margin:10px 0 0}
+.setup-equation{max-width:none;margin:12px 20px 18px;background:none;border:0;padding:0}
+.setup-equation p{font-size:19px}
+@media(max-width:650px){.dependency-equation-header{display:none}.dependency-equation-row{grid-template-columns:1fr;gap:12px}.dependency-formula{font-size:18px}.dependency-equations{padding:0 14px 18px}.setup-equation{margin:10px 14px 18px}.setup-equation p{font-size:16px;overflow-wrap:anywhere}}
+.diagram-scroll svg.routing-visual{font-size:18px}
+.routing-visual .large{font-size:24px}.routing-visual .small{font-size:16px}.routing-visual .mono{font-size:16px}.routing-visual .tiny{font-size:14px}
+.routing-visual .mlp-operator{font:italic 21px KaTeX_Math,KaTeX_Main,serif}
+.routing-visual.article-layout-mobile .small{font-size:20px}.routing-visual.article-layout-mobile .mono{font-size:19px}.routing-visual.article-layout-mobile .tiny{font-size:18px}.routing-visual.article-layout-mobile .large{font-size:27px}
+body:not(.presentation-mode) #content .diagram-scroll svg.routing-visual{min-width:0!important}
+.dependency-derivatives{font-size:13px;color:var(--muted);margin-top:12px}
+.dependency-derivatives summary{cursor:pointer}
+.dependency-derivatives .dependency-formula{margin-top:12px}
+.routing-visual.article-layout-mobile .routing-focus-label{display:none}

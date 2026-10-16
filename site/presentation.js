@@ -26,21 +26,21 @@
     { id: 'moe', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
     { id: 'capabilities', figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes'], setup: '#motivation-setup' },
     { id: 'system', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 8], setup: '.diagram-key' },
-    { id: 'routing', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 6], bounds: [0,0,1600,620], setup: '#token-config', title: 'key-idea' },
+    { id: 'routing', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 6], bounds: [0,0,1120,740], setup: '#token-config', title: 'key-idea' },
     { id: 'quantization', figure: 'precision-figure', chapter: 'precision', parts: ['precision-svg', 'quant-detail'] },
     { id: 'quantization-axis', kind: 'orientation', chapter: 'precision' },
     { id: 'precision', figure: 'precision-figure', chapter: 'precision', parts: ['intermediate-table'], title: 'precision-reference', table: true },
     { id: 'memory-costs', figure: 'memory-figure', chapter: 'memory', parts: ['memory-svg'], setup: '#memory-cost-shape', title: 'costs', builds: ['#calculation-tabs [data-calculation="forward"]','#calculation-tabs [data-calculation="device"]'] },
     { id: 'allocation', figure: 'memory-figure', chapter: 'memory', parts: ['memory-policy-summary','consumption-svg', 'memory-stats'], setup: '#memory-shape', title: 'allocation', builds: ['#memory-examples [data-memory-example="saved"]','#memory-examples [data-memory-example="scratch"]','#memory-examples [data-memory-example="fixed"]'] },
-    { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['recompute-svg', 'lifetime-legend'], prepare: 'lifetime', title: 'key-idea', setup: '.config-summary', bounds: [0,0,1440,690] },
+    { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['dependency-equations','recompute-svg', 'lifetime-legend'], prepare: 'lifetime', title: 'key-idea', setup: '.config-summary', bounds: [0,0,1120,275] },
     { id: 'layer-packing', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [0, 8], parts: ['packing-svg'], display: 'packing', title: 'key-idea', setup: '#packing-brief' },
     { id: 'gpu-tile', figure: 'kernel-figure', controller: 'kernel', chapter: 'kernels', range: [0, 5], title: 'key-idea', setup: '#tile-address' },
     { id: 'mega-pipeline', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], bounds: [0,0,1600,550], title: 'key-idea', setup: '#fusion-config' },
     { id: 'pipeline-prefix', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [0, 31], actions: ['0F0','2B0','0F4','0B7'], slotDisplay: 'liveness', parts: ['liveness-svg'], setup: '#slots-config' },
     { id: 'slot-reuse', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [2, 6], actions: ['2F0','2B0','0F3'], slotDisplay: 'reuse', camera: [0, 0, 1146, 406], pane: true, parts: ['slots-svg','slot-selection'] },
     { id: 'results-metrics', figure: 'results-metrics-figure', chapter: 'results', parts: ['metrics-overview'], setup: '#metrics-setup', title: 'key-idea' },
-    { id: 'results-inference', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="inference"]', setup: '#efficiency-config', title: 'key-idea' },
-    { id: 'results-training', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="training"]', setup: '#efficiency-config', title: 'key-idea' },
+    { id: 'results-inference', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], bounds: [0,0,1600,404], preset: '#result-presets [data-preset="inference"]', setup: '#efficiency-config', title: 'key-idea' },
+    { id: 'results-training', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], bounds: [0,0,1600,404], preset: '#result-presets [data-preset="training"]', setup: '#efficiency-config', title: 'key-idea' },
     { id: 'results-skew', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,0], parts: ['skew-svg','skew-table'], bounds: [0,0,1600,404], setup: '#skew-config', title: 'key-idea' },
     { id: 'results-width', figure: 'results-width-figure', controller: 'width', chapter: 'results', range: [0,0], parts: ['width-svg','width-table'], bounds: [0,0,1600,404], setup: '#width-config', title: 'key-idea' },
     { id: 'public-api', kind: 'code', chapter: 'start', builds: ['#api-steps [data-api-step="0"]','#api-steps [data-api-step="1"]','#api-steps [data-api-step="2"]'] },
@@ -80,7 +80,7 @@
       node.querySelectorAll?.('svg[id]').forEach(svg => {
         app.finishTransition(svg);
         const old = savedCamera.get(svg);
-        if (svg.id==='recompute-svg') svg.setAttribute('viewBox',app.state.retentionDisplay==='lifetime'?'0 0 1440 690':'0 0 1040 400');
+        if (svg.id==='recompute-svg') svg.setAttribute('viewBox',app.state.retentionDisplay==='lifetime'?'0 0 1120 275':'0 0 1040 400');
         else if (old) svg.setAttribute('viewBox', old);
         svg.querySelectorAll('.deck-camera-clipped').forEach(n => n.classList.remove('deck-camera-clipped'));
         svg.classList.remove('deck-map');
@@ -392,7 +392,7 @@
       figure.querySelectorAll('svg[id]').forEach(app.finishTransition);
       if (scene.id === 'moe') {
         move(original.mlp, $('deck-visual'));
-        original.mlp.classList.add('deck-part');
+        original.mlp.classList.add('deck-part');app.renderExpertMath();
       }
 
     } else if (scene.kind === 'cover') {
@@ -595,7 +595,7 @@
       restore();
       active = false;
       shell.remove(); shell = null; canvas = null;
-      document.body.classList.remove('presentation-mode');
+      document.body.classList.remove('presentation-mode');app.renderExpertMath();
       exporting = false;
     }
   }
@@ -620,7 +620,7 @@
     if(document.fullscreenElement)document.exitFullscreen?.().catch(()=>{});else if(document.webkitFullscreenElement)document.webkitExitFullscreen?.();
     if(speakerWindow&&!speakerWindow.closed)speakerWindow.close();speakerWindow=null;
     shell.remove(); shell = null; canvas = null;
-    document.body.classList.remove('presentation-mode');
+    document.body.classList.remove('presentation-mode');app.renderExpertMath();
     article.classList.remove('deck-source');article.querySelectorAll('svg[id]').forEach(svg=>window.ArticleLayout?.apply(svg)); article.inert = false; article.removeAttribute('aria-hidden');
     setURL(false);
     requestAnimationFrame(() => { $('' + chapter)?.scrollIntoView({ behavior: 'instant', block: 'start' }); (savedFocus || $('present-link')).focus(); });

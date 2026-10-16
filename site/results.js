@@ -45,24 +45,24 @@
   function tabs(id,phase){$(id).querySelectorAll('[data-step]').forEach(button=>button.setAttribute('aria-pressed',String(Number(button.dataset.step)===phase)));}
   /** Draw measured compute or transport against correctly labeled references. */
   function efficiencySVG(rows){
-    let svg=t(20,28,'Useful compute / dense theoretical peak','r-head')+t(850,28,'NVLink TX and modeled HBM traffic','r-head');
+    let svg='<g class="efficiency-compute">'+t(20,28,'Useful compute / dense theoretical peak','r-head')+'</g><g class="efficiency-transport">'+t(850,28,'NVLink TX and modeled HBM traffic','r-head')+'</g>';
     const cx=230,cw=405,tx=1030,tw=300,base=342;
     for(let i=0;i<=4;i++){
       const pc=i*25,nv=i*225;
-      svg+=l(cx+cw*i/4,69,cx+cw*i/4,base,i===4?'faint':'line')+t(cx+cw*i/4,59,`${pc}%`,'r-small r-muted','middle');
-      svg+=l(tx+tw*i/4,69,tx+tw*i/4,base,i===4?'faint':'line')+t(tx+tw*i/4,59,String(nv),'r-small r-muted','middle');
+      svg+='<g class="efficiency-compute">'+l(cx+cw*i/4,69,cx+cw*i/4,base,i===4?'faint':'line')+t(cx+cw*i/4,59,`${pc}%`,'r-small r-muted','middle')+'</g>';
+      svg+='<g class="efficiency-transport">'+l(tx+tw*i/4,69,tx+tw*i/4,base,i===4?'faint':'line')+t(tx+tw*i/4,59,String(nv),'r-small r-muted','middle')+'</g>';
     }
-    svg+=t(1570,59,'HBM model','r-small r-muted','end');
+    svg+='<g class="efficiency-transport">'+t(1570,59,'HBM model','r-small r-muted','end')+'</g>';
     rows.forEach((r,i)=>{
       const yy=100+i*73,color=colors[r.precision],value=percent(r),[lo,hi]=range(r);
-      svg+=t(20,yy,name(r),'r-label')+t(20,yy+29,`${f(meta.theoreticalTFPerGPU[r.precision]/1000,1)} PF/s theory`,'r-small r-muted');
+      svg+='<g class="efficiency-compute">'+t(20,yy,name(r),'r-label')+t(20,yy+29,`${f(meta.theoreticalTFPerGPU[r.precision]/1000,1)} PF/s theory`,'r-small r-muted');
       svg+=b(cx,yy-20,cw*value/100,27,color)+whisker(cx+cw*percent(r,hi)/100,cx+cw*percent(r,lo)/100,yy-6,color)+dot(cx+cw*value/100,yy-6,color);
-      svg+=t(770,yy,`${f(value,1)}%`,'r-number','end')+t(770,yy+29,`${f(rate(r)/1000,2)} PF/s`,'r-small','end');
-      svg+=t(850,yy,name(r),'r-label')+t(850,yy+29,`${f(r.nvlinkTXGBps,0)} → ${f(r.nvlinkMaxTXGBps,0)} GB/s`,'r-small r-muted');
+      svg+=t(770,yy,`${f(value,1)}%`,'r-number','end')+t(770,yy+29,`${f(rate(r)/1000,2)} PF/s`,'r-small','end')+'</g>';
+      svg+='<g class="efficiency-transport">'+t(850,yy,name(r),'r-label')+t(850,yy+29,`${f(r.nvlinkTXGBps,0)} → ${f(r.nvlinkMaxTXGBps,0)} GB/s`,'r-small r-muted');
       svg+=b(tx,yy-20,tw*r.nvlinkTXGBps/900,27,color)+whisker(tx+tw*r.nvlinkTXGBps/900,tx+tw*r.nvlinkMaxTXGBps/900,yy-6,color)+dot(tx+tw*r.nvlinkTXGBps/900,yy-6,color);
-      svg+=t(1570,yy,`${f(r.analyticalHBMGBps/1000,2)} TB/s`,'r-number','end')+b(1390,yy+18,180,5,'line',.3)+b(1390,yy+18,180*r.analyticalHBMGBps/meta.theoreticalHBMGBps,5,color,.55);
+      svg+=t(1570,yy,`${f(r.analyticalHBMGBps/1000,2)} TB/s`,'r-number','end')+b(1390,yy+18,180,5,'line',.3)+b(1390,yy+18,180*r.analyticalHBMGBps/meta.theoreticalHBMGBps,5,color,.55)+'</g>';
     });
-    svg+=t(20,384,'Whiskers: observed timing windows · PF/s = PFLOP/s per GPU','r-small r-muted')+t(850,384,'TX marker: rank mean → max · theory: 900 GB/s TX, 8 TB/s HBM','r-small r-muted');
+    svg+='<g class="efficiency-compute">'+t(20,384,'Whiskers: observed timing windows · PF/s = PFLOP/s per GPU','r-small r-muted')+'</g><g class="efficiency-transport">'+t(850,384,'TX marker: rank mean → max · theory: 900 GB/s TX, 8 TB/s HBM','r-small r-muted')+'</g>';
     return svg;
   }
   /** Generate step-specific interpretation for the hardware comparison. */

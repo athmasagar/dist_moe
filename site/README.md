@@ -146,8 +146,9 @@ Figures include:
 
 - a nine-step forward path through peer HBM, NVLink, local HBM, SMEM,
   FP32 TMEM, SwiGLU, and symmetric combine;
-- seven routing views using memory cells, highlighted address fields, expert-row
-  strips, return-slot matrices, and weighted-sum operators;
+- a fixed two-GPU routing map that follows one token through seven steps,
+  shows dispatch capacity versus active forward rows, and returns each result
+  to its original combine k slot using source-derived byte addresses;
 - finite MXFP8 quantization, qdata bytes, E8M0 scales, and outlier underflow;
 - NVFP4 packing/global-scale structure and intermediate-precision tables;
 - a combined allocation view with device/host/device virtual-memory backing;
@@ -224,3 +225,10 @@ Figures 01, 06, 09, and 10 fit the article column without horizontal scrolling.
 Their panels stack on narrow screens; mobile tables retain every raw value
 as labeled fields. The slide view keeps the same full SVG panels and data.
 Figure 11 and its repeated memory-results section have been removed.
+
+Figure 01 uses W₁₃, h₁, h₂, W₂, and h₃ throughout, matching the setup and
+Section 2 equations. Figure 04B uses that section’s HTML math typesetting
+above the shared lifetime timeline. Figure 08 stacks compute and transport
+panels when the article column narrows; its tables use labeled rows on phones.
+Figure 06 uses the article’s standard label sizes. These changes also appear
+in the deck and its step-by-step PDF export.
