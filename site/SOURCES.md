@@ -182,3 +182,10 @@ scores. Its backward 2×/combined 3× multipliers are coarse assumptions, not
 measured traffic passes. The separate rank-0 NVML GPM TX value is
 239,035.92260694358 MiB/s, converted with 2^20/10^9 to 250.64733158349847 GB/s.
 Rank mean and maximum hardware-counter rates can differ from this rank-0 value.
+
+The two scratch views use the forward and backward planner offsets in
+`_activation_buffer_planner_kernel.py`. With ordinary BF16 training and eligible
+state omitted, forward scratch is aligned x_gathered + h1 + h2; h3 uses symmetric
+combine HBM. Backward’s recompute peak adds gradients and reuse. Both views
+use the same device received-row bound. The public API’s three excerpts are
+derived from the same full BF16/MXFP8 example programs as the article.

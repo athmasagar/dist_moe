@@ -30,7 +30,7 @@
     { id: 'quantization', figure: 'precision-figure', chapter: 'precision', parts: ['precision-svg', 'quant-detail'] },
     { id: 'quantization-axis', kind: 'orientation', chapter: 'precision' },
     { id: 'precision', figure: 'precision-figure', chapter: 'precision', parts: ['intermediate-table'], title: 'precision-reference', table: true },
-    { id: 'memory-costs', figure: 'memory-figure', chapter: 'memory', parts: ['memory-svg'], setup: '#memory-cost-shape', title: 'costs', builds: ['#calculation-tabs [data-calculation="saved"]','#calculation-tabs [data-calculation="device"]','#calculation-tabs [data-calculation="total"]'] },
+    { id: 'memory-costs', figure: 'memory-figure', chapter: 'memory', parts: ['memory-svg'], setup: '#memory-cost-shape', title: 'costs', builds: ['#calculation-tabs [data-calculation="forward"]','#calculation-tabs [data-calculation="device"]'] },
     { id: 'allocation', figure: 'memory-figure', chapter: 'memory', parts: ['memory-policy-summary','consumption-svg', 'memory-stats'], setup: '#memory-shape', title: 'allocation', builds: ['#memory-examples [data-memory-example="saved"]','#memory-examples [data-memory-example="scratch"]','#memory-examples [data-memory-example="fixed"]'] },
     { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['recompute-svg', 'lifetime-legend'], prepare: 'lifetime', title: 'key-idea', setup: '.config-summary', bounds: [0,0,1440,690] },
     { id: 'layer-packing', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [0, 8], parts: ['packing-svg'], display: 'packing', title: 'key-idea', setup: '#packing-brief' },
@@ -43,12 +43,11 @@
     { id: 'results-training', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="training"]', setup: '#efficiency-config', title: 'key-idea' },
     { id: 'results-skew', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,0], parts: ['skew-svg','skew-table'], setup: '#skew-config', title: 'key-idea' },
     { id: 'results-width', figure: 'results-width-figure', controller: 'width', chapter: 'results', range: [0,0], parts: ['width-svg','width-table'], setup: '#width-config', title: 'key-idea' },
-    { id: 'configuration', kind: 'code', chapter: 'start', excerpt: 'config' },
-    { id: 'expert-call', kind: 'code', chapter: 'start', excerpt: 'call' },
+    { id: 'public-api', kind: 'code', chapter: 'start', builds: ['#api-steps [data-api-step="0"]','#api-steps [data-api-step="1"]','#api-steps [data-api-step="2"]'] },
     { id: 'reading', kind: 'resources', chapter: 'start' }
   ];
 
-  const sceneAliases = {assignments:'routing','expert-rows':'routing','return-slots':'routing','results-memory':'layer-packing','expert-math':'moe','dynamic-recompute':'layer-packing',offsets:'layer-packing','gather-tiles':'gpu-tile','tensor-cores':'gpu-tile','warp-groups':'mega-pipeline','chunk-readiness':'mega-pipeline'};
+  const sceneAliases = {configuration:'public-api','expert-call':'public-api',assignments:'routing','expert-rows':'routing','return-slots':'routing','results-memory':'layer-packing','expert-math':'moe','dynamic-recompute':'layer-packing',offsets:'layer-packing','gather-tiles':'gpu-tile','tensor-cores':'gpu-tile','warp-groups':'mega-pipeline','chunk-readiness':'mega-pipeline'};
   /** Preserve links to examples that now share one complete slide. */
   function sceneIndex(id) { return scenes.findIndex(scene=>scene.id===(sceneAliases[id]||id)); }
 
@@ -100,6 +99,7 @@
     catch { return text.match(/^.*?[.!?](?:\s|$)/)?.[0].trim() || text; }
   }
   function captionNode(scene) {
+    if(scene.kind==='code')return source('#api-caption');
     if (!scene.figure) return null;
     if(scene.id==='memory-costs')return figures[scene.figure].querySelector('#memory-cost-caption');
     if(scene.id==='allocation')return figures[scene.figure].querySelector('#memory-caption');
@@ -109,7 +109,7 @@
     if (scene.kind === 'cover') return original.title.textContent;
     if (scene.kind === 'orientation') return source('#precision > h3').textContent;
     if (scene.kind === 'resources') return 'Execution modes and documentation';
-    if (scene.kind === 'code') return scene.excerpt === 'config' ? 'dist_moe.Config' : (current&&app.state.code==='memory'?'dist_moe.plan_memory':'dist_moe.routed_experts');
+    if (scene.kind === 'code') return current?source('#api-caption strong').textContent.replace(/\.$/,''):'Dist-MoE public API';
     const figure = figures[scene.figure];
     if(current && scene.controller==='efficiency')return source(`[data-slide-summary="results-${app.state.resultMode}"]`).previousElementSibling.textContent;
     if (scene.title === 'precision-reference') return figure.querySelector('.inside-heading').textContent;
@@ -304,6 +304,7 @@
       else if(scene.figure==='precision-figure')app.renderPrecision();
       else if(scene.figure==='memory-figure')app.renderMemory();
       else if(scene.figure==='recompute-figure')app.renderRetention();
+      else if(scene.kind==='code')app.renderCode();
     };
     calibrating=true;canvas.classList.add('deck-calibrating');c?.stop();
     try {
@@ -419,7 +420,7 @@
       const box = document.createElement('div'); box.className = 'deck-code';
       box.innerHTML = '<div class="deck-code-label" id="deck-code-label">Quickstart excerpt</div><pre><code id="deck-code-excerpt"></code></pre>';
       $('deck-visual').append(box);
-
+      if(scene.builds)setBuild(scene,lastStep?scene.builds.length-1:0);
     }
     updateNotes(scene);
     update(); reserveLayout(scene); update(); resize();
@@ -465,35 +466,8 @@
     $('deck-fit').textContent = fullView ? 'Focused view · V' : 'Full diagram · V';
     $('deck-fit').setAttribute('aria-pressed',String(fullView));
   }
-  function codeBlock(lines, needle) {
-    const start = lines.findIndex(line => line.includes(needle));
-    if (start < 0) return [];
-    let depth = 0, result = [], began = false;
-    for (let i = start; i < lines.length; i++) {
-      const line = lines[i]; result.push(line);
-      for (const char of line.replace(/#.*$/, '')) { if (char === '(') { depth++; began = true; } else if (char === ')') depth--; }
-      if (began && depth === 0) break;
-    }
-    const indent = result[0].match(/^\s*/)[0].length;
-    return result.map(line => line.slice(indent));
-  }
   function updateCode(scene) {
-    const lines = [...$('quickstart-code').querySelectorAll('.code-line')].map(n => n.textContent);
-    let excerpt;
-    if (scene.excerpt === 'config') {
-      const dims = lines.find(line => /^T, D, F, K, E_local/.test(line));
-      const config = codeBlock(lines, 'dist_moe.Config(');
-      const reference = config.map(line => line.match(/\bblock_scaled\s*=\s*([A-Za-z_]\w*)\s*,/)).find(Boolean)?.[1];
-      const definition = reference && lines.find(line => line.split('=')[0].trim() === reference && line.includes('dist_moe.BlockScaledConfig('));
-      const policy = definition ? codeBlock(lines, definition.trim()) : [];
-      excerpt = [...(dims ? [dims, ''] : []), ...policy, ...(policy.length ? [''] : []), ...config];
-    } else {
-      const first = lines.findIndex(line => line.includes('dist_moe.prepare_block_scaled_weight('));
-      const end = lines.findIndex((line, i) => i > first && line.trim() === 'try:');
-      const preparation = first >= 0 && end > first ? lines.slice(Math.max(0, first - 2), end) : [];
-      excerpt = [...codeBlock(lines, 'dist_moe.create_context('), '', ...preparation, ...(preparation.length ? [''] : []), ...codeBlock(lines, 'dist_moe.routed_experts(')];
-      if (!excerpt.some(line => line.includes('routed_experts'))) excerpt = lines.filter(line => line.includes('dist_moe.plan_memory') || line.includes('print(plan'));
-    }
+    const excerpt=app.apiExcerpt(build);
     const cut=excerpt.length>22?Math.ceil(excerpt.length/2):excerpt.length;
     const columns=[excerpt.slice(0,cut),...(cut<excerpt.length?[excerpt.slice(cut)]:[])];
     $('deck-code-excerpt').classList.toggle('deck-code-columns',columns.length>1);
@@ -519,6 +493,7 @@
     if(scene.id==='results-metrics')return 'Extra padding/replay FLOPs are not separately instrumented. All routed-operation costs remain in measured latency; effective HBM bandwidth is a model.';
     if(scene.chapter==='results')return window.ResultsApp.scope(scene.controller,app.controllers[scene.controller].phase);
     if(scene.id==='capabilities')return source('#capability-scope').textContent;
+    if(scene.id==='routing')return 'Two ranks, four tokens; output components are illustrative before BF16 rounding.';
     const text=f.querySelector('figcaption').textContent;
     let sentences;
     try{sentences=[...new Intl.Segmenter('en',{granularity:'sentence'}).segment(text)].map(s=>s.segment.trim());}catch{sentences=[text];}
@@ -538,6 +513,7 @@
   function update() {
     if (!active) return;
     const scene = scenes[index], figure = figures[scene.figure];
+    if(scene.kind==='code'&&scene.builds)build=app.state.apiStep;
     $('deck-title').textContent = titleFor(scene, true);
     $('deck-section').textContent = figure?.querySelector('.fig-number')?.textContent || source('#' + scene.chapter)?.dataset.title || '';
     $('deck-page').textContent = `${index + 1} / ${scenes.length}`;

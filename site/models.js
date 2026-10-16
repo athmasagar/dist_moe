@@ -25,6 +25,12 @@ window.Moe = (() => {
     const rowPeak=c.pipeline==='mega'?Math.max(qx+qh,qg):Math.max(qx,qh,qg);
     return [part('Shared row-operand scratch',rowPeak,c.pipeline==='mega'?'max(Qrow(R,D) + Qrow(R,F), Qrow(R,2F))':'max(Qrow(R,D), Qrow(R,F), Qrow(R,2F))','E4M3 + E8M0'),part('Replayed x column bundle',col(r,c.D).bytes,'Qcol(R,D)','E4M3 + E8M0'),part('Replayed h1',r*2*c.F*2,'align128(R × 2F × 2)'),part('Replayed h2 column bundle',col(r,c.F).bytes,'Qcol(R,F)','E4M3 + E8M0'),part('grad_h3 column bundle',col(r,c.D).bytes,'Qcol(R,D)','E4M3 + E8M0'),part('grad_h2',r*c.F*2,'align128(R × F × 2)'),part('grad_h1 column bundle',col(r,2*c.F).bytes,'Qcol(R,2F)','E4M3 + E8M0')];
   }
+  /** Count the ordinary training forward scratch when eligible state is omitted. */
+  function forwardScratchParts(c,r) {
+    if(c.precision==='bf16')return [part('x_gathered',r*c.D*2,'align128(R × D × 2)'),part('h1',r*2*c.F*2,'align128(R × 2F × 2)'),part('h2',r*c.F*2,'align128(R × F × 2)')];
+    const qx=row(r,c.D).bytes,qh=row(r,c.F).bytes;
+    return [part('Forward row operands',c.pipeline==='mega'?qx+qh:Math.max(qx,qh),c.pipeline==='mega'?'Qrow(R,D) + Qrow(R,F)':'max(Qrow(R,D), Qrow(R,F))','E4M3 + E8M0'),part('x column bundle',col(r,c.D).bytes,'Qcol(R,D)','E4M3 + E8M0'),part('h1',r*2*c.F*2,'align128(R × 2F × 2)'),part('h2 column bundle',col(r,c.F).bytes,'Qcol(R,F)','E4M3 + E8M0')];
+  }
   function memoryBounds(c) {
     const deviceFactor=Math.min(c.deviceFactor,c.EP),totalFactor=c.vmm?Math.min(c.totalFactor,c.EP):deviceFactor;
     if(!Number.isFinite(deviceFactor)||deviceFactor<=0)throw new Error('Device scratch factor must be positive and finite.');
@@ -131,5 +137,5 @@ window.Moe = (() => {
   function fp8Value(code) {const sign=code&128?-1:1,u=code&127,e=u>>3,m=u&7;if(e===15&&m===7)return NaN;return sign*(e===0?m*2**-9:(1+m/8)*2**(e-7));}
   function fp8Byte(value) {const sign=value<0||Object.is(value,-0)?128:0,v=Math.abs(value);let best=0,error=Infinity;for(let b=0;b<=126;b++){const e=Math.abs(fp8Value(b)-v);if(e<error||(e===error&&b%2===0)){best=b;error=e;}}return best|sign;}
   function quantBlock(outlier=false) {const seed=[-13.25,-7.5,-3.5625,-1.3125,-.234375,0,.005859375,.0009765625,2.75,3.625,6.75,9.5,11.25,13.5,15.75,17.25];const x=[...seed,...seed.map(v=>v*.75)];if(outlier)x[31]=512;const amax=Math.max(...x.map(Math.abs)),exponent=Math.ceil(Math.log2(amax/448)),scale=2**exponent,scaleByte=exponent+127;const bytes=x.map(v=>fp8Byte(v/scale)),q=bytes.map(fp8Value),decoded=q.map(v=>v*scale);return {x,amax,scale,scaleByte,bytes,q,decoded};}
-  return {align,sum,packing,row,col,capacity,savedParts,scratchParts,memoryBounds,slotFromFactor,factorForSlot,memory,tokenData,routingRows,layout,schedule,lifetimes,intervals,fp8Value,fp8Byte,quantBlock};
+  return {align,sum,packing,row,col,capacity,savedParts,scratchParts,forwardScratchParts,memoryBounds,slotFromFactor,factorForSlot,memory,tokenData,routingRows,layout,schedule,lifetimes,intervals,fp8Value,fp8Byte,quantBlock};
 })();

@@ -37,7 +37,7 @@ uses modern browser APIs including native dialogs. Publishing is a separate step
 
 ## Browser presentation
 
-The **Present** link switches the article into a 24-slide presentation. The
+The **Present** link switches the article into a 23-slide presentation. The
 deck uses a 16:9 canvas with stable diagram framing and the same live controls.
 A generic MoE setup precedes the capability comparison (slide 3) and GPU
 placement. The comparison table and its visible qualifications come directly
@@ -48,8 +48,8 @@ peer mappings, publication, ID exchange, pointer construction, gather, scatter,
 and weighted reduction. The article includes the same figure plus exact
 header, payload, and pointer definitions.
 
-Slide 9 derives one layer’s saved-state cost, device scratch peak, and total
-scratch peak before slide 10 applies three capacity policies. Those presets
+Slide 9 compares forward and backward scratch at the same receive-row bound
+in two steps, before slide 10 applies three capacity policies. Those presets
 use activation factor 1.5 with device/total scratch 4, activation factor 0.5
 with device scratch 4 and VMM total scratch 16, and a fixed 32 GiB activation
 cap with device/total scratch 16.
@@ -60,7 +60,9 @@ L3 retains only its replay input, and backwards release saved offsets.
 Slide 13 keeps all six tile handoffs together. Slide 14 pairs the complete
 producer/consumer graph with the SM/CTA warp layout; Mega is the default,
 with Staged selectable. The same resident TMA/MMA and epilogue roles serve
-both W13 and W2 tasks. There is no separate memory-results slide.
+both W13 and W2 tasks. There is no separate memory-results slide. Slide 22 combines configuration,
+context creation/execution, and plan.explain() in three steps; the API excerpts
+and full programs share the article’s code source.
 
 Figure 07 first compares stage–microbatch and whole-microbatch lifetimes and
 peak counts. Its second tab shows the simple schedule timeline, with one row
@@ -142,8 +144,8 @@ Figures include:
 
 - a nine-step forward path through peer HBM, NVLink, local HBM, SMEM,
   FP32 TMEM, SwiGLU, and symmetric combine;
-- seven routing views covering peer bases, exchanged IDs, locally constructed
-  pointers, source rows, return slots, and reduction;
+- seven routing views using memory cells, highlighted address fields, expert-row
+  strips, return-slot matrices, and weighted-sum operators;
 - finite MXFP8 quantization, qdata bytes, E8M0 scales, and outlier underflow;
 - NVFP4 packing/global-scale structure and intermediate-precision tables;
 - a combined allocation view with device/host/device virtual-memory backing;
