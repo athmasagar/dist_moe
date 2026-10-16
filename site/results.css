@@ -58,3 +58,10 @@ svg.result-visual{font-size:20px}
 .deck-visual .efficiency-table th{font-size:18px}
 .deck-visual .efficiency-table th:first-child{width:20%}
 .diagram-scroll svg.result-complete{min-width:1280px}
+.width-extents .r-head{white-space:normal}
+.result-complete.article-layout-mobile .r-head{font-size:30px}
+.result-complete.article-layout-mobile .r-label{font-size:28px}
+.result-complete.article-layout-mobile .r-small{font-size:26px}
+#skew-svg.article-layout-mobile .r-head{font-size:25px}
+#skew-svg.article-layout-mobile .r-label{font-size:23px}
+#skew-svg.article-layout-mobile .r-small{font-size:21px}

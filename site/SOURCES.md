@@ -151,23 +151,6 @@ case descriptors. Article plots, tables, prose, and slides share
   and no capacity-triggered recompute. Arena reservations and PyTorch peak
   allocation counters are distinct views and must not be summed.
 
-The EP64/F3072 MXFP8 policy example has equal saved-slot reservations.
-The additional Mega scratch is 341,950,464 bytes: at padded capacity R = 98,944,
-row h2 qdata is R × F = 303,955,968 bytes, and its allocated scale extent is
-4 × R × ceil(F/32) = 37,994,496 bytes. The format still has one logical E8M0
-scale per 32 values; the row allocator reserves 4× that natural extent.
-This equality is specific to the shown complete-context scratch peak; other
-shapes can have a different largest live scratch set.
-
-The packing view repeats the measured balanced EP64 BF16 footprint:
-480 MiB eligible state/layer, 28 MiB source input/layer, and a fixed 3,644 MiB
-slot. An eight-layer look-ahead reserves future inputs. Seven full states and
-one replay input use 3,388 MiB, with 256 MiB remaining. Layer start offsets are
-prefix byte sums, as in Figure 04A. The retained-state table shows the seven full-state extents and the final
-source-only input. Sequential layers share one scratch arena. It excludes caller weights, gradients,
-symmetric buffers, and graph-pool storage; it is not a measured stack, total
-GPU-memory saving, or measured recompute speedup.
-
 The metrics primer separates a counted numerator from measured execution
 time. Padding/replay arithmetic is outside nominal useful GEMM FLOPs and was
 not separately instrumented in this report. Quantization, nonlinearity,

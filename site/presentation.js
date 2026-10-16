@@ -26,7 +26,7 @@
     { id: 'moe', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
     { id: 'capabilities', figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes'], setup: '#motivation-setup' },
     { id: 'system', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 8], setup: '.diagram-key' },
-    { id: 'routing', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 6], setup: '#token-config', title: 'key-idea' },
+    { id: 'routing', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 6], bounds: [0,0,1600,620], setup: '#token-config', title: 'key-idea' },
     { id: 'quantization', figure: 'precision-figure', chapter: 'precision', parts: ['precision-svg', 'quant-detail'] },
     { id: 'quantization-axis', kind: 'orientation', chapter: 'precision' },
     { id: 'precision', figure: 'precision-figure', chapter: 'precision', parts: ['intermediate-table'], title: 'precision-reference', table: true },
@@ -35,14 +35,14 @@
     { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['recompute-svg', 'lifetime-legend'], prepare: 'lifetime', title: 'key-idea', setup: '.config-summary', bounds: [0,0,1440,690] },
     { id: 'layer-packing', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [0, 8], parts: ['packing-svg'], display: 'packing', title: 'key-idea', setup: '#packing-brief' },
     { id: 'gpu-tile', figure: 'kernel-figure', controller: 'kernel', chapter: 'kernels', range: [0, 5], title: 'key-idea', setup: '#tile-address' },
-    { id: 'mega-pipeline', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], title: 'key-idea', setup: '#fusion-config' },
+    { id: 'mega-pipeline', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], bounds: [0,0,1600,550], title: 'key-idea', setup: '#fusion-config' },
     { id: 'pipeline-prefix', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [0, 31], actions: ['0F0','2B0','0F4','0B7'], slotDisplay: 'liveness', parts: ['liveness-svg'], setup: '#slots-config' },
     { id: 'slot-reuse', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [2, 6], actions: ['2F0','2B0','0F3'], slotDisplay: 'reuse', camera: [0, 0, 1146, 406], pane: true, parts: ['slots-svg','slot-selection'] },
     { id: 'results-metrics', figure: 'results-metrics-figure', chapter: 'results', parts: ['metrics-overview'], setup: '#metrics-setup', title: 'key-idea' },
     { id: 'results-inference', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="inference"]', setup: '#efficiency-config', title: 'key-idea' },
     { id: 'results-training', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="training"]', setup: '#efficiency-config', title: 'key-idea' },
-    { id: 'results-skew', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,0], parts: ['skew-svg','skew-table'], setup: '#skew-config', title: 'key-idea' },
-    { id: 'results-width', figure: 'results-width-figure', controller: 'width', chapter: 'results', range: [0,0], parts: ['width-svg','width-table'], setup: '#width-config', title: 'key-idea' },
+    { id: 'results-skew', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,0], parts: ['skew-svg','skew-table'], bounds: [0,0,1600,404], setup: '#skew-config', title: 'key-idea' },
+    { id: 'results-width', figure: 'results-width-figure', controller: 'width', chapter: 'results', range: [0,0], parts: ['width-svg','width-table'], bounds: [0,0,1600,404], setup: '#width-config', title: 'key-idea' },
     { id: 'public-api', kind: 'code', chapter: 'start', builds: ['#api-steps [data-api-step="0"]','#api-steps [data-api-step="1"]','#api-steps [data-api-step="2"]'] },
     { id: 'reading', kind: 'resources', chapter: 'start' }
   ];
@@ -368,7 +368,7 @@
     if (scene.figure) {
       const figure = figures[scene.figure];
       const c = app.controllers[scene.controller];
-      move(figure, $('deck-visual'));
+      move(figure, $('deck-visual'));figure.querySelectorAll('svg[id]').forEach(svg=>window.ArticleLayout?.apply(svg,true));
       const parts = scene.parts || [c?.svg().id];
       parts.filter(Boolean).forEach(id => part(figure, id));
       const controls = [...figure.children].filter(node => {
@@ -621,7 +621,7 @@
     if(speakerWindow&&!speakerWindow.closed)speakerWindow.close();speakerWindow=null;
     shell.remove(); shell = null; canvas = null;
     document.body.classList.remove('presentation-mode');
-    article.classList.remove('deck-source'); article.inert = false; article.removeAttribute('aria-hidden');
+    article.classList.remove('deck-source');article.querySelectorAll('svg[id]').forEach(svg=>window.ArticleLayout?.apply(svg)); article.inert = false; article.removeAttribute('aria-hidden');
     setURL(false);
     requestAnimationFrame(() => { $('' + chapter)?.scrollIntoView({ behavior: 'instant', block: 'start' }); (savedFocus || $('present-link')).focus(); });
   }

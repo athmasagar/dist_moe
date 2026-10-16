@@ -107,3 +107,32 @@ svg .slot-acquired{stroke:var(--ink);stroke-width:2.5}
 .fusion-visual .small{font-size:17px}
 .fusion-visual .small.bold{font-size:17px}
 .fusion-visual .mono{font-size:17px}
+
+/* Article figures reflow their shared SVG panels; the deck retains full framing. */
+.diagram-scroll svg.article-fit{min-width:0!important;max-width:100%;margin-inline:auto}
+.diagram-scroll.article-responsive{overflow-x:visible}
+.diagram-scroll.article-responsive::before{display:none}
+.routing-visual.article-layout-mobile .small{font-size:26px}
+.routing-visual.article-layout-mobile .mono{font-size:24px}
+.routing-visual.article-layout-mobile .large{font-size:32px}
+.fusion-visual.article-layout-mobile .small,.fusion-visual.article-layout-mobile .small.bold{font-size:22px}
+.fusion-visual.article-layout-mobile .bold{font-size:22px}
+.fusion-visual.article-layout-mobile .mono{font-size:22px}
+body:not(.presentation-mode) #content .table-scroll{max-width:100%}
+@media(max-width:1050px){
+ body:not(.presentation-mode) #content table{min-width:0!important;width:100%;table-layout:auto}
+ body:not(.presentation-mode) #content table thead{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0,0,0,0)}
+ body:not(.presentation-mode) #content table tbody{display:block}
+ body:not(.presentation-mode) #content table tbody tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 18px;border-top:1px solid var(--line);padding:14px 0}
+ body:not(.presentation-mode) #content table tbody :is(th,td){display:block;border:0;padding:0!important;width:auto!important;text-align:left;min-width:0;font-size:14px;overflow-wrap:anywhere;white-space:normal}
+ body:not(.presentation-mode) #content table tbody th:first-child,body:not(.presentation-mode) #content table tbody td:first-child{grid-column:1/-1;font-size:16px;font-weight:600}
+ body:not(.presentation-mode) #content table tbody :is(th,td)::before{content:attr(data-label);display:block;font-size:11px;font-weight:500;color:var(--faint);line-height:1.4;margin-bottom:4px}
+ body:not(.presentation-mode) #content .capability-table td{background:none}
+ body:not(.presentation-mode) #content .backward-mini{flex-wrap:wrap}
+ body:not(.presentation-mode) #content .figure-top>div{min-width:0;flex-wrap:wrap}
+ body:not(.presentation-mode) #content .config-summary{overflow-wrap:anywhere}
+}
+
+@media(max-width:750px){body:not(.presentation-mode) #content .code-line{white-space:pre-wrap;min-width:0;overflow-wrap:anywhere}body:not(.presentation-mode) #content .code-top{flex-wrap:wrap}body:not(.presentation-mode) #content .code-description{overflow-wrap:anywhere}}
+body:not(.presentation-mode) #content .phase-tabs{flex-wrap:wrap;overflow-x:visible}
+body:not(.presentation-mode) #content .phase-tabs button{white-space:normal;flex:1 1 130px}

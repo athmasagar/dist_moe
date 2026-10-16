@@ -22,6 +22,7 @@ Deploy these files and the artwork folder together to a static host:
 - `diagrams.js`
 - `examples.js`
 - `app.js`
+- `article-layout.js`
 - `presentation.js`
 - `presentation.css`
 - `pdf-export.js`
@@ -115,11 +116,12 @@ settings also carry between views when using Present and Article.
 step summaries for the article and deck. A metrics primer on slide 17 precedes
 four complete result slides: inference, training, routing skew, and expert width.
 Each has one step with all compared plots and raw-number rows visible together.
-The measured memory-policy figure remains in the article. Peak
+The article and deck use the same data and renderers; article panels reflow
+within their column, while the deck keeps its full diagrams. Peak
 references are theoretical NVIDIA datasheet values, with dense compute
 denominators and one-direction NVLink bandwidth. HBM is an analytical traffic
-estimate. The eight-layer packing view is explicitly a projection from
-measured single-layer footprints, rather than a multi-layer benchmark.
+estimate. The earlier layer-packing example explains its planner decisions separately
+from these single-layer performance measurements.
 
 After editing the measurement snapshot, regenerate the downloadable numerical
 exports with `python3 site/data/export_results.py`. The JSON includes timing
@@ -215,3 +217,10 @@ Do not reinterpret animation pace as measured latency. NVFP4’s figure shows
 its packing and global-scale structure; it does not emulate its full numerical
 quantizer. CUDA VMM granularity and allocator padding require the actual package
 planner with a device argument.
+
+## Article layout
+
+Figures 01, 06, 09, and 10 fit the article column without horizontal scrolling.
+Their panels stack on narrow screens; mobile tables retain every raw value
+as labeled fields. The slide view keeps the same full SVG panels and data.
+Figure 11 and its repeated memory-results section have been removed.
