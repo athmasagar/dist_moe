@@ -109,15 +109,78 @@ window.Views = (() => {
     s+=t(258,24,'NVLink','small blue-text','middle')+t(258,42,'fabric','small muted','middle');
     s+=t(324,693,'Source publication and final peer stores are ordered by GPU symmetric-memory barriers.','small muted');return finish(s);
   }
-  const tokenPhases=['Assignments','Expert rows','Return slots','Weighted output'];
-  function tokens(step,focus='all'){start('tokens');const p=[0,2,6,7][step];let s='';const data=Moe.tokenData;
-    for(let rank=0;rank<2;rank++){const x=rank*520+12,local=rank?['C','D']:['A','B'],groups=rank?[2,3]:[0,1];s+=r(x,8,496,424,'panel')+t(x+18,36,`Rank ${rank} · GPU ${rank}`,'large bold')+t(x+478,36,`owns E${groups.join(', E')}`,'small muted','end');
-      if(p===0){s+=t(x+20,73,'Caller-owned x, expert IDs, and scores','small muted');local.forEach((name,i)=>{const y=93+i*151,v=data[name],dim=focus!=='all'&&focus!==name;s+=`<g ${dim?'class="dim"':''}>`+badge(x+20,y,name,rank?'orange':'blue')+grid(x+77,y,139,29,1,8,rank?'orange':'blue')+t(x+77,y+51,'BF16 [256] · 512 bytes','small muted')+card(x+241,y,231,83,`IDs: [E${v.experts.join(', E')}]`,`Scores: [${v.scores.join(', ')}]`,'box')+t(x+20,y+103,'Two assignments reference one source row.','small')+'</g>';});}
-      if(p===2){const names=['A','C','B','D'];s+=t(x+20,73,'Gather pointers','bold')+t(x+276,73,'x_gathered in local HBM','bold');names.forEach((name,i)=>{const y=96+i*66,v=data[name],e=groups[i<2?0:1],dim=focus!=='all'&&focus!==name;s+=`<g ${dim?'class="dim"':''}>`+r(x+20,y,207,48,'box')+t(x+31,y+19,`${name} from rank ${v.rank}`,'small')+t(x+31,y+37,`dispatch_r${v.rank} + ${v.index*512} B`,'mono muted')+r(x+276,y,200,48,'green-fill')+t(x+288,y+20,`E${e} · ${name} [256]`,'small bold')+t(x+288,y+38,`o_xg + ${hex(i*512)}`,'mono muted')+wire(`M${x+227},${y+24} L${x+276},${y+24}`,v.rank===rank?'green':'blue',!dim)+'</g>';});s+=t(x+20,397,'Four expert-major rows · BF16 [4, 256]','small muted');}
-      if(p===6){const routeNames=rank?['A','C','B','D']:['A','C','B','D'];s+=t(x+20,73,'Expert-local outputs → token-owner addresses','bold');routeNames.forEach((name,i)=>{const e=groups[i<2?0:1],v=data[name],k=v.experts.indexOf(e),dim=focus!=='all'&&focus!==name;const y=94+i*64;s+=`<g ${dim?'class="dim"':''}>`+r(x+20,y,165,44,'orange-fill')+t(x+32,y+28,`E${e}(${name}) · BF16`,'small')+wire(`M${x+185},${y+22} L${x+226},${y+22}`,'blue',!dim)+r(x+226,y,250,44,'blue-fill')+t(x+238,y+28,`r${v.rank} combine[${name}, k${k}]`,'mono')+'</g>';});s+=r(x+20,365,456,43,'purple-fill')+t(x+35,392,'Local/peer 16-byte stores → EP barrier → owner reads','small');}
-      if(p===7){local.forEach((name,i)=>{const v=data[name],y=91+i*159,dim=focus!=='all'&&focus!==name,out=v.outputs[0].map((q,j)=>q*v.scores[0]+v.outputs[1][j]*v.scores[1]);s+=`<g ${dim?'class="dim"':''}>`+badge(x+20,y,name,rank?'orange':'blue')+t(x+97,y+18,'FP32 score weighting and top-k sum','small')+t(x+20,y+60,`${v.scores[0]} × [${v.outputs[0]}] + ${v.scores[1]} × [${v.outputs[1]}]`,'mono')+r(x+20,y+80,456,51,'green-fill')+t(x+35,y+112,`→ [${out.map(n=>n.toFixed(2)).join(', ')}] → BF16 output`,'bold')+'</g>';});}
+  const tokenPhases=['Peer mappings','Publish','Exchange IDs','Build pointers','Gather','Scatter','Reduce'];
+  /** Follow publication, local metadata construction, and pointer-driven payload movement. */
+  function tokens(step,focus='all'){
+    start('tokens');const data=Moe.tokenData;let s='';
+    const card=(x,y,w,h,title,sub,cls='box')=>r(x,y,w,h,cls)+t(x+13,y+28,title,'bold')+(sub?t(x+13,y+56,sub,'small muted'):'');
+    const headings=['Context creation: rendezvous symmetric allocations','Each call: publish IDs and one copy of each source row','Read routing IDs from all ranks; compute local expert counts','Build expert-major gather/scatter tables in local HBM','Follow gather pointers into expert-major local activation views','W2 epilogues write each result to its owner’s combine slot','After the combine barrier, each owner weights and sums its routes'];
+    s+=t(20,31,headings[step],'bold');
+    for(let rank=0;rank<2;rank++){
+      const x=16+rank*800,local=rank?['C','D']:['A','B'],groups=[rank*2,rank*2+1],rows=Moe.routingRows(rank);
+      s+=r(x,55,768,508,'panel')+t(x+20,89,`GPU ${rank} · owns E${groups.join(' / E')}`,'large bold');
+      if(step===0){
+        const buffers=[['Routing HBM','128 B header + [T,K] int16 IDs','ρ','purple'],['Dispatch HBM','[T,K,D] BF16 capacity; forward uses [T,D]','δ','blue'],['Combine HBM','[T,K,D] BF16 route outputs','κ','green']];
+        buffers.forEach(([name,detail,symbol,color],i)=>{const y=115+i*91;s+=card(x+20,y,728,75,name,detail,`${color}-fill`)+t(x+730,y+27,`${symbol}${rank?'₁':'₀'}`,'mono','end');});
+        s+=t(x+20,414,'Rank-local int64 peer-base arrays, created once:','small bold');
+        s+=t(x+20,451,'routing = [ρ₀, ρ₁]   dispatch = [δ₀, δ₁]','mono');
+        s+=t(x+20,488,'combine = [κ₀, κ₁]','mono')+t(x+20,534,'Peer mappings address the owner’s physical HBM.','small muted');
+      }
+      if(step===1){
+        local.forEach((name,i)=>{const v=data[name],y=122+i*68,dim=focus!=='all'&&focus!==name;s+=`<g ${dim?'class="dim"':''}>`+badge(x+20,y,name,rank?'orange':'blue')+t(x+100,y+23,`IDs [${v.experts.join(', ')}] · scores [${v.scores.join(', ')}]`,'small')+t(x+100,y+51,`Caller x[${v.index},:] · BF16 [256] = 512 B`,'small muted')+'</g>';});
+        s+=card(x+20,281,728,75,'Symmetric routing publication','Header: physical T = 2 (int32); IDs: 4 × int16 = 8 B','purple-fill');
+        s+=card(x+20,387,728,75,'Symmetric dispatch publication','Copy x once: 2 × 256 × 2 = 1,024 B active prefix','blue-fill');
+        local.forEach((name,i)=>s+=t(x+36+i*346,492,`${name}: δ${rank?'₁':'₀'} + ${i*512} B`,'mono'));
+        s+=t(x+20,534,'Scores stay local for weighted combine and backward.','small purple-text');
+        s+=wire(`M${x+385},245 L${x+385},281`,'purple',true,true,true,'int16 expert IDs + physical token count');
+      }
+      if(step===2){
+        s+=t(x+20,126,'EP publication barrier → peer IDs are visible','small purple-text');
+        s+=card(x+20,145,728,64,'Published symmetric routing HBM',`${local.map(n=>`${n} [${data[n].experts.join(', ')}]`).join(' · ')} · T = 2`,'purple-fill');
+        s+=card(x+20,232,728,74,'Gather IDs → ordinary local HBM','[EP,T,K] = [2,2,2] · int16 · 16 B','purple-fill');
+        for(let source=0;source<2;source++){
+          const names=source?['C','D']:['A','B'],y=326+source*43;
+          s+=t(x+30,y,`source GPU ${source}${source===rank?' · local read':' · NVLink read'}`,'small bold');
+          s+=t(x+330,y,`${names.map(n=>`${n} [${data[n].experts.join(', ')}]`).join('   ')}`,'mono');
+        }
+        s+=t(x+20,397,'Match global IDs to this rank’s expert range.','small');
+        groups.forEach((expert,i)=>s+=card(x+20+i*374,415,354,69,`E${expert}: 2 rows`,`prefix = ${i*2} · BF16, no row padding`,'green-fill'));
+        s+=t(x+20,534,'Header checks equal physical T; route counts stay on GPU.','small muted');
+      }
+      if(step===3){
+        s+=t(x+20,127,'Route / top-k slot','small bold')+t(x+249,127,'fwd_gather_ptr','small blue-text')+t(x+508,127,'scatter_ptr','small green-text');
+        rows.forEach((v,i)=>{const y=151+i*67,dim=focus!=='all'&&focus!==v.name;
+          s+=`<g ${dim?'class="dim"':''}>`+r(x+20,y,728,54,'box')+t(x+32,y+34,`E${v.expert}:${v.name} / k${v.k}`,'mono')+t(x+249,y+34,`δ${v.owner?'₁':'₀'} + ${v.gatherByte} B`,'mono blue-text')+t(x+508,y+34,`κ${v.owner?'₁':'₀'} + ${v.returnByte} B`,'mono green-text')+'</g>';
+        });
+        const v=rows.find(v=>v.owner!==rank);
+        s+=t(x+20,455,`Backward return pointer for E${v.expert}(${v.name}), k${v.k}:`,'small bold')+t(x+20,492,`bwd_gather_ptr = δ${v.owner?'₁':'₀'} + (${v.token} × 2 + ${v.k}) × 512 B`,'mono');
+        s+=t(x+20,534,'Counts [2,2] and row prefixes [0,2] order these tables.','small muted');
+      }
+      if(step===4){
+        s+=t(x+20,128,'Source pointer','small blue-text')+t(x+410,128,'x_gathered · ordinary local HBM','small green-text');
+        rows.forEach((v,i)=>{const y=151+i*78,dim=focus!=='all'&&focus!==v.name;
+          s+=`<g ${dim?'class="dim"':''}>`+card(x+20,y,315,68,`${v.name} · GPU ${v.owner}`,`δ${v.owner?'₁':'₀'} + ${v.gatherByte} B`,'blue-fill')+card(x+410,y,338,68,`E${v.expert} · row ${v.row} · ${v.name}`,`buffer + o_xg + ${v.row*512} B`,'green-fill')+wire(`M${x+335},${y+30} L${x+410},${y+30}`,v.owner===rank?'green':'blue',!dim,true,true,`${v.name} source row · BF16 [256] · 512 B`)+t(x+373,y+17,'512 B','small','middle')+'</g>';
+        });
+        s+=t(x+20,534,'Expert compute: W13 → SwiGLU → W2 (Sections 2 and 5).','small muted');
+      }
+      if(step===5){
+        s+=t(x+20,126,'Token-owner combine HBM · four separate BF16 [D] slots','small bold');
+        local.forEach((name,i)=>{const v=data[name];v.experts.forEach((expert,k)=>{const y=151+(i*2+k)*76,offset=(i*2+k)*512,producer=Math.floor(expert/2),dim=focus!=='all'&&focus!==name;
+          s+=`<g ${dim?'class="dim"':''}>`+r(x+20,y,728,62,'green-fill')+t(x+35,y+26,`${name}, k${k} ← E${expert}(${name}) · writer GPU ${producer}`,'small bold')+t(x+35,y+51,`scatter_ptr = κ${rank?'₁':'₀'} + ${offset} B`,'mono green-text')+t(x+730,y+50,producer===rank?'local store':'NVLink store','small','end')+'</g>';
+        });});
+        s+=t(x+20,534,'Result slot = (token × K + k) × row_bytes.','small muted');
+      }
+      if(step===6){
+        s+=t(x+20,126,'EP combine barrier → owner reads its local return slots','small purple-text');
+        local.forEach((name,i)=>{const v=data[name],y=170+i*158,out=v.outputs[0].map((q,j)=>q*v.scores[0]+v.outputs[1][j]*v.scores[1]),dim=focus!=='all'&&focus!==name;
+          s+=`<g ${dim?'class="dim"':''}>`+badge(x+20,y,name,rank?'orange':'blue')+t(x+110,y+24,`${v.scores[0]} × [${v.outputs[0]}] + ${v.scores[1]} × [${v.outputs[1]}]`,'mono')+r(x+20,y+48,728,69,'green-fill')+t(x+35,y+92,`FP32 sum → [${out.map(n=>n.toFixed(2)).join(', ')}] → BF16 y[${v.index},:]`,'bold')+'</g>';
+        });
+        s+=t(x+20,534,'Only two output components shown; actual row width is D = 256.','small muted');
+      }
     }
-    s+=t(520,458,['One source row has two route slots; the caller supplies expert IDs and scores.','Blue arrows read a peer row over NVLink; green arrows read a local row.','Result address = owner rank + token index + top-k slot; expert order is different.','The owner reduces each token’s route slots. Two of the 256 output components are shown.'][step],'small muted','middle');return finish(s);
+    if(step===2)s+=wire('M764,169 L792,169 L792,328 L836,328','purple',true,true,true,'expert IDs [T,K] · int16')+wire('M836,183 L808,183 L808,367 L764,367','purple',true,true,true,'expert IDs [T,K] · int16')+r(775,218,43,31,'edge-label-bg','fill="var(--paper)" stroke="var(--purple)"')+t(796,241,'IDs','small purple-text','middle');
+    s+=t(20,603,step===3?'δ = dispatch peer base · κ = combine peer base · row_bytes = D × sizeof(BF16) = 512 B':step===0?'Rendezvous creates peer-base tables once. Routing IDs and per-route address tables are updated for each invocation.':step===4?'Blue edges read remote HBM over NVLink; green edges read local HBM. Multiple routes may reference the same source row.':step===5?'Scatter writes payload through an address built earlier. Pointer tables themselves are constructed locally, rather than exchanged.':'The example uses T = 2, K = 2, D = F = 256. Routing, dispatch, combine, and activation-buffer storage have separate owners.','small muted');
+    return finish(s);
   }
   function consumption(c,plan){start('consumption');const total=plan.virtual,act=plan.activation,host=plan.hostScratch,hot=plan.deviceScratch,scale=1008/total;let s=t(16,22,c.vmm?`VMM on: one GPU virtual range · ${host?'HBM + pinned host backing':'device HBM backing'}`:'VMM off: one GPU allocation · device HBM only','bold')+t(1024,45,`Combined allocation: ${bytes(total)}`,'small muted','end');
     const regions=[{name:'Activation slots',value:act,color:'green',location:'Device HBM',detail:`${c.N} × ${bytes(plan.slot)} per slot`},{name:'Host overflow scratch',value:host,color:'purple',location:c.vmm?'Pinned host physical pages':'VMM disabled',detail:'Scratch beyond the hot device tier'},{name:'Hot shared scratch',value:hot,color:'amber',location:'Device HBM',detail:'Reused across sequential local calls'}];
@@ -130,7 +193,7 @@ window.Views = (() => {
     s+=r(16,40,1008,47,'blue-fill')+t(30,69,`R = ${num(rows)} · D = ${num(c.D)} · F = ${num(c.F)} · T = ${num(c.T)} · K = ${c.K}`,'mono');
     const columns=parts.length<=4?parts.length:4,w=(1008-(columns-1)*16)/columns,h=108;
     parts.forEach((p,i)=>{const x=16+(i%columns)*(w+16),y=110+Math.floor(i/columns)*124;const color=p.dtype==='BF16'?'blue':p.dtype.includes('E8M0')?'purple':'green';const limit=Math.floor((w-24)/7.4);let formula;if(p.name==='Shared row-operand scratch')formula=c.pipeline==='mega'?['max(row x + row h2,','row grad_h1)']:['max(row x, row h2,','row grad_h1)'];else formula=p.formula.length>limit?[p.formula.slice(0,limit),p.formula.slice(limit)]:[p.formula];s+=r(x,y,w,h,`${color}-fill`)+t(x+12,y+23,p.name,'small bold')+formula.map((f,j)=>t(x+12,y+45+j*16,f,'tiny mono')).join('')+t(x+12,y+85,bytes(p.bytes),'large bold');});
-    const yy=parts.length>4?357:250;s+=r(16,yy-7,1008,37,'amber-fill')+t(30,yy+17,saved?`Σ tensor bytes = ${num(total)} B per layer × ${c.L} layers = ${bytes(total*c.L)} balanced full-save`:`Σ live regions = ${num(total)} B = ${bytes(total)} ${view==='device'?'device':'total'} scratch`,'small bold');return {svg:finish(s),parts,rows,total};
+    const yy=parts.length>4?357:250;s+=r(16,yy-7,1008,37,'amber-fill')+t(30,yy+17,saved?`Σ tensor bytes = ${num(total)} B per layer × ${c.L} layers = ${bytes(total*c.L)} balanced full-save`:`Σ live regions = ${num(total)} B = ${bytes(total)} ${view==='device'?'device':'total'} scratch`,'small bold');if(!saved&&c.precision==='bf16'&&c.D<=c.F)s+=t(16,316,'h2’s last read finishes before grad_h1 reuses its region; count the larger extent once.','small muted')+t(16,351,'One-layer scratch: 2R(D + 5F), with align128 applied to each region above.','mono')+t(16,378,'This scratch peak is shared by sequential layers; activation slots retain their saved state.','small muted');return {svg:finish(s),parts,rows,total};
   }
   function packing(plan,phase) {
     start('packing');const snap=plan.snapshots[phase],a=snap.record,scale=1008/plan.slotBytes;
@@ -293,15 +356,28 @@ window.Views = (() => {
   function orientation(){let a='',b='';for(let row=0;row<8;row++)for(let col=0;col<8;col++){a+=r(20+col*22,20+row*22,20,20,col<4?'blue-fill':'green-fill');b+=r(20+col*22,20+row*22,20,20,row<4?'purple-fill':'amber-fill');}a+=t(210,47,'← 32 columns','small')+t(210,80,'per logical row','small')+t(20,226,'8 × 8 display bins for a 64 × 64 operand','tiny muted');b+=t(210,47,'32 rows ↓','small')+t(210,80,'per logical column','small')+t(20,226,'Each bin represents 8 × 8 logical values.','tiny muted');return {a,b};}
   function fusion(p,pipeline,focus=0){start('fusion');const mega=pipeline==='mega',step=c=>({g:c,w13:c+1,sw:c+(mega?2:4),w2:c+(mega?3:5),scatter:c+(mega?4:6)}),st=step(focus);let s='';
     if(mega)s+=r(8,8,1024,303,'green-fill','stroke-dasharray="5 4" stroke-opacity=".55"');else s+=r(8,8,1024,124,'blue-fill','stroke-dasharray="5 4" stroke-opacity=".55"')+r(8,173,1024,139,'orange-fill','stroke-dasharray="5 4" stroke-opacity=".55"');
-    s+=t(20,28,mega?'ONE CHUNKED KERNEL TOPOLOGY':'LAUNCH 1 · dispatch + W13','small bold');s+=t(1018,28,`FOLLOW CHUNK ${focus}`,'small amber-text','end');if(!mega)s+=t(1018,195,'LAUNCH 2 · SwiGLU + W2 + combine','small bold','end');
-    const nodes=[{x:20,y:45,n:'Gather/quant producer group',sub:'publishes x qdata/scales',at:st.g,col:'blue'},{x:278,y:45,n:'x row bundle',sub:p>st.g?'ready for W13':'waiting for publication',at:st.w13,col:'green'},{x:536,y:45,n:'W13 TMA/MMA group',sub:'SMEM → FP32 TMEM',at:st.w13,col:'orange'},{x:794,y:45,n:'W13 epilogue group',sub:p>st.w13?'h1 BF16 + tile-ready signal':'wait for W13 completion',at:st.sw,col:'purple'},{x:20,y:213,n:'SwiGLU/quant producer group',sub:'reads h1; publishes h2',at:st.sw,col:'blue'},{x:278,y:213,n:'h2 row bundle',sub:p>st.sw?'qdata + scales ready':'wait for quantization',at:st.w2,col:'green'},{x:536,y:213,n:'W2 TMA/MMA group',sub:'SMEM → FP32 TMEM',at:st.w2,col:'orange'},{x:794,y:213,n:'Scatter epilogue group',sub:'BF16 → peer combine HBM',at:st.scatter,col:'blue'}];
+    s+=t(20,28,mega?'ONE KERNEL GRID · SHARED WARP ROLES':'LAUNCH 1 · dispatch + W13','small bold');s+=t(1018,28,`FOLLOW CHUNK ${focus}`,'small amber-text','end');if(!mega)s+=t(1018,195,'LAUNCH 2 · SwiGLU + W2 + combine','small bold','end');
+    const nodes=[{x:20,y:45,n:'Gather / quant roles',sub:'publishes x qdata/scales',at:st.g,col:'blue'},{x:278,y:45,n:'x row bundle',sub:p>st.g?'ready for W13':'waiting for publication',at:st.w13,col:'green'},{x:536,y:45,n:'TMA / MMA: W13',sub:'SMEM → FP32 TMEM',at:st.w13,col:'orange'},{x:794,y:45,n:'Epilogue: W13',sub:p>st.w13?'h1 BF16 + ready signal':'wait for W13',at:st.sw,col:'green'},{x:20,y:213,n:'SwiGLU / quant roles',sub:'reads h1; publishes h2',at:st.sw,col:'purple'},{x:278,y:213,n:'h2 row bundle',sub:p>st.sw?'qdata + scales ready':'wait for quantization',at:st.w2,col:'green'},{x:536,y:213,n:'TMA / MMA: W2',sub:'SMEM → FP32 TMEM',at:st.w2,col:'orange'},{x:794,y:213,n:'Epilogue: W2 scatter',sub:'BF16 → peer combine HBM',at:st.scatter,col:'green'}];
     nodes.forEach(n=>s+=card(n.x,n.y,226,67,n.n,n.sub,p===n.at?`${n.col}-fill`:'box'));
     s+=wire('M246,80 L278,80','blue',p===st.w13,true,true,'x tile: E4M3 qdata + E8M0 scales',{x:211,y:119,lines:['x qdata/scales','MXFP8 · [512,D]'],point:[262,80]})+wire('M504,80 L536,80','orange',p===st.w13,true,true,'x / weight tiles from SMEM → MMA',{x:451,y:119,lines:['x + weight tiles','SMEM → MMA'],point:[520,80]})+wire('M762,80 L794,80','green',p===st.sw,true,true,'C accumulator tile · FP32',{x:702,y:119,lines:['C [B_M,B_N]','FP32'],point:[778,80]});
     s+=wire('M908,114 L908,166 C908,172 132,166 132,211','purple',p===st.sw,true,true,'completed h1 values [2F] · BF16',{x:69,y:119,lines:['h1 [2F] · BF16','→ SwiGLU'],point:[207,182]})+wire('M246,246 L278,246','blue',p===st.w2,true,true,'h2: E4M3 qdata + E8M0 scales',{x:211,y:284,lines:['h2 qdata/scales','MXFP8 · [512,F]'],point:[262,246]})+wire('M504,246 L536,246','orange',p===st.w2,true,true,'h2 / weight tiles from SMEM → MMA',{x:451,y:284,lines:['h2 + weight tiles','SMEM → MMA'],point:[520,246]})+wire('M762,246 L794,246','blue',p===st.scatter,true,true,'C accumulator tile · FP32',{x:702,y:284,lines:['C [B_M,B_N]','FP32'],point:[778,246]});
     s+=t(20,353,'CHUNK STATE · filled = completed, bright = working, muted = waiting','small muted');
     const labels=['Gather / quant','W13','SwiGLU / quant','W2','Scatter'];labels.forEach((label,i)=>s+=t(200+i*164,373,label,'small bold'));
-    for(let c=0;c<3;c++){const y=390+c*45,st=step(c);s+=t(20,y+25,`chunk ${c}${c===focus?' ←':''}`,c===focus?'mono amber-text':'mono');Object.values(st).forEach((at,i)=>{const state=p>at?'done':p===at?'working':'waiting',color=['blue','orange','green','orange','blue'][i];s+=r(200+i*164,y,150,34,p>=at?`${color}-fill`:'box',p>at?'opacity=".65"':'')+t(213+i*164,y+23,state,'small');});}
-    s+=t(20,530,'Ready counters order reads; consumption credits protect stage reuse. Storage remains context-owned and allocated.','small purple-text');return finish(s);
+    for(let c=0;c<3;c++){const y=390+c*45,st=step(c);s+=t(20,y+25,`chunk ${c}${c===focus?' ←':''}`,c===focus?'mono amber-text':'mono');Object.values(st).forEach((at,i)=>{const state=p>at?'done':p===at?'working':'waiting',color=['blue','orange','purple','orange','green'][i];s+=r(200+i*164,y,150,34,p>=at?`${color}-fill`:'box',p>at?'opacity=".65"':'')+t(213+i*164,y+23,state,'small');});}
+    s+=t(20,530,'Ready counters order reads; consumption credits protect stage reuse. Storage remains context-owned and allocated.','small purple-text');
+    s+=r(1060,8,522,534,'panel')+t(1080,42,'HARDWARE: ONE RESIDENT CTA','bold');
+    if(mega){
+      s+=t(1080,76,'One SM hosts this complete role set.','small')+t(1080,105,'Narrow MXFP8 · 16 warps × 32 = 512 threads','small muted');
+      const roles=[['Warps 0–3 · gather / quant','Peer rows → x qdata/scales','blue'],['Warps 4/5/6 · TMA-A / MMA / TMA-B','Warp 7: no mainloop role','orange'],['Warps 8–11 · epilogue','W13 h1 stores; W2 peer scatter','green'],['Warps 12–15 · SwiGLU / quant','h1 → h2 qdata/scales','purple']];
+      roles.forEach(([label,detail,color],i)=>s+=r(1080,129+i*81,482,70,`${color}-fill`)+t(1094,154+i*81,label,'small bold')+t(1094,182+i*81,detail,'small'));
+      s+=t(1080,472,'The same TMA/MMA and epilogue roles','small bold')+t(1080,497,'serve both W13 and W2 work records.','small bold')+t(1080,525,'Waiting warps stay resident; ready warps issue.','small muted');
+    }else{
+      s+=t(1080,83,'Fixed roles coexist within each CTA.','small')+card(1080,119,482,110,'Launch 1 CTA','gather/quant + TMA + MMA + epilogue','blue-fill')+t(1094,209,'SM schedulers issue eligible warps.','small');
+      s+=wire('M1321,229 L1321,293','purple',true,false)+t(1350,262,'launch completion','small purple-text');
+      s+=card(1080,293,482,110,'Launch 2 CTA','SwiGLU/quant + TMA + MMA + scatter','orange-fill')+t(1094,383,'A new CTA lifetime starts for launch 2.','small');
+      s+=t(1080,460,'Staged uses its own configured warp split.','small muted')+t(1080,500,'Scratch can be reused after launch 1 finishes.','small');
+    }
+    return finish(s);
   }
   const slotColors=['blue','green','orange','purple','pink','cyan'];
   function liveness(p){

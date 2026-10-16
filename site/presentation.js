@@ -26,14 +26,12 @@
     { id: 'moe', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
     { id: 'capabilities', figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes'], setup: '#motivation-setup' },
     { id: 'system', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 8], setup: '.diagram-key' },
-    { id: 'assignments', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 0] },
-    { id: 'expert-rows', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [1, 1] },
-    { id: 'return-slots', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [2, 3] },
+    { id: 'routing', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 6], setup: '#token-config', title: 'key-idea' },
     { id: 'quantization', figure: 'precision-figure', chapter: 'precision', parts: ['precision-svg', 'quant-detail'] },
     { id: 'quantization-axis', kind: 'orientation', chapter: 'precision' },
     { id: 'precision', figure: 'precision-figure', chapter: 'precision', parts: ['intermediate-table'], title: 'precision-reference', table: true },
+    { id: 'memory-costs', figure: 'memory-figure', chapter: 'memory', parts: ['memory-svg'], setup: '#memory-cost-shape', title: 'costs', builds: ['#calculation-tabs [data-calculation="saved"]','#calculation-tabs [data-calculation="device"]','#calculation-tabs [data-calculation="total"]'] },
     { id: 'allocation', figure: 'memory-figure', chapter: 'memory', parts: ['memory-policy-summary','consumption-svg', 'memory-stats'], setup: '#memory-shape', title: 'allocation', builds: ['#memory-examples [data-memory-example="saved"]','#memory-examples [data-memory-example="scratch"]','#memory-examples [data-memory-example="fixed"]'] },
-    { id: 'memory-costs', figure: 'memory-figure', chapter: 'memory', parts: ['memory-svg'], setup: '#memory-config', title: 'costs' },
     { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['recompute-svg', 'lifetime-legend'], prepare: 'lifetime', title: 'key-idea', setup: '.config-summary', bounds: [0,0,1440,690] },
     { id: 'layer-packing', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [0, 8], parts: ['packing-svg'], display: 'packing', title: 'key-idea', setup: '#packing-brief' },
     { id: 'gpu-tile', figure: 'kernel-figure', controller: 'kernel', chapter: 'kernels', range: [0, 5], title: 'key-idea', setup: '#tile-address' },
@@ -41,17 +39,16 @@
     { id: 'pipeline-prefix', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [0, 31], actions: ['0F0','2B0','0F4','0B7'], slotDisplay: 'liveness', parts: ['liveness-svg'], setup: '#slots-config' },
     { id: 'slot-reuse', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [2, 6], actions: ['2F0','2B0','0F3'], slotDisplay: 'reuse', camera: [0, 0, 1146, 406], pane: true, parts: ['slots-svg','slot-selection'] },
     { id: 'results-metrics', figure: 'results-metrics-figure', chapter: 'results', parts: ['metrics-overview'], setup: '#metrics-setup', title: 'key-idea' },
-    { id: 'results-inference', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,1], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="inference"]', setup: '#efficiency-config', title: 'key-idea' },
-    { id: 'results-training', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,1], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="training"]', setup: '#efficiency-config', title: 'key-idea' },
-    { id: 'results-skew', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,2], parts: ['skew-svg','skew-table'], setup: '#skew-config', title: 'key-idea' },
-    { id: 'results-width', figure: 'results-width-figure', controller: 'width', chapter: 'results', range: [0,2], parts: ['width-svg','width-table'], setup: '#width-config', title: 'key-idea' },
-    { id: 'results-memory', figure: 'results-memory-figure', controller: 'result-memory', chapter: 'results', range: [0,2], parts: ['result-memory-svg','result-memory-table'], setup: '#result-memory-config', title: 'key-idea' },
+    { id: 'results-inference', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="inference"]', setup: '#efficiency-config', title: 'key-idea' },
+    { id: 'results-training', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], preset: '#result-presets [data-preset="training"]', setup: '#efficiency-config', title: 'key-idea' },
+    { id: 'results-skew', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,0], parts: ['skew-svg','skew-table'], setup: '#skew-config', title: 'key-idea' },
+    { id: 'results-width', figure: 'results-width-figure', controller: 'width', chapter: 'results', range: [0,0], parts: ['width-svg','width-table'], setup: '#width-config', title: 'key-idea' },
     { id: 'configuration', kind: 'code', chapter: 'start', excerpt: 'config' },
     { id: 'expert-call', kind: 'code', chapter: 'start', excerpt: 'call' },
     { id: 'reading', kind: 'resources', chapter: 'start' }
   ];
 
-  const sceneAliases = {'expert-math':'moe','dynamic-recompute':'layer-packing',offsets:'layer-packing','gather-tiles':'gpu-tile','tensor-cores':'gpu-tile','warp-groups':'mega-pipeline','chunk-readiness':'mega-pipeline'};
+  const sceneAliases = {assignments:'routing','expert-rows':'routing','return-slots':'routing','results-memory':'layer-packing','expert-math':'moe','dynamic-recompute':'layer-packing',offsets:'layer-packing','gather-tiles':'gpu-tile','tensor-cores':'gpu-tile','warp-groups':'mega-pipeline','chunk-readiness':'mega-pipeline'};
   /** Preserve links to examples that now share one complete slide. */
   function sceneIndex(id) { return scenes.findIndex(scene=>scene.id===(sceneAliases[id]||id)); }
 
@@ -104,6 +101,8 @@
   }
   function captionNode(scene) {
     if (!scene.figure) return null;
+    if(scene.id==='memory-costs')return figures[scene.figure].querySelector('#memory-cost-caption');
+    if(scene.id==='allocation')return figures[scene.figure].querySelector('#memory-caption');
     return figures[scene.figure].querySelector('.phase-caption');
   }
   function titleFor(scene, current = false) {
@@ -113,10 +112,9 @@
     if (scene.kind === 'code') return scene.excerpt === 'config' ? 'dist_moe.Config' : (current&&app.state.code==='memory'?'dist_moe.plan_memory':'dist_moe.routed_experts');
     const figure = figures[scene.figure];
     if(current && scene.controller==='efficiency')return source(`[data-slide-summary="results-${app.state.resultMode}"]`).previousElementSibling.textContent;
-    if(current && scene.controller==='result-memory')return app.getStepCaption(scene.controller,app.controllers[scene.controller].phase)[0];
     if (scene.title === 'precision-reference') return figure.querySelector('.inside-heading').textContent;
-    if (scene.title === 'allocation') return figure.querySelector('.inside-heading').textContent;
-    if (scene.title === 'costs') return figure.querySelectorAll('.inside-heading')[1].textContent;
+    if (scene.title === 'allocation') return figure.querySelector('#memory-allocation-heading').textContent;
+    if (scene.title === 'costs') return figure.querySelector('#memory-cost-heading').textContent;
     if (scene.controller === 'slots') return source(`[data-slide-summary="${scene.id}"]`).previousElementSibling.textContent;
     if (scene.title === 'chunks') return 'Chunk state';
     if (scene.title === 'key-idea') return source(`[data-slide-summary="${scene.id}"]`).previousElementSibling.textContent;
@@ -533,7 +531,7 @@
     }
     if(scene.controller==='kernel')return sentences.filter(s=>/Matrix geometry|Gray rows/.test(s)).join(' ');
     if(scene.figure==='memory-figure')return sentences.find(s=>/These logical bytes/.test(s))||'';
-    if(scene.controller==='fusion')return sentences[0]||'';
+    if(scene.controller==='fusion')return 'Fixed warp roles coexist within each resident CTA. The diagram shows dependencies; instruction issue order and exact occupancy depend on the configured kernel and GPU.';
     return sentences.find(s=>/illustrative|not measured/.test(s))||'';
   }
 

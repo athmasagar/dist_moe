@@ -48,3 +48,13 @@ svg.result-visual{font-size:20px}
 .deck-visual .metric-qualification{font-size:23px}
 @media(max-width:750px){.metrics-overview{grid-template-columns:1fr;padding:10px 14px 20px}}
 @media(max-width:750px){.result-table{padding:0 14px}.results-figure .figure-controls{gap:12px}.results-figure .figure-controls label{max-width:100%;flex-wrap:wrap}.results-figure select{max-width:100%}}
+
+.result-complete .r-head{font-size:25px}
+.result-complete .r-label{font-size:23px}
+.result-complete .r-small{font-size:21px}
+.result-complete .r-number{font-size:27px}
+.result-complete .r-tiny{font-size:19px}
+.deck-visual .efficiency-table table{font-size:21px}
+.deck-visual .efficiency-table th{font-size:18px}
+.deck-visual .efficiency-table th:first-child{width:20%}
+.diagram-scroll svg.result-complete{min-width:1280px}

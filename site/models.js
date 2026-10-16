@@ -88,6 +88,15 @@ window.Moe = (() => {
     return {c,counts,depth,input,minimum,maximum,slotBytes,scratch,scratchEnd,start,rank,records,snapshots};
   }
   const tokenData={A:{rank:0,index:0,experts:[0,2],scores:[.6,.4],outputs:[[2,4],[6,2]]},B:{rank:0,index:1,experts:[3,1],scores:[.25,.75],outputs:[[1,3],[5,7]]},C:{rank:1,index:0,experts:[2,0],scores:[.7,.3],outputs:[[4,2],[2,6]]},D:{rank:1,index:1,experts:[1,3],scores:[.5,.5],outputs:[[8,2],[0,6]]}};
+  /** Resolve the documented BF16 routes in expert-major pointer order. */
+  function routingRows(rank) {
+    const rows=[];
+    for(let expert=rank*2;expert<rank*2+2;expert++)for(const [name,value]of Object.entries(tokenData)){
+      const k=value.experts.indexOf(expert);
+      if(k>=0)rows.push({name,expert,k,owner:value.rank,token:value.index,gatherByte:value.index*512,returnByte:(value.index*2+k)*512,row:rows.length});
+    }
+    return rows;
+  }
   function layout(precision,mode,slot=1) {
     const c={T:2,D:256,F:256,K:2,E:4,EP:2,precision,pipeline:'staged'},r=precision==='bf16'?4:256;
     const slotBytes=mode==='save'?sum(savedParts(c,r)):align(c.T*c.D*2),scratchCapacity=sum(scratchParts(c,r)),end=3*slotBytes+scratchCapacity,start=slot*slotBytes,items=[];let cursor=start,scratch=end;
@@ -122,5 +131,5 @@ window.Moe = (() => {
   function fp8Value(code) {const sign=code&128?-1:1,u=code&127,e=u>>3,m=u&7;if(e===15&&m===7)return NaN;return sign*(e===0?m*2**-9:(1+m/8)*2**(e-7));}
   function fp8Byte(value) {const sign=value<0||Object.is(value,-0)?128:0,v=Math.abs(value);let best=0,error=Infinity;for(let b=0;b<=126;b++){const e=Math.abs(fp8Value(b)-v);if(e<error||(e===error&&b%2===0)){best=b;error=e;}}return best|sign;}
   function quantBlock(outlier=false) {const seed=[-13.25,-7.5,-3.5625,-1.3125,-.234375,0,.005859375,.0009765625,2.75,3.625,6.75,9.5,11.25,13.5,15.75,17.25];const x=[...seed,...seed.map(v=>v*.75)];if(outlier)x[31]=512;const amax=Math.max(...x.map(Math.abs)),exponent=Math.ceil(Math.log2(amax/448)),scale=2**exponent,scaleByte=exponent+127;const bytes=x.map(v=>fp8Byte(v/scale)),q=bytes.map(fp8Value),decoded=q.map(v=>v*scale);return {x,amax,scale,scaleByte,bytes,q,decoded};}
-  return {align,sum,packing,row,col,capacity,savedParts,scratchParts,memoryBounds,slotFromFactor,factorForSlot,memory,tokenData,layout,schedule,lifetimes,intervals,fp8Value,fp8Byte,quantBlock};
+  return {align,sum,packing,row,col,capacity,savedParts,scratchParts,memoryBounds,slotFromFactor,factorForSlot,memory,tokenData,routingRows,layout,schedule,lifetimes,intervals,fp8Value,fp8Byte,quantBlock};
 })();

@@ -89,3 +89,21 @@ svg .slot-acquired{stroke:var(--ink);stroke-width:2.5}
 .capability-table sup,.capability-notes sup{font-size:.7em;color:var(--muted)}
 .capability-notes{padding:0 22px 18px;font-size:14px;line-height:1.6;color:var(--muted)}.capability-notes p{margin:5px 0;max-width:none}
 .comparison-evidence{margin-top:14px}.comparison-evidence summary{cursor:pointer;color:var(--ink)}.comparison-evidence li{margin:9px 0}
+
+/* Explicit metadata and payload stages share one diagram in article and deck. */
+.routing-visual{font-size:26px}
+.routing-visual .large{font-size:30px}
+.routing-visual .small{font-size:22px}
+.routing-visual .mono{font-size:22px}
+.routing-visual .tiny{font-size:20px}
+.routing-pointer-reference{max-width:1060px;padding:0;margin:24px 0}
+.routing-pointer-reference table{font-size:14px;min-width:920px}
+.routing-pointer-reference caption{text-align:left;font-size:13px;color:var(--muted);padding-bottom:12px}
+.routing-pointer-reference code{font-size:13px}
+
+.diagram-scroll svg.routing-visual{font-size:26px;min-width:1280px}
+.diagram-scroll svg.fusion-visual{font-size:20px;min-width:1280px}
+.fusion-visual .bold{font-size:19px}
+.fusion-visual .small{font-size:17px}
+.fusion-visual .small.bold{font-size:17px}
+.fusion-visual .mono{font-size:17px}

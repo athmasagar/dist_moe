@@ -26,6 +26,8 @@ Deploy these files and the artwork folder together to a static host:
 - `presentation.css`
 - `pdf-export.js`
 - `pdf-export.css`
+- `results.js`, `results.css`, `results-data.js`
+- `data/` (public measurement JSON/CSV downloads)
 - `assets/` (official PyTorch logos, bundled KaTeX, fonts, and licenses)
 
 There is no build step or external browser dependency. KaTeX and its fonts are
@@ -35,34 +37,37 @@ uses modern browser APIs including native dialogs. Publishing is a separate step
 
 ## Browser presentation
 
-The **Present** link switches the article into a 27-slide presentation. The
+The **Present** link switches the article into a 24-slide presentation. The
 deck uses a 16:9 canvas with stable diagram framing and the same live controls.
 A generic MoE setup precedes the capability comparison (slide 3) and GPU
 placement. The comparison table and its visible qualifications come directly
 from the article; source links are included in speaker notes. Static slides use
 the article’s Key ideas; stepped slides summarize the current phase from the shared figure
-caption. Slide 12 compares three capacity policies: activation factor 1.5 with
-scratch factor 4, activation factor 0.5 with scratch factor 16, and a fixed
-32 GiB activation cap with scratch factor 16. Device and total scratch factors
-match in these examples; VMM remains available through the shared controls.
+caption. Slide 5 now follows the whole routing path in seven steps: symmetric
+peer mappings, publication, ID exchange, pointer construction, gather, scatter,
+and weighted reduction. The article includes the same figure plus exact
+header, payload, and pointer definitions.
 
-Slide 14 pairs forward equations and backward dependencies with value lifetimes.
-Slide 15 uses the complete Figure 04A through all nine calls: L0–L2 keep eligible
-state, L3 retains only its replay input, and matching backwards release the saved
-offsets. The 28 KiB default budget gives that source-derived decision pattern.
-The tighter 24 KiB preset retains the earlier collective worst-rank example.
+Slide 9 derives one layer’s saved-state cost, device scratch peak, and total
+scratch peak before slide 10 applies three capacity policies. Those presets
+use activation factor 1.5 with device/total scratch 4, activation factor 0.5
+with device scratch 4 and VMM total scratch 16, and a fixed 32 GiB activation
+cap with device/total scratch 16.
 
-Slide 16 keeps the complete tile hierarchy through all six handoffs. Slide 17
-keeps the producer/consumer graph and chunk-state table together. Mega is the
-default, with Staged selectable; both include the completed-chunks state.
-Offsets are explained inside the packing example rather than on a separate slide.
+Slide 11 pairs forward equations and backward dependencies with value lifetimes.
+Slide 12 uses Figure 04A through all nine calls: L0–L2 keep eligible state,
+L3 retains only its replay input, and backwards release saved offsets.
+Slide 13 keeps all six tile handoffs together. Slide 14 pairs the complete
+producer/consumer graph with the SM/CTA warp layout; Mega is the default,
+with Staged selectable. The same resident TMA/MMA and epilogue roles serve
+both W13 and W2 tasks. There is no separate memory-results slide.
 
 Figure 07 first compares stage–microbatch and whole-microbatch lifetimes and
 peak counts. Its second tab shows the simple schedule timeline, with one row
 per physical Dist-MoE slot and colored owner intervals showing release and
 reuse. Slot capacity calculations are expandable details.
-Slide 18 uses four selected steps (start, stage completion, peak overlap, finish);
-slide 19 uses three (acquire, release, reassign). Every slide uses the same
+Slide 15 uses four selected steps (start, stage completion, peak overlap, finish);
+slide 16 uses three (acquire, release, reassign). Every slide uses the same
 Step counter, numbered within its visible sequence. The controls drawer holds
 parameters and modes; step navigation stays in the presentation controls.
 
@@ -85,7 +90,7 @@ parameters and modes; step navigation stays in the presentation controls.
 PDF export follows the same curated steps as the presentation, including the
 short pipeline sequences. Each page carries its slide, step, and PDF page number,
 the current step's summary, and its fixed diagram framing. The default Mega
-deck produces 71 pages; selecting Staged produces 73. Static slides appear
+deck produces 67 pages; selecting Staged produces 69. Static slides appear
 once. Shape, format, packing, tile, and other figure settings carry into the print
 tab. The capacity-policy slide intentionally walks all three shared presets.
 The print tab keeps SVG graphics and text; it does not rasterize the slides.
@@ -105,8 +110,10 @@ settings also carry between views when using Present and Article.
 
 `results-data.js` is the canonical 63-case measurement snapshot.
 `results.js` generates the same result diagrams, tables, numerical prose, and
-step summaries for the article and deck. A metrics primer precedes the five
-result slides covering inference, training, routing skew, expert width, and memory policy. Peak
+step summaries for the article and deck. A metrics primer on slide 17 precedes
+four complete result slides: inference, training, routing skew, and expert width.
+Each has one step with all compared plots and raw-number rows visible together.
+The measured memory-policy figure remains in the article. Peak
 references are theoretical NVIDIA datasheet values, with dense compute
 denominators and one-direction NVLink bandwidth. HBM is an analytical traffic
 estimate. The eight-layer packing view is explicitly a projection from
@@ -125,8 +132,8 @@ diagram elements, review their presentation close-ups as part of the change.
 
 ## Teaching sequence
 
-The introduction shows the complete hardware path of a remote row. Seven
-chapters explain routing identities, expert values/quantization, memory/VMM,
+The introduction shows the complete hardware path of a remote row. Eight
+chapters explain routing metadata, expert values/quantization, memory/VMM,
 multi-layer packing, dynamic recompute, lifetimes/offsets, tile and warp-group handoffs, pipeline slot reuse, and the API.
 Each figure has a distinct teaching role; the full precision reference lives in
 the quantization primer before memory planning.
@@ -135,7 +142,8 @@ Figures include:
 
 - a nine-step forward path through peer HBM, NVLink, local HBM, SMEM,
   FP32 TMEM, SwiGLU, and symmetric combine;
-- four views of the documented token assignments and return-slot indices;
+- seven routing views covering peer bases, exchanged IDs, locally constructed
+  pointers, source rows, return slots, and reduction;
 - finite MXFP8 quantization, qdata bytes, E8M0 scales, and outlier underflow;
 - NVFP4 packing/global-scale structure and intermediate-precision tables;
 - a combined allocation view with device/host/device virtual-memory backing;

@@ -44,71 +44,80 @@
   /** Keep step buttons synchronized with the shared controller. */
   function tabs(id,phase){$(id).querySelectorAll('[data-step]').forEach(button=>button.setAttribute('aria-pressed',String(Number(button.dataset.step)===phase)));}
   /** Draw measured compute or transport against correctly labeled references. */
-  function efficiencySVG(rows,phase){
-    const transport=phase===1,x0=260,x1=transport?800:892,scale=(x1-x0)/(transport?900:100),bottom=285;
-    let svg=t(16,25,transport?'Measured NVLink TX; modeled HBM traffic':'Useful GEMM work / complete layer time','r-head');
-    for(let i=0;i<=4;i++){const value=(transport?900:100)*i/4,x=x0+value*scale;svg+=l(x,55,x,bottom,i===4?'faint':'line',i===4?'class="r-theory"':'')+t(x,48,transport?String(value):`${value}%`,'r-small r-muted','middle');}
-    if(transport)svg+=t(1018,25,'HBM model','r-head','end')+t(1018,48,'0 → 8 TB/s theory','r-tiny r-muted','end');
-    rows.forEach((r,i)=>{const y=84+i*59,col=colors[r.precision];svg+=t(16,y,name(r))+t(16,y+24,transport?'TX: rank mean → max':`Theory: ${f(meta.theoreticalTFPerGPU[r.precision]/1000,1)} PFLOP/s`,'r-small r-muted');
-      const value=transport?r.nvlinkTXGBps:percent(r);svg+=b(x0,y-18,value*scale,24,col);
-      if(transport){svg+=whisker(x0+r.nvlinkTXGBps*scale,x0+r.nvlinkMaxTXGBps*scale,y-6,col)+dot(x0+r.nvlinkTXGBps*scale,y-6,col)+t(1018,y,`${f(r.analyticalHBMGBps/1000,2)} TB/s`,'r-number','end')+b(876,y+8,142,4,'line',.3)+b(876,y+8,142*r.analyticalHBMGBps/meta.theoreticalHBMGBps,4,col,.55);}
-      else{const [lo,hi]=range(r);svg+=whisker(x0+percent(r,hi)*scale,x0+percent(r,lo)*scale,y-6,col)+dot(x0+value*scale,y-6,col)+t(1024,y,`${f(value,1)}%`,'r-number','end');}
+  function efficiencySVG(rows){
+    let svg=t(20,28,'Useful compute / dense theoretical peak','r-head')+t(850,28,'NVLink TX and modeled HBM traffic','r-head');
+    const cx=230,cw=405,tx=1030,tw=300,base=342;
+    for(let i=0;i<=4;i++){
+      const pc=i*25,nv=i*225;
+      svg+=l(cx+cw*i/4,69,cx+cw*i/4,base,i===4?'faint':'line')+t(cx+cw*i/4,59,`${pc}%`,'r-small r-muted','middle');
+      svg+=l(tx+tw*i/4,69,tx+tw*i/4,base,i===4?'faint':'line')+t(tx+tw*i/4,59,String(nv),'r-small r-muted','middle');
+    }
+    svg+=t(1570,59,'HBM model','r-small r-muted','end');
+    rows.forEach((r,i)=>{
+      const yy=100+i*73,color=colors[r.precision],value=percent(r),[lo,hi]=range(r);
+      svg+=t(20,yy,name(r),'r-label')+t(20,yy+29,`${f(meta.theoreticalTFPerGPU[r.precision]/1000,1)} PF/s theory`,'r-small r-muted');
+      svg+=b(cx,yy-20,cw*value/100,27,color)+whisker(cx+cw*percent(r,hi)/100,cx+cw*percent(r,lo)/100,yy-6,color)+dot(cx+cw*value/100,yy-6,color);
+      svg+=t(770,yy,`${f(value,1)}%`,'r-number','end')+t(770,yy+29,`${f(rate(r)/1000,2)} PF/s`,'r-small','end');
+      svg+=t(850,yy,name(r),'r-label')+t(850,yy+29,`${f(r.nvlinkTXGBps,0)} → ${f(r.nvlinkMaxTXGBps,0)} GB/s`,'r-small r-muted');
+      svg+=b(tx,yy-20,tw*r.nvlinkTXGBps/900,27,color)+whisker(tx+tw*r.nvlinkTXGBps/900,tx+tw*r.nvlinkMaxTXGBps/900,yy-6,color)+dot(tx+tw*r.nvlinkTXGBps/900,yy-6,color);
+      svg+=t(1570,yy,`${f(r.analyticalHBMGBps/1000,2)} TB/s`,'r-number','end')+b(1390,yy+18,180,5,'line',.3)+b(1390,yy+18,180*r.analyticalHBMGBps/meta.theoreticalHBMGBps,5,color,.55);
     });
-    if(rows.length===3)svg+=t(16,278,'NVFP4 is inference-only.','r-small r-muted');
-    svg+=t(16,319,transport?'TX axis: GB/s · 900 GB/s one-way theoretical peak · HBM theory: 8 TB/s':'100% = dense theoretical peak for each precision · whiskers: observed timing windows','r-small r-muted');return svg;
+    svg+=t(20,384,'Whiskers: observed timing windows · PF/s = PFLOP/s per GPU','r-small r-muted')+t(850,384,'TX marker: rank mean → max · theory: 900 GB/s TX, 8 TB/s HBM','r-small r-muted');
+    return svg;
   }
   /** Generate step-specific interpretation for the hardware comparison. */
-  function efficiencyCaption(phase){const rows=balanced(S.resultEP),bf=rows[0],chosen=rows.find(r=>r.precision==='nvfp4')||rows.find(r=>r.pipeline==='staged');
-    if(phase===1)return ['Transport and memory context',`${name(chosen)} measures ${f(chosen.nvlinkTXGBps,0)} GB/s mean TX, ${f(chosen.nvlinkTXGBps/9,1)}% of the one-way theoretical NVLink peak. The HBM column is modeled useful traffic, not a DRAM-utilization counter.`];
-    if(S.resultMode==='training')return ['Useful training compute through the distributed path',`BF16 delivers ${f(percent(bf),1)}% of the dense theoretical Tensor Core peak through complete forward/backward execution. ${name(chosen)} delivers ${f(rate(chosen)/1000)} PFLOP/s per GPU and ${f(bf.layerMS/chosen.layerMS,2)}× the BF16 useful throughput.`];
-    return ['Useful inference work and the precision-specific ceiling',`${name(chosen)} completes the routed layer in ${f(chosen.layerMS)} ms, ${f(bf.layerMS/chosen.layerMS,2)}× faster than BF16. Its ${f(rate(chosen)/1000)} PFLOP/s per GPU is ${f(percent(chosen),1)}% of the larger dense theoretical FP4 peak.`];
+  function efficiencyCaption(){const rows=balanced(S.resultEP),bf=rows[0],chosen=rows.find(r=>r.precision==='nvfp4')||rows.find(r=>r.pipeline==='staged');
+    const compute=S.resultMode==='training'?`BF16 reaches ${f(percent(bf),1)}% of its dense theoretical peak; ${name(chosen)} delivers ${f(rate(chosen)/1000)} PFLOP/s per GPU and ${f(bf.layerMS/chosen.layerMS,2)}× BF16 useful throughput`:`${name(chosen)} takes ${f(chosen.layerMS)} ms, ${f(bf.layerMS/chosen.layerMS,2)}× faster than BF16, delivering ${f(rate(chosen)/1000)} PFLOP/s per GPU (${f(percent(chosen),1)}% of FP4 dense theory)`;
+    return ['Compute and bandwidth in the same measured workload',`${compute}. Its mean NVLink TX is ${f(chosen.nvlinkTXGBps,0)} GB/s (${f(chosen.nvlinkTXGBps/9,1)}% of one-way theory); HBM values are modeled byte rates, with no measured DRAM utilization.`];
   }
-  /** Render hardware data without changing its canonical SVG viewBox. */
-  function renderEfficiency(phase){
+  /** Render compute, transport, and the full raw comparison together. */
+  function renderEfficiency(){
     const eps=S.resultMode==='inference'?[8,16]:[32,64];if(!eps.includes(S.resultEP))S.resultEP=eps[0];
     $('result-EP').innerHTML=eps.map(ep=>`<option value="${ep}" ${ep===S.resultEP?'selected':''}>${ep}</option>`).join('');$('result-mode').querySelectorAll('[data-mode]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.mode===S.resultMode)));
     const rows=balanced(S.resultEP);$('efficiency-config').textContent=`${S.resultMode==='training'?'Forward + backward':'Forward'} · EP${S.resultEP} · balanced · T = 2,048 · D = 7,168 · F = 3,072 · 384 experts · top-6`;
-    A.renderSVG('efficiency-svg',efficiencySVG(rows,phase));
-    if(phase===0){const headers=['Precision / policy',...(S.resultMode==='training'?['Forward<br>ms','Backward<br>ms']:[]),'Layer<br>ms','Useful<br>PFLOP/s / GPU','Dense theory<br>%'];A.renderHTML('efficiency-table',table(headers,rows.map(r=>[name(r),...(r.mode==='training'?[msCell(r,'forward'),msCell(r,'backward')]:[]),msCell(r),f(rate(r)/1000),f(percent(r),1)])));}
-    else A.renderHTML('efficiency-table',table(['Precision / policy','Mean TX<br>GB/s','Max-rank TX<br>GB/s','Mean RX<br>GB/s','Mean TX / theory<br>%','HBM model<br>TB/s'],rows.map(r=>[name(r),f(r.nvlinkTXGBps,1),f(r.nvlinkMaxTXGBps,1),f(r.nvlinkRXGBps,1),f(r.nvlinkTXGBps/9,1),f(r.analyticalHBMGBps/1000,3)])));
-    tabs('efficiency-tabs',phase);A.phaseCaption('efficiency-caption',efficiencyCaption(phase));
+    A.renderSVG('efficiency-svg',efficiencySVG(rows));
+    const headers=['Precision / policy',...(S.resultMode==='training'?['Forward<br>ms','Backward<br>ms']:[]),'Layer<br>ms','Useful<br>PFLOP/s / GPU','Dense theory<br>%','Mean TX<br>GB/s','Max TX<br>GB/s','Mean RX<br>GB/s','HBM model<br>TB/s'];
+    A.renderHTML('efficiency-table',table(headers,rows.map(r=>[name(r),...(r.mode==='training'?[msCell(r,'forward'),msCell(r,'backward')]:[]),msCell(r),f(rate(r)/1000),f(percent(r),1),f(r.nvlinkTXGBps,1),f(r.nvlinkMaxTXGBps,1),f(r.nvlinkRXGBps,1),f(r.analyticalHBMGBps/1000,3)])));
+    A.phaseCaption('efficiency-caption',efficiencyCaption());
   }
   /** Synchronize available variants when the workload changes. */
   function variantSelect(id,key,ep){const available=variants(ep);if(!available.includes(S[key]))S[key]=available.includes('nvfp4:mega')?'nvfp4:mega':'mxfp8:mega';$(id).innerHTML=available.map(v=>`<option value="${v}" ${v===S[key]?'selected':''}>${V.esc(name(row(ep,v)))}</option>`).join('');}
   /** Draw received work and both throughput accounting views together. */
-  function skewSVG(rows,phase){
-    const current=rows[phase],n=current.ep,mean=meta.shape.T*meta.shape.K,base=252,top=70,left=88,right=488,barWidth=(right-left)/n,maxRows=mean*8;
-    let svg=t(16,25,'Actual received expert rows','r-head')+t(565,25,'Useful rate per GPU · PFLOP/s','r-head');
-    for(const value of [0,maxRows/2,maxRows]){const y=base-value/maxRows*(base-top);svg+=l(left,y,right,y)+t(left-10,y+5,V.num(value),'r-small r-muted','end');}
-    current.receiveRows.forEach((count,i)=>{const height=count/maxRows*(base-top);svg+=b(left+i*barWidth+1,base-height,Math.max(1,barWidth-3),height,i===0?'orange':'blue',i===0?.65:.35);});
-    const meanY=base-mean/maxRows*(base-top);svg+=l(left,meanY,right,meanY,'faint','stroke-dasharray="4 4"')+t(right,meanY-7,`mean ${V.num(mean)}`,'r-tiny r-muted','end');
-    [0,Math.floor((n-1)/2),n-1].forEach(i=>svg+=t(left+(i+.5)*barWidth,278,String(i),'r-small r-muted','middle'));
-    svg+=t(left,307,`Rank · max ${V.num(Math.max(...current.receiveRows))} rows`,'r-small')+t(16,49,`${V.num(mean*n)} total routes · ${current.imbalance}× max/mean`,'r-small r-muted');
-    const x0=625,x1=1000,maxRate=Math.ceil(Math.max(...rows.map(busy))/1000*1.15),y=value=>base-value/maxRate*(base-top),x=value=>x0+(value-1)/7*(x1-x0);
+  function skewSVG(rows){
+    const mean=meta.shape.T*meta.shape.K,maxRows=mean*8,top=98,base=314,h=base-top;
+    let svg=t(20,28,'All three received-row distributions · same total routes','r-head')+t(1120,28,'Useful rate · PFLOP/s','r-head');
+    rows.forEach((r,j)=>{
+      const left=110+j*342,right=left+292,barW=(right-left)/r.ep;
+      svg+=t(left,65,`${r.imbalance}× skew · max ${V.num(Math.max(...r.receiveRows))}`,'r-label');
+      for(const value of [0,maxRows/2,maxRows]){const yy=base-value/maxRows*h;svg+=l(left,yy,right,yy);if(j===0)svg+=t(left-10,yy+5,V.num(value),'r-small r-muted','end');}
+      r.receiveRows.forEach((count,i)=>{const bh=count/maxRows*h;svg+=b(left+i*barW+1,base-bh,Math.max(1,barW-3),bh,i===0?'orange':'blue',i===0?.7:.4);});
+      const my=base-mean/maxRows*h;svg+=l(left,my,right,my,'faint','stroke-dasharray="4 4"');
+      [0,r.ep-1].forEach(i=>svg+=t(left+(i+.5)*barW,342,String(i),'r-small r-muted','middle'));
+    });
+    const x0=1190,x1=1550,maxRate=Math.ceil(Math.max(...rows.map(busy))/1000*1.15),y=v=>base-v/maxRate*h,x=v=>x0+(v-1)/7*(x1-x0);
     for(const value of [0,maxRate/2,maxRate])svg+=l(x0,y(value),x1,y(value))+t(x0-12,y(value)+5,f(value,1),'r-small r-muted','end');
-    for(const [get,col]of [[r=>rate(r),'blue'],[busy,'orange']]){const points=rows.map(r=>[x(r.imbalance),y(get(r)/1000)]);svg+=`<path d="${points.map((p,i)=>`${i?'L':'M'}${p[0]},${p[1]}`).join(' ')}" stroke="${c(col)}" class="r-guide"/>`;points.forEach((p,i)=>svg+=dot(p[0],p[1],col,i===phase?8:5));}
-    skews.forEach(value=>svg+=t(x(value),278,`${value}×`,'r-small r-muted','middle'));
-    svg+=dot(625,302,'blue')+t(640,309,'Cluster mean','r-small')+dot(822,302,'orange')+t(837,309,'Busy rank (derived)','r-small');return svg;
+    for(const [get,color]of [[r=>rate(r),'blue'],[busy,'orange']]){const points=rows.map(r=>[x(r.imbalance),y(get(r)/1000)]);svg+=`<path d="${points.map((p,i)=>`${i?'L':'M'}${p[0]},${p[1]}`).join(' ')}" stroke="${c(color)}" class="r-guide"/>`;points.forEach(p=>svg+=dot(...p,color,6));}
+    skews.forEach(value=>svg+=t(x(value),342,`${value}×`,'r-small r-muted','middle'));
+    svg+=t(20,384,`Rank index · common row scale · dashed line: mean ${V.num(mean)} rows/GPU`,'r-small r-muted')+dot(1120,381,'blue')+t(1135,389,'Cluster mean','r-small')+dot(1350,381,'orange')+t(1365,389,'Busy rank (derived)','r-small');return svg;
   }
   /** Explain the selected skew while keeping measured and derived rates distinct. */
-  function skewCaption(phase){const r=row(S.resultSkewEP,S.resultSkewVariant,'single_layer',3072,skews[phase]);
-    if(phase===0)return ['Balanced work distribution',`${V.num(r.receiveRows.reduce((a,b)=>a+b,0))} assignments are split evenly across ${r.ep} GPUs. Cluster mean and derived busiest-rank throughput both equal ${f(rate(r)/1000)} PFLOP/s per GPU.`];
-    return [`${skews[phase]}× received-row skew`,`${V.num(Math.max(...r.receiveRows))} rows give the busiest rank a derived ${f(busy(r)/1000,2)} PFLOP/s while cluster mean is ${f(rate(r)/1000,2)}. Maximum-rank TX is ${f(r.nvlinkMaxTXGBps,0)} GB/s (${f(r.nvlinkMaxTXGBps/9,1)}% of one-way theory); the supplied checks pass with ${r.allocationRetries} retries and ${r.ooms} OOMs.`];
+  function skewCaption(){const balancedRow=row(S.resultSkewEP,S.resultSkewVariant),hot=row(S.resultSkewEP,S.resultSkewVariant,'single_layer',3072,8);
+    return ['Routing skew: compare distribution, useful work, and TX together',`The busiest GPU’s assigned rows grow ${V.num(Math.max(...balancedRow.receiveRows))} → ${V.num(Math.max(...hot.receiveRows))}; its derived useful rate grows ${f(busy(balancedRow)/1000,2)} → ${f(busy(hot)/1000,2)} PFLOP/s while cluster mean falls as work concentrates. At 8× skew, max-rank TX is ${f(hot.nvlinkMaxTXGBps,0)} GB/s (${f(hot.nvlinkMaxTXGBps/9,1)}% of one-way theory), with zero allocator retries/OOMs in these tested cases.`];
   }
-  /** Render all raw skew controls with one selected distribution. */
-  function renderSkew(phase){variantSelect('skew-variant','resultSkewVariant',S.resultSkewEP);$('skew-EP').value=S.resultSkewEP;const rows=skews.map(i=>row(S.resultSkewEP,S.resultSkewVariant,'single_layer',3072,i));$('skew-config').textContent=`${name(rows[0])} · ${rows[0].mode} · EP${rows[0].ep} · F = 3,072 · total routes fixed · received-row bound = 8× balanced`;
-    A.renderSVG('skew-svg',skewSVG(rows,phase));A.renderHTML('skew-table',table(['Max / mean<br>rows','Max received<br>rows','Layer<br>ms','Cluster mean<br>PFLOP/s / GPU','Busy rank, derived<br>PFLOP/s','Max-rank TX<br>GB/s','Retries / OOMs'],rows.map(r=>[`${r.imbalance}×`,V.num(Math.max(...r.receiveRows)),msCell(r),f(rate(r)/1000),f(busy(r)/1000),f(r.nvlinkMaxTXGBps,1),`${r.allocationRetries} / ${r.ooms}`])));tabs('skew-tabs',phase);A.phaseCaption('skew-caption',skewCaption(phase));
+  /** Render every measured distribution with the matching raw numbers. */
+  function renderSkew(){variantSelect('skew-variant','resultSkewVariant',S.resultSkewEP);$('skew-EP').value=S.resultSkewEP;const rows=skews.map(i=>row(S.resultSkewEP,S.resultSkewVariant,'single_layer',3072,i));$('skew-config').textContent=`${name(rows[0])} · ${rows[0].mode} · EP${rows[0].ep} · F = 3,072 · total routes fixed · common 8× receive-row ruler`;
+    A.renderSVG('skew-svg',skewSVG(rows));A.renderHTML('skew-table',table(['Max / mean<br>rows','Max received<br>rows','Layer<br>ms','Cluster mean<br>PFLOP/s / GPU','Busy rank, derived<br>PFLOP/s','Max-rank TX<br>GB/s','Retries / OOMs'],rows.map(r=>[`${r.imbalance}×`,V.num(Math.max(...r.receiveRows)),msCell(r),f(rate(r)/1000),f(busy(r)/1000),f(r.nvlinkMaxTXGBps,1),`${r.allocationRetries} / ${r.ooms}`])));A.phaseCaption('skew-caption',skewCaption());
   }
   /** Draw proportional feature extents and the three measured width controls. */
-  function widthSVG(rows,phase){
-    const current=rows[phase];let svg=t(16,25,'Feature widths · one expert','r-head')+t(495,25,'Useful throughput · PFLOP/s / GPU','r-head');
-    [['x · D',meta.shape.D,'blue'],['h₁ · 2F',2*current.F,'orange'],['h₂ · F',current.F,'green']].forEach(([label,count,col],i)=>{const y=70+i*69;svg+=t(16,y,`${label} = ${V.num(count)}`)+b(16,y+12,340*count/(2*6144),25,col);});
-    svg+=t(16,294,'W₁₃: [2F, D] · W₂: [D, F]','r-small')+t(16,321,'Input/output routing dimensions stay fixed.','r-small r-muted');
-    const x0=580,x1=1005,base=250,top=70,maxRate=Math.ceil(Math.max(...rows.map(r=>rate(r,range(r)[0])))/1000*1.18),x=F=>x0+(F-1536)/(6144-1536)*(x1-x0),y=pf=>base-pf/maxRate*(base-top);
+  function widthSVG(rows){
+    const scale=390/(2*6144);let svg=t(20,28,'All expert widths · proportional feature extents','r-head')+t(880,28,'Useful throughput · PFLOP/s / GPU','r-head');
+    svg+=t(20,65,`x and output keep D = ${V.num(meta.shape.D)}`,'r-small r-muted')+b(470,49,meta.shape.D*scale,21,'blue');
+    rows.forEach((r,i)=>{const yy=120+i*81;svg+=t(20,yy,`F = ${V.num(r.F)}`,'r-label')+t(195,yy,`h₁: ${V.num(2*r.F)}`,'r-small')+b(470,yy-17,2*r.F*scale,21,'orange')+t(195,yy+31,`h₂: ${V.num(r.F)}`,'r-small')+b(470,yy+14,r.F*scale,21,'green');});
+    const x0=990,x1=1550,base=313,top=93,maxRate=Math.ceil(Math.max(...rows.map(r=>rate(r,range(r)[0])))/1000*1.18),x=F=>x0+(F-1536)/(6144-1536)*(x1-x0),y=pf=>base-pf/maxRate*(base-top),color=colors[rows[0].precision];
     for(const value of [0,maxRate/2,maxRate])svg+=l(x0,y(value),x1,y(value))+t(x0-12,y(value)+5,f(value,1),'r-small r-muted','end');
-    const points=rows.map(r=>[x(r.F),y(rate(r)/1000)]),col=colors[current.precision];svg+=`<path d="${points.map((p,i)=>`${i?'L':'M'}${p[0]},${p[1]}`).join(' ')}" stroke="${c(col)}" class="r-guide"/>`;
-    rows.forEach((r,i)=>{const [lo,hi]=range(r);svg+=l(x(r.F),y(rate(r,hi)/1000),x(r.F),y(rate(r,lo)/1000),col,'stroke-width="2"')+dot(...points[i],col,i===phase?8:5)+t(x(r.F),279,V.num(r.F),'r-small r-muted','middle');});
-    svg+=t(580,309,`F · ${name(current)}`,'r-small')+t(495,342,`${V.num(Math.round(current.forwardFlopsPerLogicalPayloadByteRank0))} FLOPs / logical forward payload byte`,'r-small r-muted');return svg;
+    const points=rows.map(r=>[x(r.F),y(rate(r)/1000)]);svg+=`<path d="${points.map((p,i)=>`${i?'L':'M'}${p[0]},${p[1]}`).join(' ')}" stroke="${c(color)}" class="r-guide"/>`;
+    rows.forEach((r,i)=>{const [lo,hi]=range(r);svg+=l(x(r.F),y(rate(r,hi)/1000),x(r.F),y(rate(r,lo)/1000),color,'stroke-width="2"')+dot(...points[i],color,6)+t(x(r.F),345,V.num(r.F),'r-small r-muted','middle');});
+    svg+=t(20,386,'h₁ width = 2F · h₂ width = F · W₁₃ [2F,D] · W₂ [D,F]','r-small r-muted')+t(880,386,`F · ${name(rows[0])} · same logical routed payload`,'r-small r-muted');return svg;
   }
   /** Explain measured work growth, not an interpolated latency prediction. */
   function widthCaption(phase){const rows=widths.map(F=>row(S.resultWidthEP,S.resultWidthVariant,'width',F)),r=rows[phase],bf=row(r.ep,'bf16:standard','width',r.F);
@@ -117,7 +126,7 @@
   }
   /** Render raw width controls, keeping the repeated F3072 control separate. */
   function renderWidth(phase){variantSelect('width-variant','resultWidthVariant',S.resultWidthEP);$('width-EP').value=S.resultWidthEP;const rows=widths.map(F=>row(S.resultWidthEP,S.resultWidthVariant,'width',F));$('width-config').textContent=`${name(rows[0])} · ${rows[0].mode} · EP${rows[0].ep} · balanced routing · D = 7,168 · same logical activation payload`;
-    A.renderSVG('width-svg',widthSVG(rows,phase));A.renderHTML('width-table',table(['Expert width<br>F','Layer<br>ms','Useful<br>PFLOP/s / GPU','Dense theory<br>%','Speedup / BF16<br>same width','Mean TX<br>GB/s'],rows.map(r=>[V.num(r.F),msCell(r),f(rate(r)/1000),f(percent(r),1),`${f(row(r.ep,'bf16:standard','width',r.F).layerMS/r.layerMS,2)}×`,f(r.nvlinkTXGBps,1)])));tabs('width-tabs',phase);A.phaseCaption('width-caption',widthCaption(phase));
+    A.renderSVG('width-svg',widthSVG(rows));A.renderHTML('width-table',table(['Expert width<br>F','Layer<br>ms','Useful<br>PFLOP/s / GPU','Dense theory<br>%','Speedup / BF16<br>same width','Forward FLOPs /<br>logical payload byte','Mean TX<br>GB/s'],rows.map(r=>[V.num(r.F),msCell(r),f(rate(r)/1000),f(percent(r),1),`${f(row(r.ep,'bf16:standard','width',r.F).layerMS/r.layerMS,2)}×`,V.num(Math.round(r.forwardFlopsPerLogicalPayloadByteRank0)),f(r.nvlinkTXGBps,1)])));A.phaseCaption('width-caption',widthCaption(2));
   }
   /** Model eight identical BF16 layer footprints within one fixed slot. */
   function projection(){const measured=row(64,'bf16:standard'),full=measured.savedBytes[0],input=measured.inputBytes,capacity=measured.slotBytes,records=[];let cursor=0;
@@ -164,11 +173,11 @@
   function renderPairs(){const pairs=D.cases.filter(r=>r.precision==='mxfp8'&&r.pipeline==='staged').map(st=>{const me=row(st.ep,'mxfp8:mega',st.category,st.F,st.imbalance),sr=range(st),mr=range(me),interpretation=mr[1]<sr[0]?'Mega ranges lower':sr[1]<mr[0]?'Staged ranges lower':'Window ranges overlap';return [`${st.mode} · EP${st.ep}`,st.category==='width'?'Width control':'Routing control',V.num(st.F),`${st.imbalance}×`,msCell(st),msCell(me),`${f(st.layerMS/me.layerMS,3)}×`,interpretation];});$('result-pairs-table').innerHTML=table(['Workload','Control','F','Skew','Staged ms','Mega ms','Staged / Mega','Observed windows'],pairs);}
   /** Bind manual step tabs to the existing controller implementation. */
   function bindTabs(id,controller){$(id).addEventListener('click',event=>{const button=event.target.closest('[data-step]');if(button)A.controllers[controller].set(Number(button.dataset.step));});}
-  A.controllers.efficiency=new A.Controller('efficiency',2,renderEfficiency);
-  A.controllers.skew=new A.Controller('skew',3,renderSkew);
-  A.controllers.width=new A.Controller('width',3,renderWidth);
+  A.controllers.efficiency=new A.Controller('efficiency',1,renderEfficiency);
+  A.controllers.skew=new A.Controller('skew',1,renderSkew);
+  A.controllers.width=new A.Controller('width',1,renderWidth);
   A.controllers['result-memory']=new A.Controller('result-memory',3,renderMemory);
-  bindTabs('efficiency-tabs','efficiency');bindTabs('skew-tabs','skew');bindTabs('width-tabs','width');bindTabs('result-memory-tabs','result-memory');
+  bindTabs('result-memory-tabs','result-memory');
   $('result-mode').addEventListener('click',event=>{const button=event.target.closest('[data-mode]');if(!button)return;S.resultMode=button.dataset.mode;S.resultEP=S[S.resultMode==='inference'?'resultInferenceEP':'resultTrainingEP'];A.controllers.efficiency.render();});
   $('result-EP').addEventListener('change',event=>{S.resultEP=Number(event.target.value);S[S.resultMode==='inference'?'resultInferenceEP':'resultTrainingEP']=S.resultEP;A.controllers.efficiency.render();});
   [['skew-EP','resultSkewEP','skew',true],['skew-variant','resultSkewVariant','skew',false],['width-EP','resultWidthEP','width',true],['width-variant','resultWidthVariant','width',false]].forEach(([id,key,controller,numeric])=>$(id).addEventListener('change',event=>{S[key]=numeric?Number(event.target.value):event.target.value;A.controllers[controller].render();}));
@@ -176,11 +185,11 @@
   /** Reset the new figures together with the existing article controls. */
   function reset(){Object.assign(S,defaults);['efficiency','skew','width','result-memory'].forEach(name=>A.controllers[name].set(0));}
   const oldReset=A.reset;A.reset=()=>{oldReset();reset();};$('reset').addEventListener('click',reset);
-  const oldCaption=A.getStepCaption;A.getStepCaption=(name,phase)=>name==='efficiency'?efficiencyCaption(phase):name==='skew'?skewCaption(phase):name==='width'?widthCaption(phase):name==='result-memory'?memoryCaption(phase):oldCaption(name,phase);
+  const oldCaption=A.getStepCaption;A.getStepCaption=(name,phase)=>name==='efficiency'?efficiencyCaption():name==='skew'?skewCaption():name==='width'?widthCaption(2):name==='result-memory'?memoryCaption(phase):oldCaption(name,phase);
   /** Sample complete supported modes while presentation reserves a fixed layout. */
   function sample(name,pass){if(name==='efficiency'){for(const mode of ['inference','training'])for(const ep of mode==='inference'?[8,16]:[32,64]){S.resultMode=mode;S.resultEP=ep;pass();}}else if(name==='skew'){for(const ep of [8,16,32,64])for(const variant of variants(ep)){S.resultSkewEP=ep;S.resultSkewVariant=variant;pass();}}else if(name==='width'){for(const ep of [16,64])for(const variant of variants(ep)){S.resultWidthEP=ep;S.resultWidthVariant=variant;pass();}}}
   /** Return a short scope statement matching the current measured/projection view. */
-  function scope(name,phase){if(name==='efficiency')return meta.peakNote+(phase===1?' HBM is modeled, not a DRAM counter.':'');if(name==='skew')return 'Busiest-rank throughput is derived from assigned work and maximum-rank latency. NVLink is measured separately; peaks are theoretical.';if(name==='width')return 'Three measured widths; fixed balanced routing and logical activation payload. HBM weight/intermediate traffic grows with F; peaks are theoretical.';return phase===2?'Projection from a measured single-layer footprint; no multi-layer timing or recompute speedup was measured. Arena excludes weights, gradients, symmetric buffers, and graph pools.':phase===1?'Separate single-layer BF16 measurements with identical capacity settings. Arena reservation and allocator peak are separate accounting views. VMM and capacity recompute are off.':'Single-layer MXFP8 measurements. Scratch is temporary kernel storage; the activation slot retains state for backward. VMM and capacity recompute are off.';}
+  function scope(name,phase){if(name==='efficiency')return meta.peakNote+' HBM is modeled, not a DRAM counter.';if(name==='skew')return 'Busiest-rank throughput is derived from assigned work and maximum-rank latency. NVLink is measured separately; peaks are theoretical.';if(name==='width')return 'Three measured widths; fixed balanced routing and logical activation payload. HBM weight/intermediate traffic grows with F; peaks are theoretical.';return phase===2?'Projection from a measured single-layer footprint; no multi-layer timing or recompute speedup was measured. Arena excludes weights, gradients, symmetric buffers, and graph pools.':phase===1?'Separate single-layer BF16 measurements with identical capacity settings. Arena reservation and allocator peak are separate accounting views. VMM and capacity recompute are off.':'Single-layer MXFP8 measurements. Scratch is temporary kernel storage; the activation slot retains state for backward. VMM and capacity recompute are off.';}
   /** Generate the article's numerical prose from the same immutable measurements. */
   function narrative(){
     const bf=row(32,'bf16:standard'),st=row(32,'mxfp8:staged'),balancedNV=row(16,'nvfp4:mega'),hot=row(16,'nvfp4:mega','single_layer',3072,8),small=row(16,'nvfp4:mega','width',1536),large=row(16,'nvfp4:mega','width',6144),ps=row(64,'mxfp8:staged'),pm=row(64,'mxfp8:mega');

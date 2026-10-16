@@ -58,13 +58,16 @@
   ];
   controllers.overview=new Controller('overview',9,p=>{renderSVG('overview-svg',V.overview(p));phaseCaption('overview-caption',overviewCaptions[p]);},2300);
   const tokenCaptions=[
-    ['Caller assignments','A→E0/E2, B→E3/E1, C→E2/E0, D→E1/E3. One token row can have multiple expert assignments. E_e(x) denotes the corresponding expert result.'],
-    ['Expert-major row order','Rank 0 receives E0[A,C] and E1[B,D]; rank 1 receives E2[A,C] and E3[B,D]. Each gather pointer names a source row; the destination offset identifies its expert-major position.'],
-    ['The return address includes the top-k slot','E0(C) returns to rank 1’s C,k1 slot, while E2(C) returns to C,k0. Route order determines where each result is stored before owner-side reduction.'],
-    ['Owner-side weighted output','The owner weights E_e(x) by the supplied scores and sums K routes. The two displayed components are illustrative mathematical values before final BF16 rounding.']
+    ['Establish symmetric peer mappings once','Context creation collectively allocates and rendezvouses routing, dispatch, and combine buffers. Each rank gets GPU-resident peer-base arrays; their addresses refer to HBM physically owned by the source GPU.'],
+    ['Publish routing IDs and stage source rows','The caller supplies x, expert IDs, and scores. Each rank publishes an int32 token-count header plus int16 IDs, and copies one BF16 source row per token to dispatch; scores stay local.'],
+    ['Exchange IDs, then count local expert rows','After the EP publication barrier, GPU kernels read all ranks’ IDs into local [EP,T,K] metadata and match the IDs to local experts. Header checks require equal physical T; expert counts, padding, and prefix offsets are computed locally without a host read.'],
+    ['Construct per-route pointer tables locally','Forward gather addresses use dispatch_base[owner] + token × row_bytes; scatter addresses use combine_base[owner] + (token × K + k) × row_bytes. Training also constructs bwd_gather_ptrs into top-k-expanded dispatch storage for returning input gradients; inference omits that table.'],
+    ['Gather payload rows in expert-major order','The expert kernel follows fwd_gather_ptrs to local or peer dispatch HBM and writes x_gathered at planned local offsets. Rank 0 receives E0[A,C], E1[B,D]; rank 1 receives E2[A,C], E3[B,D], then the MLP produces one output per route.'],
+    ['Scatter route results into symmetric combine HBM','W2 epilogues follow scatter_ptrs and write BF16 results into token-owner [T,K,D] return slots. E0(C) writes C,k1, while E2(C) writes C,k0; the original top-k index is preserved even though experts execute in another order.'],
+    ['Barrier, score, and reduce on each owner','After the EP combine barrier, each owner reads its own return slots and applies its local router scores. The top-k sum uses FP32 arithmetic and returns BF16 [T,D]; the displayed two-component values are illustrative.']
   ];
   $('token-tabs').innerHTML=V.tokenPhases.map((name,i)=>`<button data-phase="${i}" aria-pressed="${i===0}">${i+1} · ${name}</button>`).join('');
-  controllers.tokens=new Controller('tokens',4,p=>{renderSVG('token-svg',V.tokens(p,state.token));phaseCaption('token-caption',tokenCaptions[p]);for(const b of $('token-tabs').children)b.setAttribute('aria-pressed',String(Number(b.dataset.phase)===p));});
+  controllers.tokens=new Controller('tokens',7,p=>{renderSVG('token-svg',V.tokens(p,state.token));$('token-config').textContent=`${p===0?'Once per context':'Per invocation'} · ${V.tokenPhases[p]} · BF16 training example · T = K = 2 · D = F = 256`;phaseCaption('token-caption',tokenCaptions[p]);for(const b of $('token-tabs').children)b.setAttribute('aria-pressed',String(Number(b.dataset.phase)===p));});
   segment('token-tabs','phase',p=>controllers.tokens.set(Number(p)));segment('token-select','token',token=>{state.token=token;controllers.tokens.stop();controllers.tokens.render();});
   let currentMemoryConfig=null,currentMemoryPlan=null,liveMemoryInput=false;
   function config(){
@@ -90,9 +93,12 @@
     catch(error){$('memory-status').hidden=false;$('memory-status').textContent=error.message+' The plot retains the last valid configuration until this is corrected.';return false;}
     currentMemoryConfig=c;currentMemoryPlan=plan;syncSlotControls(c,plan);
     const calc=V.calculations(c,plan,state.calculation);
+    const costCaption=state.calculation==='saved'?['One layer: count saved tensors',`At the balanced reference R = ${V.num(calc.rows)}, the eligible saved tensors total ${V.bytes(calc.total)} per layer. Multiplying by ${c.L} layers defines the balanced full-save reference; scratch is budgeted separately.`]:['One layer: count the scratch peak',`At R = ${V.num(calc.rows)}, the simultaneously live temporary regions total ${V.bytes(calc.total)} ${state.calculation==='device'?'device':'total'} scratch. This one shared peak is reused by sequential layers; ${state.calculation==='total'?'VMM host backing covers total scratch beyond the device tier.':'the scratch factor chooses the received-row bound, then tensor shapes determine its byte cost.'}`];
+    phaseCaption('memory-cost-caption',costCaption);
     const policy=c.activation_slot_bytes!=null?`exact ${V.num(c.activation_slot_bytes)} B`:`activation factor ${c.activation_slot_capacity_factor}`;
     const shape=`T=${V.num(c.T)} · D=${V.num(c.D)} · F=${V.num(c.F)} · K=${c.K} · E=${c.E} · EP=${c.EP} · ${c.L} layers/slot · ${c.N} slots · ${c.precision==='bf16'?'BF16':'MXFP8 '+c.pipeline}`;
     $('memory-shape').textContent=shape;
+    $('memory-cost-shape').textContent=`${c.precision==='bf16'?'BF16':'MXFP8 '+c.pipeline} · T = ${V.num(c.T)} · K = ${c.K} · D = ${V.num(c.D)} · F = ${V.num(c.F)} · R = ${V.num(calc.rows)} ${state.calculation==='saved'?'balanced':state.calculation+' scratch bound'}`;
     $('memory-config').textContent=`${shape} · ${policy} → ${V.bytes(plan.slot)}/slot · scratch factors ${plan.deviceFactor} device / ${plan.totalFactor} total`;
     renderHTML('memory-policy-summary',metric(c.activation_slot_bytes!=null?'activation_slot_bytes':'activation_slot_capacity_factor',c.activation_slot_bytes!=null?V.num(c.activation_slot_bytes):String(c.activation_slot_capacity_factor),c.activation_slot_bytes!=null?`align128 → ${V.bytes(plan.slot)} per slot`:`${V.bytes(plan.minimum)} + factor × ${V.bytes(plan.optional)} = ${V.bytes(plan.slot)} per slot`)+metric('device_scratch_capacity_factor',plan.deviceFactor.toFixed(1),`${V.bytes(plan.deviceScratch)} of GPU scratch`)+metric('total_scratch_capacity_factor',plan.totalFactor.toFixed(1),`${V.bytes(plan.totalScratch)} total scratch · ${V.bytes(plan.hostScratch)} host overflow`));
     const examples=[...$('memory-examples').querySelectorAll('button')];
