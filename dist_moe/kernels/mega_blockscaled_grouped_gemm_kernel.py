@@ -1544,12 +1544,7 @@ class MegaBlockScaledGroupedGemmKernel(DistBlockScaledGroupedGemmKernel):
                 col_first_block = col_work_tile * cutlass.Int32(
                     self.DISPATCH_QUANT_SCALE_COLS_PER_TILE
                 )
-                row_block_start = scale_start_m
-                if cutlass.const_expr(self.BLOCK_SIZE_N == 32):
-                    row_block_start = start_m
-                row_block = (
-                    row_block_start // cutlass.Int32(self.sf_vec_size) + local_row_block
-                )
+                row_block = start_m // cutlass.Int32(self.sf_vec_size) + local_row_block
                 row_start = start_m + local_row_block * cutlass.Int32(self.sf_vec_size)
                 row_scale_start = blockscaled_scale_row_start(
                     scale_start_m,
@@ -1954,12 +1949,7 @@ class MegaBlockScaledGroupedGemmKernel(DistBlockScaledGroupedGemmKernel):
                     m_size,
                     local_rank,
                 )
-                row_block_start = scale_start_m
-                if cutlass.const_expr(self.BLOCK_SIZE_N == 32):
-                    row_block_start = start_m
-                row_block = (
-                    row_block_start // cutlass.Int32(self.sf_vec_size) + local_row_block
-                )
+                row_block = start_m // cutlass.Int32(self.sf_vec_size) + local_row_block
                 row_start = start_m + local_row_block * cutlass.Int32(self.sf_vec_size)
                 row_scale_start = blockscaled_scale_row_start(
                     scale_start_m,

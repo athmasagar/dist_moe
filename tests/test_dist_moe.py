@@ -58,6 +58,7 @@ from dist_moe.kernels import (
     dist_grouped_gemm as dist_grouped_gemm_impl,
     grouped_gemm as grouped_gemm_impl,
     grouped_gemm_kernel as grouped_gemm_kernel_impl,
+    mega_blockscaled_grouped_gemm as mega_impl,
 )
 from torch._higher_order_ops.effects import has_effects
 from torch._subclasses.fake_tensor import FakeTensorMode
@@ -478,6 +479,44 @@ class DistMoeConfigTest(unittest.TestCase):
                 )
                 self.assertEqual(launch_multiple, expected_launch)
                 self.assertEqual(expected_routing % launch_multiple, 0)
+
+    def test_mega_bprop_rejects_swap_ab_paged_scale_rows(self) -> None:
+        """Mega DGRAD+WGRAD rejects SWAP_AB tiles with paged row scales.
+
+        Both bprop entry points must raise before launch because their row-quant
+        scale storage is sized by logical rows while the producer writes paged
+        rows. Unpaged or unswapped tiles pass the same check.
+        """
+        rows = dim = 128
+        common: dict[str, Any] = {
+            "sfb": torch.empty(0),
+            "split_sizes": torch.tensor([rows], dtype=torch.int32),
+            "symm_mem_buffer": None,
+            "x_wgrad_quant": (torch.empty(0), torch.empty(0)),
+            "num_sms": 148,
+            "config": {"SWAP_AB": True, "BLOCK_SIZE_N": 64},
+        }
+        with self.assertRaisesRegex(NotImplementedError, "SWAP_AB paged scale"):
+            mega_impl.mega_blockscaled_grouped_gemm_dgrad_wgrad_dispatch(
+                dy=torch.empty(rows, dim),
+                w=torch.empty(1, dim, dim),
+                gather_ptrs=torch.zeros(rows, dtype=torch.int64),
+                num_out_tokens=rows,
+                **common,
+            )
+        with self.assertRaisesRegex(NotImplementedError, "SWAP_AB paged scale"):
+            mega_impl.mega_blockscaled_grouped_gemm_dgrad_wgrad_swiglu_bwd_combine(
+                grad_h2=torch.empty(rows, dim),
+                h1=torch.empty(rows, 2 * dim),
+                w=torch.empty(1, 2 * dim, dim),
+                scatter_ptrs=torch.zeros(rows, dtype=torch.int64),
+                **common,
+            )
+        for swap_ab, block_n in ((True, 128), (True, 256), (False, 64)):
+            with self.subTest(swap_ab=swap_ab, block_n=block_n):
+                mega_impl._reject_paged_swap_ab_bprop(
+                    {"SWAP_AB": swap_ab, "BLOCK_SIZE_N": block_n}
+                )
 
     def test_dynamic_mxfp8_mega_weight_quant_recompute_policy(self) -> None:
         """Only callback-generated training quants are omitted from saved state."""

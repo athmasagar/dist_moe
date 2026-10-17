@@ -186,6 +186,17 @@ def _validate_mega_padded_scale_capacity(
     _MEGA_PADDED_SCALE_CAPACITY_CHECKED.add(split_sizes, checked_key)
 
 
+def _reject_paged_swap_ab_bprop(config: dict) -> None:
+    if not config.get("SWAP_AB", False):
+        return
+    block_size_n = int(config["BLOCK_SIZE_N"])
+    if uses_paged_blockscaled_scale_rows(block_size_n):
+        raise _MegaFusedUnsupportedError(
+            "mega bprop does not support SWAP_AB paged scale rows; "
+            f"got BLOCK_SIZE_N={block_size_n}"
+        )
+
+
 def _mega_quant_split_metadata(
     split_sizes: torch.Tensor,
     *,
@@ -1064,6 +1075,7 @@ def _cute_mega_blockscaled_grouped_gemm_dispatch_bprop(  # noqa: C901
     else:
         config = dict(config)
         config.setdefault("STATIC_SCHEDULER", False)
+    _reject_paged_swap_ab_bprop(config)
     plan = _make_mega_dispatch_plan(
         split_sizes,
         rows=rows,
@@ -1455,6 +1467,7 @@ def _cute_mega_blockscaled_grouped_gemm_combine_bprop(  # noqa: C901
     else:
         config = dict(config)
         config.setdefault("STATIC_SCHEDULER", False)
+    _reject_paged_swap_ab_bprop(config)
 
     can_use_fused = (
         out_dtype in (torch.bfloat16, torch.float16)
