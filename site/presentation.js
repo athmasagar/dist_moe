@@ -18,6 +18,7 @@
   const figures = Object.fromEntries([...article.querySelectorAll('figure[id]')].map(f => [f.id, f]));
   const paragraphs = Object.fromEntries([...article.querySelectorAll('section[id]')].map(section => [section.id, [...section.children].filter(n => ['P', 'DETAILS'].includes(n.tagName))]));
   paragraphs.motivation = [...source('#motivation').children].filter(node => node.tagName === 'P');
+  paragraphs['mok-comparison'] = [...source('#mok-comparison').children].filter(node => node.tagName === 'P');
 
   // Selectors and camera windows define pacing. They contain no duplicate math,
   // prose, numerical values, figure markup, or example programs.
@@ -25,6 +26,11 @@
     { id: 'title', kind: 'cover', chapter: 'content' },
     { id: 'moe', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
     { id: 'capabilities', figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes'], setup: '#motivation-setup' },
+    { id: 'comparison-packing', figure: 'compare-packing-figure', controller: 'compare-packing', chapter: 'mok-comparison', range: [0,2], parts: ['compare-packing-view'], preset: '#compare-packing-presets [data-focus="64"]', setup: '#compare-packing-config', title: 'key-idea' },
+    { id: 'comparison-inference', figure: 'compare-scaling-figure', controller: 'compare-scaling', chapter: 'mok-comparison', range: [0,0], parts: ['compare-scaling-view','compare-scaling-table'], preset: '#compare-scaling-presets [data-ep="16"]', setup: '#compare-scaling-config', title: 'key-idea' },
+    { id: 'comparison-training', figure: 'compare-scaling-figure', controller: 'compare-scaling', chapter: 'mok-comparison', range: [0,0], parts: ['compare-scaling-view','compare-scaling-table'], preset: '#compare-scaling-presets [data-ep="64"]', setup: '#compare-scaling-config', title: 'key-idea' },
+    { id: 'comparison-width', figure: 'compare-width-figure', controller: 'compare-width', chapter: 'mok-comparison', range: [0,0], parts: ['compare-width-view','compare-width-table'], setup: '#compare-width-config', title: 'key-idea' },
+    { id: 'comparison-graphs', figure: 'compare-graphs-figure', controller: 'compare-graphs', chapter: 'mok-comparison', range: [0,0], parts: ['compare-graphs-view','compare-graphs-table'], preset: '#compare-graphs-presets [data-focus="presentation"]', setup: '#compare-graphs-config', title: 'key-idea' },
     { id: 'system', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 8], setup: '.diagram-key' },
     { id: 'routing', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 6], bounds: [0,0,1120,740], setup: '#token-config', title: 'key-idea' },
     { id: 'quantization', figure: 'precision-figure', chapter: 'precision', parts: ['precision-svg', 'quant-detail'] },
@@ -314,6 +320,8 @@
           for(const format of ['bf16','mxfp8','nvfp4'])for(const direction of ['forward','backward'])for(const outlier of [false,true])for(const byte of [0,7,31]){
             app.state.format=format;app.state.direction=direction;app.state.quantByte=byte;$('quant-outlier').checked=outlier;app.renderPrecision();pass();
           }
+        }else if(scene.chapter==='mok-comparison'){
+          window.ComparisonApp.sample(scene.controller,pass);
         }else if(scene.chapter==='results'){
           window.ResultsApp.sample(scene.controller,pass);
         }else if(scene.controller==='packing'){
@@ -492,6 +500,7 @@
     const f=figures[scene.figure];if(!f)return '';
     if(scene.id==='results-metrics')return 'Extra padding/replay FLOPs are not separately instrumented. All routed-operation costs remain in measured latency; effective HBM bandwidth is a model.';
     if(scene.chapter==='results')return window.ResultsApp.scope(scene.controller,app.controllers[scene.controller].phase);
+    if(scene.chapter==='mok-comparison')return window.ComparisonApp.scope(scene.controller);
     if(scene.id==='capabilities')return source('#capability-scope').textContent;
     if(scene.id==='routing')return 'Two ranks, four tokens; output components are illustrative before BF16 rounding.';
     const text=f.querySelector('figcaption').textContent;

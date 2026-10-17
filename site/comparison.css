@@ -1,0 +1,89 @@
+/* The comparison uses the article's colors, type, and shared presentation layout. */
+.measured-comparison{margin-top:34px;padding-top:28px;border-top:1px solid var(--line)}
+.cmp-scope{max-width:none;color:var(--muted);font:13px/1.7 ui-monospace,Menlo,monospace}
+.cmp-method{font-size:15px;color:var(--muted)}
+.comparison-figure .figure-controls{flex-wrap:wrap}
+.comparison-view.diagram-scroll{display:grid;grid-template-columns:1fr 1fr;gap:28px;padding:5px 20px 20px;overflow:visible;min-width:0}
+.comparison-view.diagram-scroll::before{display:none}
+.cmp-panel{min-width:0}
+.cmp-panel h4{font-size:17px;font-weight:600;line-height:1.4;margin:0 0 16px}
+.cmp-chart-frame{width:100%;min-width:0;line-height:1;aspect-ratio:1040/340}
+.diagram-scroll svg.comparison-svg{display:block;min-width:0!important;width:100%;height:100%;max-width:100%;margin:0;overflow:visible}
+.comparison-svg text{fill:var(--ink);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:28px}
+.comparison-svg .cmp-chart-title{font-size:31px;font-weight:600}
+.comparison-svg .cmp-small{font-size:27px}
+.comparison-svg .cmp-number{font-size:31px;font-weight:650}
+.comparison-svg .cmp-footnote{font-size:20px}
+.comparison-svg .muted{fill:var(--faint)}
+.comparison-svg .blue-text{fill:var(--blue)}.comparison-svg .green-text{fill:var(--green)}.comparison-svg .purple-text{fill:var(--purple)}
+.cmp-table{padding:0 20px;margin:12px 0;max-width:100%;overflow:visible}
+.cmp-table table{min-width:0!important;table-layout:fixed;width:100%;font-size:14px;line-height:1.4}
+.cmp-table th{font-size:12px;color:var(--muted);text-transform:none;letter-spacing:0;font-weight:550}
+.cmp-table th,.cmp-table td{padding:9px 7px;text-align:right;vertical-align:middle;white-space:normal;overflow-wrap:anywhere}
+.cmp-table th:first-child,.cmp-table td:first-child{text-align:left;width:25%;padding-left:0}
+.cmp-table tbody th{font-size:14px;font-weight:550;color:var(--ink)}
+.cmp-table small{display:block;color:var(--faint);font-size:11px;margin-top:2px}
+.cmp-packing-table{padding:0;margin:17px 0 0}
+.cmp-packing-table table{font-size:14px}.cmp-packing-table th:first-child{width:39%}
+.cmp-native-budget{padding:10px 12px;border-left:2px solid var(--purple);margin-top:16px;font-size:14px;line-height:1.5}
+.cmp-native-budget p{max-width:none;margin:0}.cmp-native-budget p+p{margin-top:7px}
+.cmp-muted,.cmp-detail-note{color:var(--faint)}
+.cmp-pool{margin-top:25px;padding:0 12px 0 0}
+.cmp-pool h4{margin-bottom:10px}
+.cmp-byte-bar{height:34px;display:flex;border:1px solid var(--line);background:var(--subtle);border-radius:4px;overflow:hidden}
+.cmp-byte-bar>span{background:var(--blue-soft);border-right:1px solid var(--blue);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:550;color:var(--blue);white-space:nowrap}
+.cmp-pool-totals{display:flex;justify-content:space-between;gap:20px;font-size:12px;color:var(--muted);line-height:1.6;margin-top:9px}
+.cmp-pool-totals b{display:block;font-size:16px;color:var(--ink);font-weight:600}
+.cmp-zero{font-size:13px;color:var(--blue);margin:12px 0 0;max-width:none}
+.cmp-evidence{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:14px 0;margin:22px 0;font-size:15px}
+.cmp-evidence>summary{cursor:pointer;color:var(--muted);font-weight:550}
+.cmp-evidence>p{max-width:880px;line-height:1.65}
+.cmp-evidence .cmp-table{padding:0}
+.cmp-downloads{display:flex;flex-wrap:wrap;gap:10px 24px;font-size:13px}
+.cmp-detail-note{font-size:13px}
+.cmp-packing-view[data-phase="0"] .cmp-native-budget{border-color:var(--orange)}
+.cmp-packing-view[data-phase="1"] .cmp-byte-bar{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue)}
+.cmp-packing-view[data-phase="0"] .cmp-policy-panel svg rect{opacity:.85}
+.cmp-packing-view[data-phase="0"] .cmp-latency-panel svg rect,.cmp-packing-view[data-phase="1"] .cmp-latency-panel svg rect{opacity:.45}
+
+@media(max-width:1000px){
+ body:not(.presentation-mode) #content .comparison-view{grid-template-columns:1fr;gap:30px}
+ body:not(.presentation-mode) #content .comparison-figure .config-summary{overflow-wrap:anywhere}
+}
+@media(max-width:650px){
+ body:not(.presentation-mode) #content .comparison-svg .cmp-small{font-size:36px}
+ body:not(.presentation-mode) #content .comparison-svg .cmp-number{font-size:38px}
+ body:not(.presentation-mode) #content .comparison-svg .cmp-chart-title{font-size:36px}
+ body:not(.presentation-mode) #content .comparison-svg .cmp-footnote{display:none}
+ body:not(.presentation-mode) #content .comparison-svg .cmp-legend{display:none}
+ .comparison-view.diagram-scroll{padding-inline:14px}
+ .cmp-table{padding-inline:14px}
+ .cmp-pool-totals{gap:12px}.cmp-packing-table{padding:0}
+}
+
+/* Presentation dimensions remain fixed even when the browser viewport is narrow. */
+.deck-visual>figure>.comparison-view.diagram-scroll.deck-part{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:54px;padding:0;flex:1;min-height:0;align-items:start;justify-content:normal;overflow:visible}
+.deck-visual .cmp-panel{display:flex;flex-direction:column;min-height:0}
+.deck-visual .cmp-panel h4{font-size:27px;margin:0 0 12px;line-height:1.3}
+.deck-visual .cmp-chart-frame{max-height:300px;flex:0 1 auto;min-height:0}
+.deck-visual .cmp-native-budget{font-size:19px;line-height:1.35;margin-top:12px;padding:8px 12px}
+.deck-visual .cmp-native-budget p+p{margin-top:5px}
+.deck-visual .cmp-pool{margin-top:17px}
+.deck-visual .cmp-byte-bar{height:40px}
+.deck-visual .cmp-byte-bar>span{font-size:18px}
+.deck-visual .cmp-pool-totals{font-size:17px;line-height:1.3;margin-top:8px}
+.deck-visual .cmp-pool-totals b{font-size:24px}
+.deck-visual .cmp-zero{font-size:19px;line-height:1.35;margin-top:8px}
+.deck-visual .cmp-table.table-scroll.deck-part,.deck-visual .cmp-packing-table{padding:0;margin:10px 0 0;flex:none;overflow:visible}
+.deck-visual .cmp-table table{min-width:0;font-size:21px;line-height:1.2}
+.deck-visual .cmp-table th{font-size:18px}
+.deck-visual .cmp-table tbody th{font-size:21px}
+.deck-visual .cmp-table :is(th,td){padding:8px 10px}
+.deck-visual .cmp-table small{font-size:17px}
+.deck-visual .cmp-packing-table table,.deck-visual .cmp-packing-table tbody th{font-size:20px}
+.deck-visual .cmp-packing-table :is(th,td){padding:8px 6px}
+.deck-visual .cmp-packing-table th:first-child{width:39%}
+.deck-visual .cmp-packing-view .cmp-chart-frame{max-height:245px}
+.deck-visual .cmp-two-charts .cmp-panel{height:100%}
+.deck-visual .cmp-two-charts .cmp-chart-frame{height:100%;aspect-ratio:auto;flex:1;max-height:300px}
+.deck-visual .cmp-width-table small{display:inline;margin-left:8px;font-size:16px}

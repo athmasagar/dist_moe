@@ -8,10 +8,10 @@
   <meta name="copyright" content="Meta Platforms, Inc. and affiliates.">
   <title>Dist-MoE · Speed-of-light distributed expert kernels</title>
   <script>if(new URLSearchParams(location.search).get('view')==='print'){document.documentElement.classList.add('deck-print-mode');document.querySelector('meta[name="viewport"]').content='width=1440';}</script>
-  <link rel="stylesheet" href="assets/katex/katex.css"><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="results.css">
+  <link rel="stylesheet" href="assets/katex/katex.css"><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="results.css"><link rel="stylesheet" href="comparison.css">
 <link rel="stylesheet" href="presentation.css"><link rel="stylesheet" href="pdf-export.css">
   <script src="assets/katex/katex.js" defer></script>
-  <script src="models.js" defer></script><script src="diagrams.js" defer></script><script src="examples.js" defer></script><script src="article-layout.js" defer></script><script src="app.js" defer></script><script src="results-data.js" defer></script><script src="results.js" defer></script><script src="presentation.js" defer></script><script src="pdf-export.js" defer></script>
+  <script src="models.js" defer></script><script src="diagrams.js" defer></script><script src="examples.js" defer></script><script src="article-layout.js" defer></script><script src="app.js" defer></script><script src="results-data.js" defer></script><script src="results.js" defer></script><script src="comparison-data.js" defer></script><script src="comparison.js" defer></script><script src="presentation.js" defer></script><script src="pdf-export.js" defer></script>
 </head>
 <body>
 <a class="skip" href="#content">Skip to the article</a>
@@ -68,7 +68,93 @@
         </ul></details>
       </figcaption>
     </figure>
-    <p>MoK’s current API requires a shared-expert branch, whose local work can overlap dispatch. Dist-MoE also runs without shared experts and overlaps communication with ready routed tiles. The following diagram traces that hardware path.</p>
+    <p>MoK’s current API requires a shared-expert branch. Dist-MoE also runs without one. For the throughput comparison below, both execute <strong>one BF16 shared expert alongside the six routed experts</strong>, with the same shapes, routing, and CUDA runtime.</p>
+    <div id="mok-comparison" class="measured-comparison" data-title="Measured against MoK">
+      <h2>Measured against MoK, with CUDA graphs</h2>
+      <p id="comparison-intro"></p>
+      <p id="comparison-shape" class="cmp-scope">GB300 · CUDA 13.0 · T = 2,048/rank · D = 7,168 · F = 3,072 · 384 experts · top-6 + one BF16 shared expert</p>
+      <p class="cmp-method">Both implementations use CUDA graphs. Inference times forward execution; training times forward plus backward. Each median comes from five windows of 30 iterations, using the slowest rank in each window. <a href="#comparison-methods">Measurement details ↓</a></p>
+
+      <h3>Uneven layers can share a saved-state budget</h3>
+      <p>The strongest advantage appears when ten layers keep their forward state alive together. One layer can receive far more routes than another. Dist-MoE packs their saved state into <strong>one activation slot</strong>; MoK retains a fixed native budget for each layer. Lighter layers leave space that a packed slot can use for a heavier layer.</p>
+      <figure class="interactive comparison-figure" id="compare-packing-figure">
+        <div class="figure-top"><div><span class="fig-number">COMPARISON · PACKING</span><h3>Ten layers, uneven routing, one shared slot</h3></div><button class="expand" aria-label="Expand the activation-packing comparison">Expand ⤢</button></div>
+        <div class="figure-controls"><label>Training GPUs <select id="compare-packing-EP"><option>32</option><option selected>64</option></select></label><div class="segmented" id="compare-profile"><span>Routing profile</span><button data-profile="A" aria-pressed="false">A</button><button data-profile="B" aria-pressed="true">B</button></div><div class="segmented" id="compare-pool-precision"><span>Inspect slot</span><button data-precision="bf16" aria-pressed="true">BF16</button><button data-precision="mxfp8" aria-pressed="false">MXFP8</button></div></div>
+        <div class="config-summary" id="compare-packing-config"></div>
+        <div class="phase-tabs" id="compare-packing-steps"><button data-step="0" aria-pressed="false">1 · Per-layer limits</button><button data-step="1" aria-pressed="false">2 · Shared capacity</button><button data-step="2" aria-pressed="true">3 · Measured latency</button></div>
+        <div class="comparison-view diagram-scroll cmp-packing-view" id="compare-packing-view" data-phase="2">
+          <div class="cmp-panel cmp-policy-panel">
+            <h4>MoK: each layer has its own limit</h4>
+            <div class="cmp-chart-frame"><svg class="comparison-svg" id="compare-packing-svg" viewBox="0 0 1040 340" role="img" aria-label="Ten target rank loads, a fixed per-layer retained-row budget, and layers requiring native replay"></svg></div>
+            <div class="cmp-native-budget" id="compare-native-budget"></div>
+            <div class="cmp-pool" id="compare-packed-slot"></div>
+          </div>
+          <div class="cmp-panel cmp-latency-panel">
+            <h4>Complete ten-layer forward + backward</h4>
+            <div class="cmp-chart-frame"><svg class="comparison-svg" id="compare-packing-latency-svg" viewBox="0 0 1040 340" role="img" aria-label="Paired MoK and Dist-MoE latencies for both routing profiles and both precisions"></svg></div>
+            <div class="table-scroll cmp-table cmp-packing-table" id="compare-packing-table"></div>
+          </div>
+        </div>
+        <div class="transport" data-controller="compare-packing"><button class="previous" aria-label="Previous packing explanation">←</button><label class="scrub-label">Step <input class="scrub" type="range" min="0" max="2" value="2"></label><button class="next" aria-label="Next packing explanation">Next step →</button><output class="phase-count">3 / 3</output></div>
+        <div class="phase-caption" id="compare-packing-caption" aria-live="polite"></div>
+        <div id="compare-packing-presets" hidden><button data-focus="64">EP64 training</button></div>
+        <figcaption>All ten distinct forwards precede reverse-order backward. The bars show rank 0’s routing targets; native rounded schedule rows and source-policy replay counts are listed below. The slot bar shows measured saved bytes after all forwards. Factors describe different allocation policies, not equal HBM budgets.</figcaption>
+      </figure>
+      <p id="comparison-packing-story"></p>
+      <details class="cmp-evidence"><summary>Inspect native replay, slot occupancy, and total allocated HBM</summary><div class="table-scroll cmp-table" id="compare-capacity-table"></div><h4 id="compare-layer-rows-heading"></h4><div class="table-scroll cmp-table" id="compare-layer-rows-table"></div><p class="cmp-detail-note">MoK replay rows are derived from its native saved-state policy and observed schedules. Dist-MoE’s capacity flags are recorded on device. Allocated peaks include all benchmark allocations and resident graph state; they are separate from the activation-slot capacity.</p></details>
+
+      <h3>The advantage also holds for a single layer</h3>
+      <p>Routing imbalance increases the work on the busiest rank. These curves compare the same workload at each point: a value above 1 means Dist-MoE takes less time than MoK. Use the table to read the absolute latencies as the layer becomes more expensive.</p>
+      <figure class="interactive comparison-figure" id="compare-scaling-figure">
+        <div class="figure-top"><div><span class="fig-number">COMPARISON · ROUTING</span><h3>CUDA-graph latency under routing imbalance</h3></div><button class="expand" aria-label="Expand the single-layer performance comparison">Expand ⤢</button></div>
+        <div class="figure-controls"><label>Expert-parallel GPUs <select id="compare-scaling-EP"><option>8</option><option selected>16</option><option>32</option><option>64</option></select></label><span class="micro-label">EP8/16 inference · EP32/64 training</span></div>
+        <div class="config-summary" id="compare-scaling-config"></div>
+        <div class="comparison-view diagram-scroll cmp-two-charts" id="compare-scaling-view"><div class="cmp-panel"><div class="cmp-chart-frame"><svg class="comparison-svg" id="compare-scaling-svg" viewBox="0 0 1040 340" role="img" aria-label="BF16 MoK-to-Dist latency ratios at balanced, fourfold, and eightfold routing imbalance"></svg></div></div><div class="cmp-panel"><div class="cmp-chart-frame"><svg class="comparison-svg" id="compare-scaling-fp8-svg" viewBox="0 0 1040 340" role="img" aria-label="MXFP8 MoK-to-Dist latency ratios at balanced, fourfold, and eightfold routing imbalance"></svg></div></div></div>
+        <div class="table-scroll cmp-table" id="compare-scaling-table"></div>
+        <div class="transport" data-controller="compare-scaling" hidden><button class="previous">←</button><input class="scrub" type="range" min="0" max="0" value="0"><button class="next">Next</button><output class="phase-count">1 / 1</output></div>
+        <div id="compare-scaling-presets" hidden><button data-ep="16">EP16 inference</button><button data-ep="64">EP64 training</button></div>
+        <div class="phase-caption" id="compare-scaling-caption" aria-live="polite"></div>
+        <figcaption>One layer, matched shapes and routing. Lines connect measured cases; whiskers span ratios formed from the observed timing-window extrema, not confidence intervals. The MXFP8 median selects the faster measured Dist pipeline for each case; every pipeline remains in the downloadable data.</figcaption>
+      </figure>
+
+      <h3>Changing expert width preserves the advantage</h3>
+      <p>The width sweep changes F while keeping D, routed token count, and input/output payload fixed. Wider experts perform more matrix multiplication per routed byte. Dist-MoE has a lower graph median in all twelve width settings.</p>
+      <figure class="interactive comparison-figure" id="compare-width-figure">
+        <div class="figure-top"><div><span class="fig-number">COMPARISON · WIDTH</span><h3>Three expert widths, two execution modes</h3></div><button class="expand" aria-label="Expand the width-sensitivity comparison">Expand ⤢</button></div>
+        <div class="config-summary" id="compare-width-config">EP16 inference · EP64 training · balanced routing · F = 1,536 / 3,072 / 6,144</div>
+        <div class="comparison-view diagram-scroll cmp-two-charts" id="compare-width-view"><div class="cmp-panel"><div class="cmp-chart-frame"><svg class="comparison-svg" id="compare-width-svg" viewBox="0 0 1040 340" role="img" aria-label="EP16 inference width sensitivity in BF16 and MXFP8"></svg></div></div><div class="cmp-panel"><div class="cmp-chart-frame"><svg class="comparison-svg" id="compare-width-training-svg" viewBox="0 0 1040 340" role="img" aria-label="EP64 training width sensitivity in BF16 and MXFP8"></svg></div></div></div>
+        <div class="table-scroll cmp-table cmp-width-table" id="compare-width-table"></div>
+        <div class="transport" data-controller="compare-width" hidden><button class="previous">←</button><input class="scrub" type="range" min="0" max="0" value="0"><button class="next">Next</button><output class="phase-count">1 / 1</output></div>
+        <div class="phase-caption" id="compare-width-caption" aria-live="polite"></div>
+        <figcaption>The F = 3,072 width control is a separate measurement from the routing sweep’s balanced case. Compare providers within the same control. Each point uses its best measured Dist graph pipeline; the raw table names that pipeline.</figcaption>
+      </figure>
+
+      <h3>CUDA graphs matter to this comparison</h3>
+      <p>Graph and eager controls use the same weights, routing, pipeline, runtime, and allocation. The graphs benefit Dist-MoE much more in the balanced workloads. This measures the complete graph execution benefit; it does not assign that benefit to a particular source of overhead.</p>
+      <figure class="interactive comparison-figure" id="compare-graphs-figure">
+        <div class="figure-top"><div><span class="fig-number">COMPARISON · GRAPHS</span><h3>The same workload, eager and captured</h3></div><button class="expand" aria-label="Expand the matched graph-versus-eager controls">Expand ⤢</button></div>
+        <div class="figure-controls"><label>Inference GPUs <select id="compare-graphs-inference-EP"><option>8</option><option selected>16</option></select></label><label>Training GPUs <select id="compare-graphs-training-EP"><option>32</option><option selected>64</option></select></label><span class="micro-label">Balanced routing · identical pipeline within each pair</span></div>
+        <div class="config-summary" id="compare-graphs-config"></div>
+        <div class="comparison-view diagram-scroll cmp-two-charts" id="compare-graphs-view"><div class="cmp-panel"><div class="cmp-chart-frame"><svg class="comparison-svg" id="compare-graphs-svg" viewBox="0 0 1040 340" role="img" aria-label="Matched eager and CUDA-graph inference latency for MoK and Dist-MoE"></svg></div></div><div class="cmp-panel"><div class="cmp-chart-frame"><svg class="comparison-svg" id="compare-graphs-training-svg" viewBox="0 0 1040 340" role="img" aria-label="Matched eager and CUDA-graph training latency for MoK and Dist-MoE"></svg></div></div></div>
+        <div class="table-scroll cmp-table" id="compare-graphs-table"></div>
+        <div class="transport" data-controller="compare-graphs" hidden><button class="previous">←</button><input class="scrub" type="range" min="0" max="0" value="0"><button class="next">Next</button><output class="phase-count">1 / 1</output></div>
+        <div class="phase-caption" id="compare-graphs-caption" aria-live="polite"></div>
+        <div id="compare-graphs-presets" hidden><button data-focus="presentation">EP16 inference and EP64 training</button></div>
+        <figcaption>Filled bars show graph latency; outlines show eager latency on the same millisecond scale. Dist pipeline selection follows the graph result, then uses that exact pipeline’s eager control. Graph pools stay resident during eager timing; the fixed graph-then-eager order is not randomized.</figcaption>
+      </figure>
+
+      <details class="cmp-evidence" id="comparison-methods"><summary>Measurement contract, all pipelines, phases, transport, and memory</summary>
+        <p>Ten eager warmups precede capture and replay verification. Graph outputs and gradients are checked against independent eager references after changing inputs and output gradients at stable addresses. Routing stays fixed within a case and changes across the sweep. Profiling, NVLink collection, and memory diagnostics run separately from timing.</p>
+        <p>Dist uses its concurrent BF16 shared-expert stream, MXFP8 fast math, and automatic BF16 fused SwiGLU backward. MoK uses its native fused shared/routed path and native quantization. These independent expert-layer workloads include no attention, optimizer, or connections between layers.</p>
+        <div class="figure-controls"><label>GPUs <select id="compare-evidence-EP"><option>8</option><option>16</option><option>32</option><option selected>64</option></select></label><label>Workload <select id="compare-evidence-category"><option value="single_layer">Single layer</option><option value="width">Width sweep</option><option value="packing" selected>Ten-layer packing</option></select></label></div>
+        <div class="phase-tabs" id="compare-evidence-tabs"><button data-view="execution" aria-pressed="true">Execution and phases</button><button data-view="transport" aria-pressed="false">Transport and memory</button></div>
+        <div class="table-scroll cmp-table" id="compare-evidence-table"></div>
+        <p class="cmp-detail-note">Phase medians and the combined median are summarized separately and need not add exactly. Useful FLOPs count 6T(K+1)DF for forward and 18T(K+1)DF for training, multiplied by ten for packing. Padding and replay are excluded. NVLink TX/RX is measured separately; effective HBM is analytical useful bytes divided by latency, not physical DRAM traffic. Allocated peaks include graph pools.</p>
+        <p class="cmp-detail-note">Balanced BF16 EP64 is one example where a phase ranks differently: MoK forward is about 0.6% faster, while Dist-MoE wins on complete training latency. Shared-fabric activity and the fixed timing order limit causal attribution. Avoided replay is supported by capacity evidence; its isolated contribution to the speedup was not measured.</p>
+        <p class="cmp-downloads"><a href="data/mok-comparison.csv" download>All 110 executions · CSV ↓</a><a href="data/mok-comparison-pairs.csv" download>All 66 Dist pipeline comparisons · CSV ↓</a><a href="data/mok-comparison.json" download>Numeric data and capacity evidence · JSON ↓</a><a href="data/mok-comparison-methodology.md">Methodology and definitions ↗</a></p>
+      </details>
+      <p class="bridge">The measured capacity advantage follows from the planner’s shared slot. The rest of the guide shows how tokens reach the kernels, how saved values are packed, and how backward decides what to retain or rebuild.</p>
+    </div>
   </div>
   <p>Follow a BF16 row from its owner’s dispatch buffer, across NVLink, through expert-local HBM and tensor cores, and back to the owner’s combine buffer. Expert weights remain local.</p>
   <p class="diagram-key"><strong>Reading the diagrams.</strong> HBM is the GPU’s main memory; SMEM is on-chip shared memory; TMEM is Blackwell tensor memory for accumulators. TMA (Tensor Memory Accelerator) stages operand tiles, and MMA is matrix multiply–accumulate. Symmetric dispatch and combine buffers are both peer-addressable device HBM.</p>
@@ -293,6 +379,7 @@
 <section id="results" data-title="Measured performance and hardware limits">
   <h2><span>07</span> How much hardware capability becomes useful layer work?</h2>
   <p>A routed layer spends time gathering rows, running GEMMs and SwiGLU, returning results, and computing gradients. These standalone measurements time that complete operation. Compare its useful GEMM rate with the hardware’s theoretical peak, then examine routing skew and expert width.</p>
+  <p>These are a separate Dist-MoE-only benchmark suite with <strong>zero shared experts</strong>. The earlier <a href="#mok-comparison">MoK comparison</a> includes one shared expert in both implementations. Keep their timings and useful-work counts within their own suites.</p>
   <p id="results-shape">Blackwell Ultra · T = 2,048 tokens/rank · D = 7,168 · F = 3,072 unless varied · E = 384 · top-k = 6 · one routed layer · zero shared experts.</p>
   <p class="results-peak-note" id="results-peak-note">Peak values are <strong>theoretical NVIDIA datasheet specifications</strong>, not benchmarked ceilings. Percentages compare measured useful throughput with the corresponding <strong>dense theoretical peak</strong>.</p>
   <figure class="interactive results-figure" id="results-metrics-figure">
@@ -385,6 +472,11 @@
     <dt>Dist-MoE</dt><dd data-slide-summary="title">An MoE layer sends each token to selected expert MLPs. Dist-MoE executes those experts across GPUs.</dd>
     <dt>Mixture-of-Experts</dt><dd data-slide-summary="moe">The router selects experts and provides route scores. Only selected experts run for each token, and their results are combined into one output.</dd>
     <dt>Execution and memory capabilities</dt><dd data-slide-summary="capabilities">Dist-MoE combines fused routed-expert execution with saved-state packing and budget-driven recompute across layers.</dd>
+    <dt>Activation packing under routing imbalance</dt><dd data-slide-summary="comparison-packing">Ten retained layers share one Dist-MoE activation slot. Their uneven routing creates spare capacity in lighter layers that can support heavier layers.</dd>
+    <dt>CUDA-graph inference at EP16</dt><dd data-slide-summary="comparison-inference">One matched routed layer with one BF16 shared expert, measured at balanced, fourfold, and eightfold routing imbalance.</dd>
+    <dt>CUDA-graph training at EP64</dt><dd data-slide-summary="comparison-training">Complete forward and backward use the same matched workload at each routing level.</dd>
+    <dt>Expert-width sensitivity at EP16 and EP64</dt><dd data-slide-summary="comparison-width">Changing expert width changes the compute per routed byte while preserving the matched input/output payload.</dd>
+    <dt>Matched graph and eager controls</dt><dd data-slide-summary="comparison-graphs">Graph and eager measurements share the same pipeline, weights, routing, runtime, and allocation.</dd>
     <dt>The distributed hardware path</dt><dd data-slide-summary="system">Dist-MoE joins dispatch, expert computation, and combine through GPU memory handoffs.</dd>
     <dt>Routing metadata, dispatch, and combine</dt><dd data-slide-summary="routing">Peer mappings establish addressability; each call publishes IDs and source rows, builds local route pointers, then gathers and scatters through symmetric HBM.</dd>
     <dt>Caller routing</dt><dd data-slide-summary="assignments">Routing belongs to the caller. Expert IDs and scores create K assignments for each token while reusing its source row.</dd>

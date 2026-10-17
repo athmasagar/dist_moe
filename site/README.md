@@ -44,24 +44,24 @@ A generic MoE setup precedes the capability comparison (slide 3) and GPU
 placement. The comparison table and its visible qualifications come directly
 from the article; source links are included in speaker notes. Static slides use
 the article’s Key ideas; stepped slides summarize the current phase from the shared figure
-caption. Slide 5 now follows the whole routing path in seven steps: symmetric
+caption. Slide 10 now follows the whole routing path in seven steps: symmetric
 peer mappings, publication, ID exchange, pointer construction, gather, scatter,
 and weighted reduction. The article includes the same figure plus exact
 header, payload, and pointer definitions.
 
-Slide 9 compares forward and backward scratch at the same receive-row bound
-in two steps, before slide 10 applies three capacity policies. Those presets
+Slide 14 compares forward and backward scratch at the same receive-row bound
+in two steps, before slide 15 applies three capacity policies. Those presets
 use activation factor 1.5 with device/total scratch 4, activation factor 0.5
 with device scratch 4 and VMM total scratch 16, and a fixed 32 GiB activation
 cap with device/total scratch 16.
 
-Slide 11 pairs forward equations and backward dependencies with value lifetimes.
-Slide 12 uses Figure 04A through all nine calls: L0–L2 keep eligible state,
+Slide 16 pairs forward equations and backward dependencies with value lifetimes.
+Slide 17 uses Figure 04A through all nine calls: L0–L2 keep eligible state,
 L3 retains only its replay input, and backwards release saved offsets.
-Slide 13 keeps all six tile handoffs together. Slide 14 pairs the complete
+Slide 18 keeps all six tile handoffs together. Slide 19 pairs the complete
 producer/consumer graph with the SM/CTA warp layout; Mega is the default,
 with Staged selectable. The same resident TMA/MMA and epilogue roles serve
-both W13 and W2 tasks. There is no separate memory-results slide. Slide 22 combines configuration,
+both W13 and W2 tasks. There is no separate memory-results slide. Slide 27 combines configuration,
 context creation/execution, and plan.explain() in three steps; the API excerpts
 and full programs share the article’s code source.
 
@@ -69,8 +69,8 @@ Figure 07 first compares stage–microbatch and whole-microbatch lifetimes and
 peak counts. Its second tab shows the simple schedule timeline, with one row
 per physical Dist-MoE slot and colored owner intervals showing release and
 reuse. Slot capacity calculations are expandable details.
-Slide 15 uses four selected steps (start, stage completion, peak overlap, finish);
-slide 16 uses three (acquire, release, reassign). Every slide uses the same
+Slide 20 uses four selected steps (start, stage completion, peak overlap, finish);
+slide 21 uses three (acquire, release, reassign). Every slide uses the same
 Step counter, numbered within its visible sequence. The controls drawer holds
 parameters and modes; step navigation stays in the presentation controls.
 
@@ -93,7 +93,7 @@ parameters and modes; step navigation stays in the presentation controls.
 PDF export follows the same curated steps as the presentation, including the
 short pipeline sequences. Each page carries its slide, step, and PDF page number,
 the current step's summary, and its fixed diagram framing. The default Mega
-deck produces 67 pages; selecting Staged produces 69. Static slides appear
+deck produces 74 pages; selecting Staged produces 76. Static slides appear
 once. Shape, format, packing, tile, and other figure settings carry into the print
 tab. The capacity-policy slide intentionally walks all three shared presets.
 The print tab keeps SVG graphics and text; it does not rasterize the slides.
@@ -113,7 +113,7 @@ settings also carry between views when using Present and Article.
 
 `results-data.js` is the canonical 63-case measurement snapshot.
 `results.js` generates the same result diagrams, tables, numerical prose, and
-step summaries for the article and deck. A metrics primer on slide 17 precedes
+step summaries for the article and deck. A metrics primer on slide 22 precedes
 four complete result slides: inference, training, routing skew, and expert width.
 Each has one step with all compared plots and raw-number rows visible together.
 The article and deck use the same data and renderers; article panels reflow
@@ -232,3 +232,31 @@ above the shared lifetime timeline. Figure 08 stacks compute and transport
 panels when the article column narrows; its tables use labeled rows on phones.
 Figure 06 uses the article’s standard label sizes. These changes also appear
 in the deck and its step-by-step PDF export.
+
+## Matched MoK comparison
+
+The motivation capability table is followed by the matched CUDA-graph
+comparison. `comparison-data.js` and `data/mok-comparison.json` contain the
+same public numeric snapshot: 110 executions, 44 matched workloads, and
+66 individual Dist pipeline comparisons. `comparison.js` generates all
+figures, raw tables, narrative values, and slide summaries from it.
+
+The article covers EP8/16 inference and EP32/64 training, BF16/MXFP8,
+routing imbalance, width controls, graph/eager pairs, and ten-layer packing.
+Expandable evidence retains every measured pipeline and phase, transport,
+allocator, and capacity metrics. CSV and JSON downloads preserve full numeric
+precision; infrastructure and artifact identifiers are not published.
+
+Five comparison slides follow the capability table. The packing slide uses
+three steps on one stable diagram: native per-layer limits, pooled saved-state
+capacity, then complete-workload latency. The slides focus on EP64 training
+and EP16 inference, while the article's controls expose all measured EPs.
+The width slide shows both focus modes together. All views use the actual
+live figure source, including PDF export.
+
+The packing graph's layer bars show routing targets. Its slot bar uses measured
+saved bytes on rank 0 after ten forwards. Native MoK replay counts are derived
+from its source policy and observed rounded schedules; Dist's capacity flags
+are recorded. Total allocated HBM is reported separately and is not promised
+to be lower. The isolated results later in the article have zero shared experts;
+the matched MoK suite has one BF16 shared expert in both providers.
