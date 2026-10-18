@@ -87,8 +87,13 @@ Figure 04B uses bundled KaTeX 0.16.45 with Computer Modern-style math fonts,
 italic variables, true indices, and mathematical operator spacing. Its equations
 use the same native HTML typesetting as the Section 2 vector equations, with
 MathML accessibility. Code names are shown separately from the notation; the
-lifetime timeline remains SVG. Expand the SwiGLU derivatives for the gate/up
-chain rule.
+lifetime intervals are native HTML in the same row as each forward equation
+and final reader. The diamond marks the last read, while the green interval
+continues through slot release. Operation columns express dependency order,
+not measured duration. Readers follow the documented backward order: route-score
+gradient reads h3, W2 weight gradient reads h2, SwiGLU backward reads h1, and
+W13 weight gradient reads x_gathered. Expand the input-gradient chain and SiLU
+derivative for the remaining equations.
 The renderer's MIT license and the fonts' original notices and SIL Open Font
 License 1.1 are bundled in `assets/katex/`.
 
@@ -188,7 +193,9 @@ and one BF16 shared expert. The later standalone suite has no shared expert.
 The comparison uses iteration time throughout. The plotted ratio is MoK time
 when divided by Dist-MoE time for the same workload. Eager controls and timing
 window classifications are omitted; measured values are preserved in the
-original workspace report. Width and imbalance axes use their numeric spacing.
+original workspace report. Packing, imbalance, and width use grouped horizontal
+speedup bars with the same 1× parity baseline and scale. Their independent
+conditions are not connected by lines.
 
 Packing executes ten forwards before reverse-order backward. Layer-imbalance
 profiles A/B average 2.31/2.39 and peak at 7.5/7.2 on the tracked GPU.

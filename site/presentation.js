@@ -27,9 +27,9 @@
     { id: 'moe', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
     { id: 'capabilities', figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes'], setup: '#motivation-setup' },
     { id: 'comparison-policy', figure: 'compare-policy-figure', chapter: 'mok-comparison', parts: ['compare-policy-view'], setup: '#compare-policy-config', title: 'key-idea' },
-    { id: 'comparison-packing', figure: 'compare-packing-figure', controller: 'compare-packing', chapter: 'mok-comparison', range: [0,0], parts: ['compare-packing-legend','compare-packing-view','compare-packing-table'], setup: '#compare-packing-config', title: 'key-idea' },
-    { id: 'comparison-scaling', figure: 'compare-scaling-figure', controller: 'compare-scaling', chapter: 'mok-comparison', range: [0,0], parts: ['compare-scaling-legend','compare-scaling-view','compare-scaling-table'], setup: '#compare-scaling-config', title: 'key-idea' },
-    { id: 'comparison-width', figure: 'compare-width-figure', controller: 'compare-width', chapter: 'mok-comparison', range: [0,0], parts: ['compare-width-legend','compare-width-view','compare-width-table'], setup: '#compare-width-config', title: 'key-idea' },
+    { id: 'comparison-packing', figure: 'compare-packing-figure', chapter: 'mok-comparison', parts: ['compare-packing-legend','compare-packing-view','compare-packing-table'], setup: '#compare-packing-config', title: 'key-idea' },
+    { id: 'comparison-scaling', figure: 'compare-scaling-figure', chapter: 'mok-comparison', parts: ['compare-scaling-legend','compare-scaling-view','compare-scaling-table'], setup: '#compare-scaling-config', title: 'key-idea' },
+    { id: 'comparison-width', figure: 'compare-width-figure', chapter: 'mok-comparison', parts: ['compare-width-legend','compare-width-view','compare-width-table'], setup: '#compare-width-config', title: 'key-idea' },
     { id: 'system', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 8], setup: '.diagram-key' },
     { id: 'routing', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 6], bounds: [0,0,1120,740], setup: '#token-config', title: 'key-idea' },
     { id: 'quantization', figure: 'precision-figure', chapter: 'precision', parts: ['precision-svg', 'quant-detail'] },
@@ -37,7 +37,7 @@
     { id: 'precision', figure: 'precision-figure', chapter: 'precision', parts: ['intermediate-table'], title: 'precision-reference', table: true },
     { id: 'memory-costs', figure: 'memory-figure', chapter: 'memory', parts: ['memory-svg'], setup: '#memory-cost-shape', title: 'costs', builds: ['#calculation-tabs [data-calculation="forward"]','#calculation-tabs [data-calculation="device"]'] },
     { id: 'allocation', figure: 'memory-figure', chapter: 'memory', parts: ['memory-policy-summary','consumption-svg', 'memory-stats'], setup: '#memory-shape', title: 'allocation', builds: ['#memory-examples [data-memory-example="saved"]','#memory-examples [data-memory-example="scratch"]','#memory-examples [data-memory-example="fixed"]'] },
-    { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['dependency-equations','recompute-svg', 'lifetime-legend'], prepare: 'lifetime', title: 'key-idea', setup: '.config-summary', bounds: [0,0,1120,275] },
+    { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['dependency-equations'], prepare: 'lifetime', title: 'key-idea', setup: '.config-summary' },
     { id: 'layer-packing', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [0, 8], parts: ['packing-svg'], display: 'packing', title: 'key-idea', setup: '#packing-brief' },
     { id: 'gpu-tile', figure: 'kernel-figure', controller: 'kernel', chapter: 'kernels', range: [0, 5], title: 'key-idea', setup: '#tile-address' },
     { id: 'mega-pipeline', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], bounds: [0,0,1600,550], title: 'key-idea', setup: '#fusion-config' },
@@ -85,7 +85,7 @@
       node.querySelectorAll?.('svg[id]').forEach(svg => {
         app.finishTransition(svg);
         const old = savedCamera.get(svg);
-        if (svg.id==='recompute-svg') svg.setAttribute('viewBox',app.state.retentionDisplay==='lifetime'?'0 0 1120 275':'0 0 1040 400');
+        if (svg.id==='recompute-svg') svg.setAttribute('viewBox','0 0 1040 400');
         else if (old) svg.setAttribute('viewBox', old);
         svg.querySelectorAll('.deck-camera-clipped').forEach(n => n.classList.remove('deck-camera-clipped'));
         svg.classList.remove('deck-map');
@@ -113,10 +113,10 @@
   function titleFor(scene, current = false) {
     if (scene.kind === 'cover') return original.title.textContent;
     if (scene.kind === 'orientation') return source('#precision > h3').textContent;
-    if (scene.kind === 'resources') return 'Execution modes and documentation';
-    if (scene.kind === 'code') return current?source('#api-caption strong').textContent.replace(/\.$/,''):'Dist-MoE public API';
+    if (scene.kind === 'resources') return source('#source-heading').textContent;
+    if (scene.kind === 'code') return current?source('#api-caption strong').textContent.replace(/\.$/,''):source('#start > h2').textContent.replace(/^08\s*/, '').trim();
     const figure = figures[scene.figure];
-    if(current && scene.controller==='efficiency')return source(`[data-slide-summary="results-${app.state.resultMode}"]`).previousElementSibling.textContent;
+    if(current && scene.chapter==='results' && scene.id!=='results-metrics')return figure.querySelector('h3').textContent;
     if (scene.title === 'precision-reference') return figure.querySelector('.inside-heading').textContent;
     if (scene.title === 'allocation') return figure.querySelector('#memory-allocation-heading').textContent;
     if (scene.title === 'costs') return figure.querySelector('#memory-cost-heading').textContent;

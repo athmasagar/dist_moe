@@ -227,8 +227,8 @@ as labeled fields. The slide view keeps the same full SVG panels and data.
 Figure 11 and its repeated memory-results section have been removed.
 
 Figure 01 uses W₁₃, h₁, h₂, W₂, and h₃ throughout, matching the setup and
-Section 2 equations. Figure 04B uses that section’s HTML math typesetting
-above the shared lifetime timeline. Figure 08 stacks compute and transport
+Section 2 equations. Figure 04B aligns each forward equation, allocated lifetime, and final-reader
+equation in one row using that section’s HTML math typesetting. Figure 08 stacks compute and transport
 panels when the article column narrows; its tables use labeled rows on phones.
 Figure 06 uses the article’s standard label sizes. These changes also appear
 in the deck and its step-by-step PDF export.
@@ -246,7 +246,9 @@ all ten layers. Status cells indicate ownership and retention, not byte sizes.
 Both BF16 and MXFP8 have the shown capacity-decision pattern.
 
 All performance charts use BF16/MXFP8 panels and one consistent EP color key.
-Imbalance charts contain all four EP lines together. Every raw table names its
+Packing, imbalance, and width use grouped horizontal speedup bars. Bars start
+at 1× parity and share the same scale; conditions are separate groups rather
+than a connected trend. Imbalance charts contain all four EPs together. Every raw table names its
 EP and execution mode in the caption, and includes explicit precision, condition,
 Dist-MoE iteration time, MoK iteration time, and speedup columns.
 The slides emphasize EP16 inference and EP64 training; the article exposes
@@ -265,3 +267,7 @@ and ten layer forwards/backwards for packing. Dist pipeline selection, native
 recompute policy, and total allocated memory are described in the optional
 measurement definitions. The later standalone suite has zero shared experts;
 the MoK suite has one BF16 shared expert in both implementations.
+
+Article headings state the mechanism or measured takeaway throughout the
+introduction and all eight chapters. Slide titles use the same source, with
+data-dependent performance titles regenerated from the selected measurements.

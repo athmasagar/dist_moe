@@ -159,3 +159,58 @@ body:not(.presentation-mode) #content .diagram-scroll svg.routing-visual{min-wid
 .dependency-derivatives summary{cursor:pointer}
 .dependency-derivatives .dependency-formula{margin-top:12px}
 .routing-visual.article-layout-mobile .routing-focus-label{display:none}
+
+/* A value, its allocated lifetime, and its final consumer occupy the same lane. */
+.dependency-equations{padding:4px 20px 18px}
+.dep-matrix-head,.dep-matrix-row{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr) minmax(0,1.2fr);gap:18px}
+.dep-matrix-head{align-items:end;padding-bottom:12px;color:var(--muted);font-size:13px}
+.dep-phases{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:0}
+.dep-phase{text-align:center;font-size:11px;line-height:1.25;min-width:0}
+.dep-phase b{display:block;font-weight:600;white-space:nowrap;color:var(--ink)}
+.dep-phase small{display:block;font-size:10px;color:var(--faint);margin-top:3px}
+.dep-phase .katex{font-size:1.05em}
+.dependency-equation-row.dep-matrix-row{padding:14px 0;border-top:1px solid var(--line);align-items:center;min-height:87px}
+.dep-value{min-width:0}
+.dep-value-label{display:flex;gap:13px;align-items:baseline}
+.dep-value-label>strong{font-size:20px;font-weight:500}
+.dep-value-label code{font-size:11px;color:var(--faint);background:none;padding:0}
+.dep-region{display:block;font-size:11px;margin-top:7px;line-height:1.35;color:var(--muted)}
+.dep-region.green{color:var(--green)}.dep-region.amber{color:var(--amber)}.dep-region.blue{color:var(--blue)}
+.dependency-formula{font-size:19px;line-height:1.35;padding:3px 0;margin:0;max-width:none}
+.dep-forward{margin-top:6px}
+.dep-reader{min-width:0}
+.dep-reader h4{font-size:12px;color:var(--muted);font-weight:600;margin:0 0 8px;line-height:1.35}
+.dep-reader p{font-size:12px;line-height:1.4;margin:0;color:var(--muted)}
+.dep-time{position:relative;min-height:38px;height:100%;align-self:stretch}
+.dep-time-grid{position:absolute;inset:0;display:grid;grid-template-columns:repeat(8,minmax(0,1fr));opacity:.5}
+.dep-time-grid i{border-right:1px solid var(--line)}
+.dep-time-grid i:nth-child(3){border-right:1px dashed var(--faint)}
+.dep-span{position:absolute;top:50%;transform:translateY(-50%);height:22px;border:1px solid var(--green);background:var(--green-soft);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--ink);white-space:nowrap;line-height:1}
+.dep-span.amber{border-color:var(--amber);background:var(--amber-soft)}
+.dep-span.blue{border-color:var(--blue);background:var(--blue-soft)}
+.dep-span.rebuilt{border-style:dashed}
+.dep-last-reader{position:absolute;top:50%;width:9px;height:9px;background:var(--purple);transform:translate(-50%,-50%) rotate(45deg);box-shadow:0 0 0 2px var(--card)}
+.dependency-equation-note{font-size:12px;line-height:1.55;color:var(--muted);margin-top:12px;max-width:none}
+.dependency-derivatives{font-size:13px;margin-top:12px;color:var(--muted)}
+.dep-gradient-chain{display:grid;grid-template-columns:1fr 1fr;gap:14px 24px;margin-top:15px}
+#recompute-svg[hidden],#recompute-svg:where([hidden]){display:none}
+#dependency-equations[hidden]{display:none!important}
+@media(max-width:950px){
+ body:not(.presentation-mode) #content .dep-matrix-head{display:none}
+ body:not(.presentation-mode) #content .dep-matrix-row{grid-template-columns:1fr;gap:12px;padding:18px 0}
+ body:not(.presentation-mode) #content .dep-time{height:32px;min-height:32px}
+ body:not(.presentation-mode) #content .dep-reader h4{font-size:13px}
+ body:not(.presentation-mode) #content .dep-gradient-chain{grid-template-columns:1fr}
+}
+@media(max-width:650px){
+ .dependency-equations{padding-inline:14px}
+ body:not(.presentation-mode) #content .dependency-formula{font-size:17px}
+}
+
+
+#recompute-figure [hidden]{display:none!important}
+
+.dep-mobile-phases{display:none}
+@media(max-width:950px){body:not(.presentation-mode) #content .dep-mobile-phases{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));position:absolute;top:0;left:0;right:0}body:not(.presentation-mode) #content .dep-time{height:72px;min-height:72px}body:not(.presentation-mode) #content .dep-time-grid{top:35px}body:not(.presentation-mode) #content .dep-span,body:not(.presentation-mode) #content .dep-last-reader{top:54px}}
+
+.dep-region{background:none!important;border:0!important;padding:0!important;height:auto!important;min-height:0!important;width:auto!important}

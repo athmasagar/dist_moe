@@ -109,3 +109,75 @@
 .deck-visual .cmp-policy-card h5{font-size:21px;margin:11px 0 7px}
 .deck-visual .cmp-layer-state>span{height:32px;font-size:18px}
 .deck-visual .cmp-policy-outcome{font-size:18px;margin-top:5px}
+
+/* Independent cases are grouped; colored bars extend from the 1x reference. */
+.cmp-speedup-bars{min-width:0}
+.cmp-bar-heading{display:flex;justify-content:space-between;gap:15px;align-items:baseline;margin-bottom:12px}
+.cmp-bar-heading h4{font-size:19px;margin:0;font-weight:650}
+.cmp-bar-heading>span{font-size:12px;color:var(--muted)}
+.cmp-bar-scale,.cmp-bar-row{display:grid;grid-template-columns:46px minmax(0,1fr) 109px;gap:9px;align-items:center}
+.cmp-bar-scale{height:25px;margin-bottom:7px}
+.cmp-bar-scale>div{position:relative;height:100%}
+.cmp-bar-scale b{position:absolute;font-size:11px;font-weight:500;color:var(--faint);transform:translateX(-50%)}
+.cmp-bar-scale .parity{left:0;transform:none}.cmp-bar-scale .tick20{left:40%}.cmp-bar-scale .tick40{left:80%}
+.cmp-bar-group{padding:0;margin:0 0 13px}
+.cmp-bar-group h5{font-size:13px;line-height:1.4;margin:0 0 6px;color:var(--muted);font-weight:600}
+.cmp-bar-row{min-height:25px;margin:0}
+.cmp-bar-ep{font-size:12px;color:var(--muted)}
+.cmp-bar-track{height:15px;position:relative;background:var(--subtle);border-radius:2px}
+.cmp-bar-track>i{position:absolute;top:-3px;bottom:-3px;border-left:1px solid var(--line);z-index:1}
+.cmp-bar-track .parity{left:0;border-color:var(--faint)}.cmp-bar-track .tick20{left:40%}.cmp-bar-track .tick40{left:80%}
+.cmp-gain-bar{display:block;position:absolute;left:0;top:3px;height:9px;background:var(--series-color);border-radius:2px;z-index:2}
+.cmp-bar-value{font-size:13px;font-weight:650;white-space:nowrap;text-align:right}
+.cmp-bar-value small{font-size:11px;color:var(--muted);font-weight:400}
+.cmp-bar-note{font-size:11px;color:var(--faint);line-height:1.5;margin:4px 0 0;max-width:none}
+.cmp-bars-view .cmp-panel{height:auto}
+@media(max-width:500px){
+ .cmp-bar-scale,.cmp-bar-row{grid-template-columns:38px minmax(0,1fr) 101px;gap:7px}
+ .cmp-bar-heading{margin-bottom:9px}.cmp-bar-value{font-size:12px}
+}
+.deck-visual .cmp-bars-view .cmp-panel{height:auto;display:block}
+.deck-visual .cmp-bar-heading{margin-bottom:7px}
+.deck-visual .cmp-bar-heading h4{font-size:25px}
+.deck-visual .cmp-bar-heading>span{font-size:17px}
+.deck-visual .cmp-bar-scale,.deck-visual .cmp-bar-row{grid-template-columns:64px minmax(0,1fr) 140px;gap:12px}
+.deck-visual .cmp-bar-scale{height:20px;margin-bottom:4px}
+.deck-visual .cmp-bar-scale b{font-size:14px}
+.deck-visual .cmp-bar-group{margin-bottom:7px}
+.deck-visual .cmp-bar-group h5{font-size:16px;line-height:1.2;margin-bottom:3px}
+.deck-visual .cmp-bar-row{min-height:19px}
+.deck-visual .cmp-bar-ep{font-size:15px}
+.deck-visual .cmp-bar-track{height:13px}
+.deck-visual .cmp-gain-bar{top:3px;height:7px}
+.deck-visual .cmp-bar-value{font-size:17px}
+.deck-visual .cmp-bar-value small{font-size:14px}
+.deck-visual .cmp-bar-note{font-size:14px;margin-top:4px}
+.deck-visual .cmp-time-tables table{font-size:19px;line-height:1.15}
+.deck-visual .cmp-time-tables th{font-size:16px}
+.deck-visual .cmp-time-tables tbody th{font-size:19px}
+.deck-visual .cmp-time-tables :is(th,td){padding:5px 8px}
+.deck-visual .cmp-time-tables caption strong{font-size:21px}
+.deck-visual .cmp-time-tables caption span{font-size:15px}
+
+.deck-visual .cmp-bar-heading{line-height:1.1}
+.deck-visual .cmp-bar-heading h4{font-size:23px;line-height:1.1}
+.deck-visual .cmp-bar-heading>span{font-size:16px;line-height:1.1}
+.deck-visual .cmp-bar-scale{margin-left:80px;height:18px;line-height:1}
+.deck-visual .cmp-bar-group{display:grid;grid-template-columns:70px minmax(0,1fr);column-gap:10px;row-gap:0;margin:0 0 5px}
+.deck-visual .cmp-bar-group h5{grid-column:1;grid-row:1 / span var(--ep-count);align-self:center;margin:0;font-size:15px;line-height:1.15}
+.deck-visual .cmp-bar-row{grid-column:2;height:18px;min-height:18px;line-height:1}
+.deck-visual .cmp-bar-value{font-size:16px;line-height:1}
+.deck-visual .cmp-bar-ep{font-size:14px;line-height:1}
+.deck-visual .cmp-bar-value small{font-size:13px;line-height:1}
+.deck-visual .cmp-bar-note{font-size:12px;line-height:1.2;margin-top:3px}
+
+/* Fewer conditions get larger rows without changing the shared ratio scale. */
+.deck-visual #compare-packing-view .cmp-bar-row{height:38px;min-height:38px}
+.deck-visual #compare-packing-view .cmp-bar-group{margin-bottom:14px}
+.deck-visual #compare-width-view .cmp-bar-row{height:28px;min-height:28px}
+.deck-visual #compare-width-view .cmp-bar-group{margin-bottom:9px}
+.deck-visual :is(#compare-packing-view,#compare-width-view) .cmp-bar-track{height:19px}
+.deck-visual :is(#compare-packing-view,#compare-width-view) .cmp-gain-bar{top:4px;height:11px}
+.deck-visual :is(#compare-packing-view,#compare-width-view) .cmp-bar-ep{font-size:16px}
+.deck-visual :is(#compare-packing-view,#compare-width-view) .cmp-bar-value{font-size:19px}
+.deck-visual :is(#compare-packing-view,#compare-width-view) .cmp-bar-value small{font-size:14px}

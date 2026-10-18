@@ -257,17 +257,12 @@ window.Views = (() => {
     unique.forEach(item=>{let title=item.name;if(layout.precision==='mxfp8'&&title.startsWith('x row'))title=title.includes('scales')?'x/h2 row scales':'x/h2 row qdata';s+=r(xx,230,w,49,item.name===selected?'blue-fill':'amber-fill')+t(xx+9,250,title,'small')+t(xx+9,270,hex(item.offset),'mono muted');xx+=w+9;});
     s+=r(16,324,1008,54,layout.mode==='save'?'green-fill':'orange-fill')+t(29,346,layout.mode==='save'?(layout.precision==='bf16'?'Backward reads saved x_gathered/h1/h3; SwiGLU rebuilds temporary h2.':'Backward reads saved column bundles and h1/h3; forward GEMMs need no replay.'):'Backward republishes saved x and reconstructs expert intermediates in scratch.','small bold')+t(29,367,'Each tensor’s consumer and exact offset are listed below. Region cards are schematic; the offset table gives the precise byte extents.','small muted');return finish(s);
   }
-  function lifetimes(layout){
-    start('lifetimes');const bf=layout.precision==='bf16',save=layout.mode==='save';let rows;
+  function lifetimeRows(layout){
+    const bf=layout.precision==='bf16',save=layout.mode==='save';let rows;
     if(save&&bf)rows=[['x_gathered',[[0,8,'green']],6,'xg'],['h1',[[0,8,'green']],5,'h1'],['h2 · scratch',[[1,3,'amber'],[3,5,'amber']],4,'h2'],['h3',[[2,8,'green']],3,'h3']];
     else if(save)rows=[['x column bundle',[[0,8,'green']],6,'xg'],['h1',[[0,8,'green']],5,'h1'],['h2 column bundle',[[1,8,'green']],4,'h2'],['h3',[[2,8,'green']],3,'h3'],['x/h2 row scratch',[[0,1,'amber'],[1,3,'amber']],2,'row']];
     else rows=[['Saved source x',[[0,8,'green']],3,'x'],[bf?'x_gathered':'x column bundle',[[0,3,'amber'],[3,7,'amber']],6,'xg'],['h1',[[0,3,'amber'],[3,6,'amber']],5,'h1'],[bf?'h2':'h2 column bundle',[[1,3,'amber'],[3,5,'amber']],4,'h2'],['h3 · combine HBM',[[2,3,'blue'],[3,4,'blue']],3,'h3']];
-    const x0=235,unit=108;let s=t(16,20,'VALUE LIFETIMES · OPERATION ORDER','small bold');
-    const headers=[['W13','forward'],['SwiGLU','forward'],['W2','forward'],['Setup /','rebuild'],['W2','grad_h2'],['SwiGLU','grad_h1'],['W13','grad_xg'],['Release','slot']];
-    headers.forEach((h,i)=>s+=t(x0+i*unit+unit/2,20,h[0],'dependency-heading','middle')+t(x0+i*unit+unit/2,41,h[1],'dependency-subhead','middle'));
-    s+=l(x0+3*unit-4,52,x0+3*unit-4,268,'line','stroke-dasharray="3 3"');
-    rows.forEach((row,i)=>{const y=55+i*42;s+=t(16,y+24,row[0],'dependency-name')+l(x0,y+38,1105,y+38);for(const [a,b,color]of row[1])s+=r(x0+a*unit,y+9,(b-a)*unit-8,23,`${color}-fill`);const xx=x0+(row[2]+.5)*unit;s+=`<path d="M${xx},${y+3} l6,8 -6,8 -6,-8Z" fill="${C('purple')}"/>`;});
-    return finish(s);
+    return rows.map(([name,spans,reader,key])=>({name,spans,reader,key}));
   }
   function kernel(p,bm,bn,tail,kSlice){start('kernel');const bk=64,valid=tail?Math.floor(bm*.703125):bm,scale=140/256,aw=bk*scale,ah=bm*scale,bw=bn*scale,bh=bk*scale,cw=bn*scale,ch=bm*scale;let s='';
     s+=r(16,10,189,247,'blue-fill')+t(30,35,'PEER SYMMETRIC HBM','small bold')+t(30,58,'Complete source rows','small');s+=grid(40,84,140,ah,16,16,'blue',valid/bm)+t(30,243,`${valid}/${bm} valid rows`,'small');
@@ -374,5 +369,5 @@ window.Views = (() => {
     const counts=Moe.lifetimes(policy).counts;
     s+=l(x0+(p+1)*step-5,76,x0+(p+1)*step-5,104+info.slots*47,'amber','stroke-dasharray="4 4"')+`<g data-sticky-slot>${r(0,0,122,78,'panel','stroke="none"')}${t(15,31,'ACTION','small muted')}${sticky}</g>`;return {svg:finish(s),info,counts,height:124+info.slots*47};
   }
-  return {esc,mathHTML,num,hex,bytes,t,r,l,card,grid,badge,moe,overview,tokens,tokenPhases,consumption,calculations,packing,lookahead,retention,lifetimes,renderMath,positionMath,kernel,precision,orientation,fusion,liveness,slots};
+  return {esc,mathHTML,num,hex,bytes,t,r,l,card,grid,badge,moe,overview,tokens,tokenPhases,consumption,calculations,packing,lookahead,retention,lifetimeRows,renderMath,positionMath,kernel,precision,orientation,fusion,liveness,slots};
 })();

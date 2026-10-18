@@ -141,16 +141,20 @@ html:fullscreen .deck-drawer{top:0;bottom:0}
 .deck-visual .capability-table small{font-size:18px;line-height:1.3;margin-top:4px}
 .deck-visual .capability-notes.deck-part{padding:12px 0 0;border-top:1px solid var(--line);font-size:20px;line-height:1.4;flex:none}
 .deck-visual .capability-notes p{margin:4px 0}
-.deck-visual .dependency-equations.deck-part{display:block;flex:none;padding:0}
-.deck-visual .dependency-formula{font-size:25px;line-height:1.35;padding:2px 0}
-.deck-visual .dependency-equation-header{font-size:19px;padding-bottom:5px}
-.deck-visual .dependency-equation-row{padding:6px 0;gap:50px}
-.deck-visual .dependency-equation-row,.deck-visual .dependency-equation-header{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
-.deck-visual .dependency-equation-header{display:grid}
-.deck-visual .dependency-code-name{font-size:17px;margin-bottom:3px}
-.deck-visual .dependency-equation-note{font-size:18px;margin-top:7px}
-
-.deck-visual .dependency-equation-row>div:first-child{display:flex;align-items:center;gap:18px}
-.deck-visual .dependency-code-name{min-width:112px;margin:0}
-.deck-visual .dependency-equation-row>div:last-child{display:flex;align-items:center;gap:28px;flex-wrap:wrap}
+.deck-visual .dependency-equations.deck-part{display:block;flex:1;min-height:0;padding:0}
+.deck-visual .dep-matrix-head,.deck-visual .dep-matrix-row{grid-template-columns:minmax(0,.95fr) minmax(0,1.1fr) minmax(0,1.2fr);gap:28px}
+.deck-visual .dep-matrix-head{display:grid;font-size:18px;padding-bottom:8px}
+.deck-visual .dep-phase{font-size:15px}.deck-visual .dep-phase small{font-size:12px}
+.deck-visual .dependency-equation-row.dep-matrix-row{padding:3px 0;min-height:88px}
+.deck-visual .dep-value-label{line-height:1.1}
+.deck-visual .dep-value-label>strong{font-size:26px}
+.deck-visual .dep-value-label code{font-size:15px}
+.deck-visual .dependency-formula{font-size:23px;line-height:1.2;padding:2px 0}
+.deck-visual .dep-forward{margin-top:2px}
+.deck-visual .dep-region{font-size:15px;line-height:1.15;margin-top:3px}
+.deck-visual .dep-reader h4{font-size:16px;line-height:1.15;margin-bottom:6px}
+.deck-visual .dep-reader p{font-size:16px}
+.deck-visual .dep-span{height:25px;font-size:14px}
+.deck-visual .dep-last-reader{width:11px;height:11px}
+.deck-visual .dependency-equation-note{font-size:16px;line-height:1.35;margin:8px 0 0}
 .deck-visual .dependency-derivatives{display:none}

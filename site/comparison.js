@@ -13,26 +13,18 @@
     if(!p)throw new Error('Missing matched iteration-time measurement.');return p;
   }
   const speedup=p=>p.mok.iterationMS/p.dist.iterationMS;
-  const text=(x,y,value,cls='',anchor='start')=>`<text x="${x}" y="${y}" class="${cls}" text-anchor="${anchor}">${V.esc(value)}</text>`;
-  const line=(x1,y1,x2,y2,color='line',extra='')=>`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--${color})" ${extra}/>`;
   /** Keep each EP's color and execution mode identical across figures. */
   function legend(eps){return eps.map(ep=>`<span data-ep="${ep}" data-mode="${mode(ep).toLowerCase()}"><i style="--series-color:var(--${colors[ep]})"></i><b>EP${ep}</b> ${mode(ep).toLowerCase()}</span>`).join('');}
-  /** Use the same axes and styles for all speedup comparisons. */
-  function plot(fmt,eps,category,settings,xLabel){
-    const x0=130,x1=930,top=90,bottom=270;
-    const x=i=>category==='packing'?x0+i*(x1-x0)/(settings.length-1):x0+(settings[i]-settings[0])/(settings.at(-1)-settings[0])*(x1-x0);
-    const y=value=>bottom-(value-.95)/.55*(bottom-top);
-    let s=text(20,38,precision(fmt),'cmp-chart-title')+text(1020,38,'Dist-MoE speedup over MoK','cmp-axis-label','end');
-    for(const value of [1,1.2,1.4])s+=line(x0,y(value),x1,y(value),value===1?'muted':'line',value===1?'stroke-dasharray="6 6"':'')+text(x0-20,y(value)+8,`${f(value,1)}×`,'cmp-small muted','end');
-    for(const ep of eps){const ps=settings.map(setting=>pair(ep,fmt,category,setting)),c=colors[ep];
-      s+=`<g class="cmp-series" data-ep="${ep}"><path d="${ps.map((p,i)=>`${i?'L':'M'}${x(i)},${y(speedup(p))}`).join(' ')}" fill="none" stroke="var(--${c})" stroke-width="3" ${ep>=32?'stroke-dasharray="9 5"':''}/>`;
-      ps.forEach((p,i)=>{const xx=x(i),yy=y(speedup(p));
-        const shape=ep===16?`<path d="M${xx},${yy-8} l8,8 -8,8 -8,-8Z"/>`:ep===32?`<path d="M${xx},${yy-8} l8,15 -16,0Z"/>`:ep===64?`<rect x="${xx-6}" y="${yy-6}" width="12" height="12"/>`:`<circle cx="${xx}" cy="${yy}" r="6"/>`;
-        s+=`<g class="cmp-point" fill="var(--${c})" stroke="var(--paper)" stroke-width="1.2" data-case="${V.esc(p.dist.id)}" data-iteration-ratio="${speedup(p)}" data-x="${xx}" data-y="${yy}">${shape}<title>EP${ep} ${precision(fmt)}: ${f(speedup(p),3)}× · Dist-MoE ${f(p.dist.iterationMS)} ms · MoK ${f(p.mok.iterationMS)} ms</title></g>`;
-      });s+='</g>';
-    }
-    settings.forEach((setting,i)=>s+=text(x(i),310,category==='packing'?`Profile ${setting}`:category==='width'?V.num(setting):`${setting}×`,'cmp-small muted','middle'));
-    return s+text(20,342,xLabel+' · MoK iteration time ÷ Dist-MoE iteration time','cmp-footnote muted');
+  /** Group independent measured cases; bars show gain beyond 1x parity. */
+  function plot(fmt,eps,category,settings){
+    const groups=settings.map(setting=>{
+      const label=category==='packing'?`Profile ${setting}`:category==='width'?`F = ${V.num(setting)}`:`${setting}× imbalance`;
+      const rows=eps.map(ep=>{const p=pair(ep,fmt,category,setting),ratio=speedup(p),width=(ratio-1)/.5*100;
+        return `<div class="cmp-bar-row cmp-series cmp-point" data-ep="${ep}" data-case="${V.esc(p.dist.id)}" data-iteration-ratio="${ratio}"><span class="cmp-bar-ep">EP${ep}</span><div class="cmp-bar-track"><i class="parity"></i><i class="tick20"></i><i class="tick40"></i><span class="cmp-gain-bar" style="width:${width}%;--series-color:var(--${colors[ep]})" title="${precision(fmt)}, EP${ep}: ${f(ratio,3)}× speedup over MoK"></span></div><strong class="cmp-bar-value">${f(ratio,2)}× <small>speedup</small></strong></div>`;
+      }).join('');
+      return `<section class="cmp-bar-group" style="--ep-count:${eps.length}"><h5>${label}</h5>${rows}</section>`;
+    }).join('');
+    return `<div class="cmp-speedup-bars" data-precision="${fmt}"><div class="cmp-bar-heading"><h4>${precision(fmt)}</h4><span>Speedup over MoK</span></div><div class="cmp-bar-scale"><span></span><div><b class="parity">1.0×</b><b class="tick20">1.2×</b><b class="tick40">1.4×</b></div><span></span></div>${groups}<p class="cmp-bar-note">Bars start at 1× parity: equal iteration time.</p></div>`;
   }
   /** Every table names its EP/mode and uses the same precision/time columns. */
   function timeTables(eps,category,settings,settingLabel){
@@ -59,22 +51,23 @@
   function renderPolicy(){A.renderHTML('compare-policy-view',['A','B'].map(policyCard).join(''));}
   function packingCaption(){const bf=pair(64,'bf16','packing','B'),fp=pair(64,'mxfp8','packing','B');return ['Packing delivers the largest measured advantage',`EP64 profile B: BF16 delivers a ${f(speedup(bf),2)}× speedup and MXFP8 a ${f(speedup(fp),2)}× speedup over MoK. MXFP8 iteration time is ${f(fp.dist.iterationMS)} ms for Dist-MoE versus ${f(fp.mok.iterationMS)} ms for MoK.`];}
   /** Show both precisions and both measured training EPs together. */
-  function renderPacking(){A.renderHTML('compare-packing-legend',legend([32,64]));for(const fmt of ['bf16','mxfp8'])A.renderSVG(fmt==='bf16'?'compare-packing-svg':'compare-packing-fp8-svg',plot(fmt,[32,64],'packing',['A','B'],'Imbalance profile'),false);
+  function renderPacking(){A.renderHTML('compare-packing-legend',legend([32,64]));for(const fmt of ['bf16','mxfp8'])A.renderHTML(fmt==='bf16'?'compare-packing-bf16':'compare-packing-mxfp8',plot(fmt,[32,64],'packing',['A','B']));
     A.renderHTML('compare-packing-table',timeTables([32,64],'packing',['A','B'],'Profile'));A.phaseCaption('compare-packing-caption',packingCaption());
     const p=pair(64,'mxfp8','packing','B');$('comparison-packing-story').textContent=`At EP64 with profile B, MXFP8 runs the ten-layer iteration in ${f(p.dist.iterationMS)} ms instead of ${f(p.mok.iterationMS)} ms: a ${f(speedup(p),3)}× speedup over MoK and ${f((1-1/speedup(p))*100,1)}% less iteration time. The shared slot avoids capacity-induced recompute in the hot layers.`;
   }
-  function scalingCaption(){const a=pair(16,'mxfp8','single_layer',8),b=pair(64,'mxfp8','single_layer',8);return ['The advantage persists under higher imbalance',`At 8× imbalance, MXFP8 delivers a ${f(speedup(a),2)}× speedup over MoK for EP16 inference and a ${f(speedup(b),2)}× speedup for EP64 training. Both precisions retain a shorter iteration time across the measured EP settings.`];}
-  /** All four EP lines are visible; the deck emphasizes its two focus EPs. */
-  function renderScaling(){A.renderHTML('compare-scaling-legend',legend([8,16,32,64]));for(const fmt of ['bf16','mxfp8'])A.renderSVG(fmt==='bf16'?'compare-scaling-svg':'compare-scaling-fp8-svg',plot(fmt,[8,16,32,64],'single_layer',[1,4,8],'Imbalance factor'),false);
+  function scalingCaption(){const a=pair(16,'mxfp8','single_layer',8),b=pair(64,'mxfp8','single_layer',8);return ['The advantage persists under higher imbalance',`At 8× imbalance, MXFP8 delivers a ${f(speedup(a),2)}× speedup over MoK for EP16 inference and a ${f(speedup(b),2)}× speedup for EP64 training. Both precisions deliver a shorter iteration time across the measured EP settings.`];}
+  /** All four EP groups are visible; the deck emphasizes its two focus EPs. */
+  function renderScaling(){A.renderHTML('compare-scaling-legend',legend([8,16,32,64]));for(const fmt of ['bf16','mxfp8'])A.renderHTML(fmt==='bf16'?'compare-scaling-bf16':'compare-scaling-mxfp8',plot(fmt,[8,16,32,64],'single_layer',[1,4,8]));
     A.renderHTML('compare-scaling-table',timeTables([8,16,32,64],'single_layer',[1,4,8],'Imbalance'));A.phaseCaption('compare-scaling-caption',scalingCaption());
   }
   function widthCaption(){const a=pair(16,'mxfp8','width',1536),b=pair(64,'mxfp8','width',6144);return ['The advantage spans all measured expert widths',`Dist-MoE has a shorter iteration time in all twelve width cases. MXFP8 speedup over MoK is ${f(speedup(a),2)}× for EP16 inference at F = 1,536 and ${f(speedup(b),2)}× for EP64 training at F = 6,144.`];}
   /** Width results use the same precision panels, EP key, and time tables. */
-  function renderWidth(){A.renderHTML('compare-width-legend',legend([16,64]));for(const fmt of ['bf16','mxfp8'])A.renderSVG(fmt==='bf16'?'compare-width-svg':'compare-width-fp8-svg',plot(fmt,[16,64],'width',[1536,3072,6144],'Expert intermediate width F'),false);
+  function renderWidth(){A.renderHTML('compare-width-legend',legend([16,64]));for(const fmt of ['bf16','mxfp8'])A.renderHTML(fmt==='bf16'?'compare-width-bf16':'compare-width-mxfp8',plot(fmt,[16,64],'width',[1536,3072,6144]));
     A.renderHTML('compare-width-table',timeTables([16,64],'width',[1536,3072,6144],'Width F'));A.phaseCaption('compare-width-caption',widthCaption());
   }
   renderPolicy();
-  for(const [name,draw]of [['compare-packing',renderPacking],['compare-scaling',renderScaling],['compare-width',renderWidth]])A.controllers[name]=new A.Controller(name,1,draw);
+  renderPacking();renderScaling();renderWidth();
+  for(const [id,pair]of [['comparison-packing',packingCaption()],['comparison-scaling',scalingCaption()],['comparison-width',widthCaption()]])document.querySelector(`[data-slide-summary="${id}"]`).textContent=pair[1];
   const oldCaption=A.getStepCaption;A.getStepCaption=(name,p)=>name==='compare-packing'?packingCaption():name==='compare-scaling'?scalingCaption():name==='compare-width'?widthCaption():oldCaption(name,p);
   /** Static figures need only one layout sample. */
   function sample(name,pass){pass();}
