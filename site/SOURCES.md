@@ -175,35 +175,30 @@ combine HBM. Backward’s recompute peak adds gradients and reuse. Both views
 use the same device received-row bound. The public API’s three excerpts are
 derived from the same full BF16/MXFP8 example programs as the article.
 
-## Matched CUDA-graph MoK comparison
+## Matched MoK iteration-time comparison
 
-The supplied report dated October 16, 2026 is the source for the new
-motivation results. The public [numeric snapshot](data/mok-comparison.json),
-[execution CSV](data/mok-comparison.csv), [all pipeline pairs](data/mok-comparison-pairs.csv),
-and [methodology](data/mok-comparison-methodology.md) preserve its measured
-metrics and capacity evidence without infrastructure or artifact identifiers.
+The supplied report dated October 16, 2026 provides the measured iteration times
+and saved-state evidence. The public [numeric snapshot](data/mok-comparison.json),
+[execution CSV](data/mok-comparison.csv), [pipeline pairs](data/mok-comparison-pairs.csv),
+and [definitions](data/mok-comparison-methodology.md) preserve 110 executions,
+44 matched workloads, and 66 individual Dist pipeline comparisons.
 Both providers use GB300, CUDA 13.0, matched shapes/routing, CUDA graphs,
 and one BF16 shared expert. The later standalone suite has no shared expert.
 
-The report contains 110 accepted backend executions, 44 matched workloads,
-and 3,960 rank traces. The selected Dist graph median is lower in all 44;
-all 66 individual Dist pipeline medians are lower. Forty-three observed
-window ranges do not overlap; one overlaps. Whiskers are window extrema,
-not confidence intervals. Best-pipeline graph selection and same-pipeline
-eager controls are distinguished explicitly.
+The comparison uses iteration time throughout. The plotted ratio is MoK time
+when divided by Dist-MoE time for the same workload. Eager controls and timing
+window classifications are omitted; measured values are preserved in the
+original workspace report. Width and imbalance axes use their numeric spacing.
 
-Packing retains ten distinct forwards before reverse backward. The target
-rank-0 profiles average 2.31/2.39 and peak at 7.5/7.2. The layer bars show
-these targets. The actual slot occupation comes from saved-byte diagnostics;
-no per-layer byte extent is inferred from target route factors. Native
-rounded schedule rows and policy-derived replay rows are exposed separately.
-Dist capacity-induced recompute flags are zero across the tested ranks/layers.
-The observed speedup is not attributed solely to avoided replay, and total
-allocated HBM is shown separately.
+Packing executes ten forwards before reverse-order backward. Layer-imbalance
+profiles A/B average 2.31/2.39 and peak at 7.5/7.2 on the tracked GPU.
+The native MoK budget rounds requested factor 2.5 to an effective 2.667 per layer.
+The two/three hot layers are partly saved under its native source policy.
+Dist capacity-induced recompute flags are zero across tested ranks and layers.
+The saved-state diagram is schematic and does not infer byte sizes from load
+factors. Its claims are verified for EP32/64 and BF16/MXFP8.
 
-Graphs, profiling, NVLink counters, and allocator diagnostics are separate
-measurements. Timing uses five 30-iteration windows after ten warmups, graph
-then eager in fixed order. Useful work includes the BF16 shared expert and
-excludes padding/replay. Effective HBM is an analytical byte rate; allocated
-peaks include resident graph state. These are independent expert-layer
-workloads, not a connected transformer or end-to-end training run.
+Every chart and table uses the same EP colors, explicit precision labels,
+iteration-time units, and mode labels. The source data retains every measured
+Dist pipeline. The observed speedup is not attributed solely to avoided
+recompute; total allocated HBM remains distinct from saved-state flexibility.

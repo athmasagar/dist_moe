@@ -27,7 +27,7 @@
   function balanced(ep){return variants(ep).map(v=>row(ep,v));}
   /** Count useful GEMM FLOPs; padding and replay are excluded. */
   function work(r,phase='combined'){const multiplier=phase==='backward'?2:phase==='combined'&&r.mode==='training'?3:1;return 6*meta.shape.T*meta.shape.K*meta.shape.D*r.F*multiplier;}
-  /** Convert useful work and maximum-rank latency to TFLOP/s. */
+  /** Convert useful work and maximum-rank iteration time to TFLOP/s. */
   function rate(r,ms=r.layerMS,phase='combined'){return work(r,phase)/ms/1e9;}
   /** Normalize dense useful work to the supplied theoretical datasheet peak. */
   function percent(r,ms=r.layerMS){return 100*rate(r,ms)/meta.theoreticalTFPerGPU[r.precision];}
@@ -37,7 +37,7 @@
   function busy(r){return rate(r)*Math.max(...r.receiveRows)/(r.receiveRows.reduce((a,b)=>a+b,0)/r.ep);}
   /** Render a semantic table from the same cases used for the SVG. */
   function table(headers,rows,caption=''){return `<table>${caption?`<caption>${V.esc(caption)}</caption>`:''}<thead><tr>${headers.map(h=>`<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>${rows.map(cells=>`<tr>${cells.map((cell,i)=>`<${i?'td':'th'}${i?'':' scope="row"'} data-label="${V.esc(headers[i].replace(/<br\s*\/?\s*>/gi,' ').replace(/<[^>]*>/g,'').replace(/\s+/g,' ').trim())}">${cell}</${i?'td':'th'}>`).join('')}</tr>`).join('')}</tbody></table>`;}
-  /** Show a latency plus the observed five-window range. */
+  /** Show a iteration time plus the observed five-window range. */
   function msCell(r,phase='combined'){const value=phase==='forward'?r.forwardMS:phase==='backward'?r.backwardMS:r.layerMS,[lo,hi]=range(r,phase);return `${f(value)}<span class="window-range">${f(lo)}–${f(hi)}</span>`;}
   /** Draw a bounded observed range around its measured point. */
   function whisker(x1,x2,y,color){return l(x1,y,x2,y,color,'stroke-width="2"')+l(x1,y-5,x1,y+5,color)+l(x2,y-5,x2,y+5,color);}
@@ -76,7 +76,7 @@
     $('result-EP').innerHTML=eps.map(ep=>`<option value="${ep}" ${ep===S.resultEP?'selected':''}>${ep}</option>`).join('');$('result-mode').querySelectorAll('[data-mode]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.mode===S.resultMode)));
     const rows=balanced(S.resultEP);$('efficiency-config').textContent=`${S.resultMode==='training'?'Forward + backward':'Forward'} · EP${S.resultEP} · balanced · T = 2,048 · D = 7,168 · F = 3,072 · 384 experts · top-6`;
     A.renderSVG('efficiency-svg',efficiencySVG(rows));
-    const headers=['Precision / policy',...(S.resultMode==='training'?['Forward<br>ms','Backward<br>ms']:[]),'Layer<br>ms','Useful<br>PFLOP/s / GPU','Dense theory<br>%','Mean TX<br>GB/s','Max TX<br>GB/s','Mean RX<br>GB/s','HBM model<br>TB/s'];
+    const headers=['Precision / policy',...(S.resultMode==='training'?['Forward<br>ms','Backward<br>ms']:[]),'Iteration<br>ms','Useful<br>PFLOP/s / GPU','Dense theory<br>%','Mean TX<br>GB/s','Max TX<br>GB/s','Mean RX<br>GB/s','HBM model<br>TB/s'];
     A.renderHTML('efficiency-table',table(headers,rows.map(r=>[name(r),...(r.mode==='training'?[msCell(r,'forward'),msCell(r,'backward')]:[]),msCell(r),f(rate(r)/1000),f(percent(r),1),f(r.nvlinkTXGBps,1),f(r.nvlinkMaxTXGBps,1),f(r.nvlinkRXGBps,1),f(r.analyticalHBMGBps/1000,3)])));
     A.phaseCaption('efficiency-caption',efficiencyCaption());
   }
@@ -107,7 +107,7 @@
   }
   /** Render every measured distribution with the matching raw numbers. */
   function renderSkew(){variantSelect('skew-variant','resultSkewVariant',S.resultSkewEP);$('skew-EP').value=S.resultSkewEP;const rows=skews.map(i=>row(S.resultSkewEP,S.resultSkewVariant,'single_layer',3072,i));$('skew-config').textContent=`${name(rows[0])} · ${rows[0].mode} · EP${rows[0].ep} · F = 3,072 · total routes fixed · common 8× receive-row ruler`;
-    A.renderSVG('skew-svg',skewSVG(rows));A.renderHTML('skew-table',table(['Max / mean<br>rows','Max received<br>rows','Layer<br>ms','Cluster mean<br>PFLOP/s / GPU','Busy rank, derived<br>PFLOP/s','Max-rank TX<br>GB/s','Retries / OOMs'],rows.map(r=>[`${r.imbalance}×`,V.num(Math.max(...r.receiveRows)),msCell(r),f(rate(r)/1000),f(busy(r)/1000),f(r.nvlinkMaxTXGBps,1),`${r.allocationRetries} / ${r.ooms}`])));A.phaseCaption('skew-caption',skewCaption());
+    A.renderSVG('skew-svg',skewSVG(rows));A.renderHTML('skew-table',table(['Max / mean<br>rows','Max received<br>rows','Iteration<br>ms','Cluster mean<br>PFLOP/s / GPU','Busy rank, derived<br>PFLOP/s','Max-rank TX<br>GB/s','Retries / OOMs'],rows.map(r=>[`${r.imbalance}×`,V.num(Math.max(...r.receiveRows)),msCell(r),f(rate(r)/1000),f(busy(r)/1000),f(r.nvlinkMaxTXGBps,1),`${r.allocationRetries} / ${r.ooms}`])));A.phaseCaption('skew-caption',skewCaption());
   }
   /** Draw proportional feature extents and the three measured width controls. */
   function widthSVG(rows){
@@ -121,14 +121,14 @@
     rows.forEach((r,i)=>{const [lo,hi]=range(r);svg+=l(x(r.F),y(rate(r,hi)/1000),x(r.F),y(rate(r,lo)/1000),color,'stroke-width="2"')+dot(...points[i],color,6)+t(x(r.F),345,V.num(r.F),'r-small r-muted','middle');});
     svg+=t(880,386,`F · ${name(rows[0])} · same logical routed payload`,'r-small r-muted')+'</g>';return svg;
   }
-  /** Explain measured work growth, not an interpolated latency prediction. */
+  /** Explain measured work growth, not an interpolated iteration time prediction. */
   function widthCaption(phase){const rows=widths.map(F=>row(S.resultWidthEP,S.resultWidthVariant,'width',F)),r=rows[phase],bf=row(r.ep,'bf16:standard','width',r.F);
-    if(phase===2)return ['More compute per routed byte',`Four times the narrow-width GEMM work takes ${f(r.layerMS/rows[0].layerMS,2)}× its latency and delivers ${f(rate(r)/1000)} PFLOP/s per GPU. At F = ${V.num(r.F)}, ${name(r)} is ${f(bf.layerMS/r.layerMS,2)}× the corresponding BF16 width control.`];
+    if(phase===2)return ['More compute per routed byte',`Four times the narrow-width GEMM work takes ${f(r.layerMS/rows[0].layerMS,2)}× its iteration time and delivers ${f(rate(r)/1000)} PFLOP/s per GPU. At F = ${V.num(r.F)}, ${name(r)} is ${f(bf.layerMS/r.layerMS,2)}× the corresponding BF16 width control.`];
     return [`Measured F = ${V.num(r.F)}`,`The input/output feature width remains D = 7,168 while the expert intermediate width is F = ${V.num(r.F)}. ${name(r)} takes ${f(r.layerMS)} ms and delivers ${f(rate(r)/1000)} PFLOP/s at ${V.num(Math.round(r.forwardFlopsPerLogicalPayloadByteRank0))} FLOPs per logical forward payload byte.`];
   }
   /** Render raw width controls, keeping the repeated F3072 control separate. */
   function renderWidth(phase){variantSelect('width-variant','resultWidthVariant',S.resultWidthEP);$('width-EP').value=S.resultWidthEP;const rows=widths.map(F=>row(S.resultWidthEP,S.resultWidthVariant,'width',F));$('width-config').textContent=`${name(rows[0])} · ${rows[0].mode} · EP${rows[0].ep} · balanced routing · D = 7,168 · same logical activation payload`;
-    A.renderSVG('width-svg',widthSVG(rows));A.renderHTML('width-table',table(['Expert width<br>F','Layer<br>ms','Useful<br>PFLOP/s / GPU','Dense theory<br>%','Speedup / BF16<br>same width','Forward FLOPs /<br>logical payload byte','Mean TX<br>GB/s'],rows.map(r=>[V.num(r.F),msCell(r),f(rate(r)/1000),f(percent(r),1),`${f(row(r.ep,'bf16:standard','width',r.F).layerMS/r.layerMS,2)}×`,V.num(Math.round(r.forwardFlopsPerLogicalPayloadByteRank0)),f(r.nvlinkTXGBps,1)])));A.phaseCaption('width-caption',widthCaption(2));
+    A.renderSVG('width-svg',widthSVG(rows));A.renderHTML('width-table',table(['Expert width<br>F','Iteration<br>ms','Useful<br>PFLOP/s / GPU','Dense theory<br>%','Speedup / BF16<br>same width','Forward FLOPs /<br>logical payload byte','Mean TX<br>GB/s'],rows.map(r=>[V.num(r.F),msCell(r),f(rate(r)/1000),f(percent(r),1),`${f(row(r.ep,'bf16:standard','width',r.F).layerMS/r.layerMS,2)}×`,V.num(Math.round(r.forwardFlopsPerLogicalPayloadByteRank0)),f(r.nvlinkTXGBps,1)])));A.phaseCaption('width-caption',widthCaption(2));
   }
   A.controllers.efficiency=new A.Controller('efficiency',1,renderEfficiency);
   A.controllers.skew=new A.Controller('skew',1,renderSkew);
@@ -144,13 +144,13 @@
   /** Sample complete supported modes while presentation reserves a fixed layout. */
   function sample(name,pass){if(name==='efficiency'){for(const mode of ['inference','training'])for(const ep of mode==='inference'?[8,16]:[32,64]){S.resultMode=mode;S.resultEP=ep;pass();}}else if(name==='skew'){for(const ep of [8,16,32,64])for(const variant of variants(ep)){S.resultSkewEP=ep;S.resultSkewVariant=variant;pass();}}else if(name==='width'){for(const ep of [16,64])for(const variant of variants(ep)){S.resultWidthEP=ep;S.resultWidthVariant=variant;pass();}}}
   /** Return a short scope statement matching the current measured/projection view. */
-  function scope(name,phase){if(name==='efficiency')return meta.peakNote+' HBM is modeled, not a DRAM counter.';if(name==='skew')return 'Busiest-rank throughput is derived from assigned work and maximum-rank latency. NVLink is measured separately; peaks are theoretical.';if(name==='width')return 'Three measured widths; fixed balanced routing and logical activation payload. HBM weight/intermediate traffic grows with F; peaks are theoretical.';return '';}
+  function scope(name,phase){if(name==='efficiency')return meta.peakNote+' HBM is modeled, not a DRAM counter.';if(name==='skew')return 'Busiest-rank throughput is derived from assigned work and maximum-rank iteration time. NVLink is measured separately; peaks are theoretical.';if(name==='width')return 'Three measured widths; fixed balanced routing and logical activation payload. HBM weight/intermediate traffic grows with F; peaks are theoretical.';return '';}
   /** Generate the article's numerical prose from the same immutable measurements. */
   function narrative(){
     const bf=row(32,'bf16:standard'),st=row(32,'mxfp8:staged'),balancedNV=row(16,'nvfp4:mega'),hot=row(16,'nvfp4:mega','single_layer',3072,8),small=row(16,'nvfp4:mega','width',1536),large=row(16,'nvfp4:mega','width',6144);
-    $('result-compute-story').textContent=`EP32 BF16 training delivers ${f(rate(bf)/1000)} PFLOP/s per GPU (${f(percent(bf),1)}% of dense theory) through the complete forward/backward path. MXFP8 Staged delivers ${f(rate(st)/1000)} PFLOP/s. Its larger arithmetic peak leaves communication and the other layer costs in place, so read latency and useful throughput together.`;
+    $('result-compute-story').textContent=`EP32 BF16 training delivers ${f(rate(bf)/1000)} PFLOP/s per GPU (${f(percent(bf),1)}% of dense theory) through the complete forward/backward path. MXFP8 Staged delivers ${f(rate(st)/1000)} PFLOP/s. Its larger arithmetic peak leaves communication and the other layer costs in place, so read iteration time and useful throughput together.`;
     $('result-skew-story').textContent=`At EP16 with NVFP4, 8× skew gives the busiest rank ${V.num(Math.max(...hot.receiveRows))} rows. Its derived useful rate grows ${f(busy(balancedNV)/1000,2)} → ${f(busy(hot)/1000,2)} PFLOP/s, and maximum TX reaches ${f(hot.nvlinkMaxTXGBps,0)} GB/s. Dist-MoE continues to process the concentrated work; the cluster average falls because the router leaves other GPUs with less work.`;
-    $('result-width-story').textContent=`Quadrupling F in the EP16 NVFP4 sweep gives four times the GEMM work for ${f(large.layerMS/small.layerMS,2)}× the latency (${f(small.layerMS)} → ${f(large.layerMS)} ms). Useful throughput reaches ${f(rate(large)/1000)} PFLOP/s per GPU, and speedup over the corresponding BF16 controls rises ${f(row(16,'bf16:standard','width',1536).layerMS/small.layerMS,2)}× → ${f(row(16,'bf16:standard','width',6144).layerMS/large.layerMS,2)}×. The wider experts amortize more compute over the same routed activation payload.`;
+    $('result-width-story').textContent=`Quadrupling F in the EP16 NVFP4 sweep gives four times the GEMM work for ${f(large.layerMS/small.layerMS,2)}× the iteration time (${f(small.layerMS)} → ${f(large.layerMS)} ms). Useful throughput reaches ${f(rate(large)/1000)} PFLOP/s per GPU, and speedup over the corresponding BF16 controls rises ${f(row(16,'bf16:standard','width',1536).layerMS/small.layerMS,2)}× → ${f(row(16,'bf16:standard','width',6144).layerMS/large.layerMS,2)}×. The wider experts amortize more compute over the same routed activation payload.`;
 
   }
   /** Explain effective bandwidth using the cached byte model and timing. */

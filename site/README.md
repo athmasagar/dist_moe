@@ -44,24 +44,24 @@ A generic MoE setup precedes the capability comparison (slide 3) and GPU
 placement. The comparison table and its visible qualifications come directly
 from the article; source links are included in speaker notes. Static slides use
 the article’s Key ideas; stepped slides summarize the current phase from the shared figure
-caption. Slide 10 now follows the whole routing path in seven steps: symmetric
+caption. Slide 9 now follows the whole routing path in seven steps: symmetric
 peer mappings, publication, ID exchange, pointer construction, gather, scatter,
 and weighted reduction. The article includes the same figure plus exact
 header, payload, and pointer definitions.
 
-Slide 14 compares forward and backward scratch at the same receive-row bound
-in two steps, before slide 15 applies three capacity policies. Those presets
+Slide 13 compares forward and backward scratch at the same receive-row bound
+in two steps, before slide 14 applies three capacity policies. Those presets
 use activation factor 1.5 with device/total scratch 4, activation factor 0.5
 with device scratch 4 and VMM total scratch 16, and a fixed 32 GiB activation
 cap with device/total scratch 16.
 
-Slide 16 pairs forward equations and backward dependencies with value lifetimes.
-Slide 17 uses Figure 04A through all nine calls: L0–L2 keep eligible state,
+Slide 15 pairs forward equations and backward dependencies with value lifetimes.
+Slide 16 uses Figure 04A through all nine calls: L0–L2 keep eligible state,
 L3 retains only its replay input, and backwards release saved offsets.
-Slide 18 keeps all six tile handoffs together. Slide 19 pairs the complete
+Slide 17 keeps all six tile handoffs together. Slide 18 pairs the complete
 producer/consumer graph with the SM/CTA warp layout; Mega is the default,
 with Staged selectable. The same resident TMA/MMA and epilogue roles serve
-both W13 and W2 tasks. There is no separate memory-results slide. Slide 27 combines configuration,
+both W13 and W2 tasks. There is no separate memory-results slide. Slide 26 combines configuration,
 context creation/execution, and plan.explain() in three steps; the API excerpts
 and full programs share the article’s code source.
 
@@ -69,8 +69,8 @@ Figure 07 first compares stage–microbatch and whole-microbatch lifetimes and
 peak counts. Its second tab shows the simple schedule timeline, with one row
 per physical Dist-MoE slot and colored owner intervals showing release and
 reuse. Slot capacity calculations are expandable details.
-Slide 20 uses four selected steps (start, stage completion, peak overlap, finish);
-slide 21 uses three (acquire, release, reassign). Every slide uses the same
+Slide 19 uses four selected steps (start, stage completion, peak overlap, finish);
+slide 20 uses three (acquire, release, reassign). Every slide uses the same
 Step counter, numbered within its visible sequence. The controls drawer holds
 parameters and modes; step navigation stays in the presentation controls.
 
@@ -93,7 +93,7 @@ parameters and modes; step navigation stays in the presentation controls.
 PDF export follows the same curated steps as the presentation, including the
 short pipeline sequences. Each page carries its slide, step, and PDF page number,
 the current step's summary, and its fixed diagram framing. The default Mega
-deck produces 74 pages; selecting Staged produces 76. Static slides appear
+deck produces 71 pages; selecting Staged produces 73. Static slides appear
 once. Shape, format, packing, tile, and other figure settings carry into the print
 tab. The capacity-policy slide intentionally walks all three shared presets.
 The print tab keeps SVG graphics and text; it does not rasterize the slides.
@@ -113,7 +113,7 @@ settings also carry between views when using Present and Article.
 
 `results-data.js` is the canonical 63-case measurement snapshot.
 `results.js` generates the same result diagrams, tables, numerical prose, and
-step summaries for the article and deck. A metrics primer on slide 22 precedes
+step summaries for the article and deck. A metrics primer on slide 21 precedes
 four complete result slides: inference, training, routing skew, and expert width.
 Each has one step with all compared plots and raw-number rows visible together.
 The article and deck use the same data and renderers; article panels reflow
@@ -235,28 +235,33 @@ in the deck and its step-by-step PDF export.
 
 ## Matched MoK comparison
 
-The motivation capability table is followed by the matched CUDA-graph
-comparison. `comparison-data.js` and `data/mok-comparison.json` contain the
-same public numeric snapshot: 110 executions, 44 matched workloads, and
-66 individual Dist pipeline comparisons. `comparison.js` generates all
-figures, raw tables, narrative values, and slide summaries from it.
+The capability comparison is followed by four static result slides: saved-state
+policies, ten-layer training, single-layer imbalance, and expert width.
+The article and deck share `comparison-data.js`, `comparison.js`, and the
+same live HTML figures. There are no result EP or precision selectors.
 
-The article covers EP8/16 inference and EP32/64 training, BF16/MXFP8,
-routing imbalance, width controls, graph/eager pairs, and ten-layer packing.
-Expandable evidence retains every measured pipeline and phase, transport,
-allocator, and capacity metrics. CSV and JSON downloads preserve full numeric
-precision; infrastructure and artifact identifiers are not published.
+The saved-state view shows both layer-imbalance profiles and distinguishes
+MoK's partly saved hot layers from the eligible state saved by Dist-MoE across
+all ten layers. Status cells indicate ownership and retention, not byte sizes.
+Both BF16 and MXFP8 have the shown capacity-decision pattern.
 
-Five comparison slides follow the capability table. The packing slide uses
-three steps on one stable diagram: native per-layer limits, pooled saved-state
-capacity, then complete-workload latency. The slides focus on EP64 training
-and EP16 inference, while the article's controls expose all measured EPs.
-The width slide shows both focus modes together. All views use the actual
-live figure source, including PDF export.
+All performance charts use BF16/MXFP8 panels and one consistent EP color key.
+Imbalance charts contain all four EP lines together. Every raw table names its
+EP and execution mode in the caption, and includes explicit precision, condition,
+Dist-MoE iteration time, MoK iteration time, and speedup columns.
+The slides emphasize EP16 inference and EP64 training; the article exposes
+all measured EPs without dropdowns. Four comparison slides follow the
+capability table; each has one step showing the complete comparison.
 
-The packing graph's layer bars show routing targets. Its slot bar uses measured
-saved bytes on rank 0 after ten forwards. Native MoK replay counts are derived
-from its source policy and observed rounded schedules; Dist's capacity flags
-are recorded. Total allocated HBM is reported separately and is not promised
-to be lower. The isolated results later in the article have zero shared experts;
-the matched MoK suite has one BF16 shared expert in both providers.
+`data/mok-comparison.json` and the JavaScript snapshot contain the same
+110 executions, 44 matched workloads, and 66 individual Dist pipeline pairs.
+The public time field is `iterationMS`. Graph/eager controls and timing-window
+comparisons are omitted from the presentation and exported comparison data.
+Both implementations use CUDA graphs, stated once as measurement context.
+The original supplied report is preserved in the workspace.
+
+Iteration time covers forward for inference, forward plus backward for training,
+and ten layer forwards/backwards for packing. Dist pipeline selection, native
+recompute policy, and total allocated memory are described in the optional
+measurement definitions. The later standalone suite has zero shared experts;
+the MoK suite has one BF16 shared expert in both implementations.

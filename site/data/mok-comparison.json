@@ -58,8 +58,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.6715509176254273,
-      "eagerMS": 1.7071679949760437,
+      "iterationMS": 1.6715509176254273,
       "forwardMS": 1.669378133614858,
       "backwardMS": null,
       "usefulTFPerGPU": 1133.127658609822,
@@ -83,8 +82,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 4.9203754425048825,
-      "eagerMS": 4.9747168064117435,
+      "iterationMS": 4.9203754425048825,
       "forwardMS": 4.9182570298512776,
       "backwardMS": null,
       "usefulTFPerGPU": 384.94635209620395,
@@ -108,8 +106,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 9.400529098510741,
-      "eagerMS": 9.440342394510905,
+      "iterationMS": 9.400529098510741,
       "forwardMS": 9.398408476511637,
       "backwardMS": null,
       "usefulTFPerGPU": 201.48659268934827,
@@ -133,8 +130,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.0702122608820597,
-      "eagerMS": 1.1004010597864786,
+      "iterationMS": 1.0702122608820597,
       "forwardMS": 1.0680853247642517,
       "backwardMS": null,
       "usefulTFPerGPU": 884.9088385396161,
@@ -158,8 +154,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.6637120048205059,
-      "eagerMS": 1.70196586449941,
+      "iterationMS": 1.6637120048205059,
       "forwardMS": 1.6615050673484801,
       "backwardMS": null,
       "usefulTFPerGPU": 1138.4666168471558,
@@ -183,8 +178,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.9354037046432495,
-      "eagerMS": 3.0039562702178957,
+      "iterationMS": 2.9354037046432495,
       "forwardMS": 2.9331850449244183,
       "backwardMS": null,
       "usefulTFPerGPU": 1290.5077243991518,
@@ -208,8 +202,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.5077610651652018,
-      "eagerMS": 2.5325280030568442,
+      "iterationMS": 1.5077610651652018,
       "forwardMS": 1.505510401725769,
       "backwardMS": null,
       "usefulTFPerGPU": 1256.2206448330526,
@@ -233,8 +226,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 4.443144528071086,
-      "eagerMS": 4.580285835266113,
+      "iterationMS": 4.443144528071086,
       "forwardMS": 4.440957864125569,
       "backwardMS": null,
       "usefulTFPerGPU": 426.2928125721542,
@@ -258,8 +250,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 8.481332270304362,
-      "eagerMS": 8.589056046803792,
+      "iterationMS": 8.481332270304362,
       "forwardMS": 8.479137134552001,
       "backwardMS": null,
       "usefulTFPerGPU": 223.32347291329845,
@@ -283,8 +274,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 0.9688565333684286,
-      "eagerMS": 2.606866137186686,
+      "iterationMS": 0.9688565333684286,
       "forwardMS": 0.9666570663452149,
       "backwardMS": null,
       "usefulTFPerGPU": 977.4824818236195,
@@ -308,8 +298,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.494101333618164,
-      "eagerMS": 3.032265583674113,
+      "iterationMS": 1.494101333618164,
       "forwardMS": 1.4917898615201315,
       "backwardMS": null,
       "usefulTFPerGPU": 1267.7055664954353,
@@ -333,8 +322,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.7351711988449097,
-      "eagerMS": 2.990613357226054,
+      "iterationMS": 2.7351711988449097,
       "forwardMS": 2.7329045295715333,
       "backwardMS": null,
       "usefulTFPerGPU": 1384.9813703331545,
@@ -358,8 +346,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.0116458674271902,
-      "eagerMS": 2.265381336212158,
+      "iterationMS": 1.0116458674271902,
       "forwardMS": 1.0094784080982209,
       "backwardMS": null,
       "usefulTFPerGPU": 1872.2762960056475,
@@ -383,8 +370,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.703762110074361,
-      "eagerMS": 2.7939136187235514,
+      "iterationMS": 2.703762110074361,
       "forwardMS": 2.7015359958012897,
       "backwardMS": null,
       "usefulTFPerGPU": 700.5352173841609,
@@ -408,8 +394,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 4.9685546875,
-      "eagerMS": 5.0765770753224695,
+      "iterationMS": 4.9685546875,
       "forwardMS": 4.966378657023112,
       "backwardMS": null,
       "usefulTFPerGPU": 381.2135916106891,
@@ -433,8 +418,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 0.8253205299377442,
-      "eagerMS": 2.2180575927098594,
+      "iterationMS": 0.8253205299377442,
       "forwardMS": 0.8231765290101369,
       "backwardMS": null,
       "usefulTFPerGPU": 1147.4818018151536,
@@ -458,8 +442,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.0179690678914388,
-      "eagerMS": 2.6350048065185545,
+      "iterationMS": 1.0179690678914388,
       "forwardMS": 1.015747199455897,
       "backwardMS": null,
       "usefulTFPerGPU": 1860.6464943569326,
@@ -483,8 +466,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.7821408033370971,
-      "eagerMS": 2.3201653639475506,
+      "iterationMS": 1.7821408033370971,
       "forwardMS": 1.7793557365735373,
       "backwardMS": null,
       "usefulTFPerGPU": 2125.623939465718,
@@ -508,8 +490,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.243453868230184,
-      "eagerMS": 1.2734922568003337,
+      "iterationMS": 1.243453868230184,
       "forwardMS": 1.241322668393453,
       "backwardMS": null,
       "usefulTFPerGPU": 1523.2415338671608,
@@ -533,8 +514,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 3.463299202919006,
-      "eagerMS": 3.513196818033854,
+      "iterationMS": 3.463299202919006,
       "forwardMS": 3.4611861228942873,
       "backwardMS": null,
       "usefulTFPerGPU": 546.9006477810505,
@@ -558,8 +538,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 6.5984660943349205,
-      "eagerMS": 6.642731746037801,
+      "iterationMS": 6.5984660943349205,
       "forwardMS": 6.596349875132243,
       "backwardMS": null,
       "usefulTFPerGPU": 287.0486186421649,
@@ -583,8 +562,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.004699742794037,
-      "eagerMS": 1.04088534116745,
+      "iterationMS": 1.004699742794037,
       "forwardMS": 1.002565332253774,
       "backwardMS": null,
       "usefulTFPerGPU": 942.6102629769887,
@@ -608,8 +586,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.2424010634422302,
-      "eagerMS": 1.2773397286732993,
+      "iterationMS": 1.2424010634422302,
       "forwardMS": 1.2402837475140889,
       "backwardMS": null,
       "usefulTFPerGPU": 1524.5323215421345,
@@ -633,8 +610,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.12193386554718,
-      "eagerMS": 2.1593087991078694,
+      "iterationMS": 2.12193386554718,
       "forwardMS": 2.1197343905766806,
       "backwardMS": null,
       "usefulTFPerGPU": 1785.2399721681015,
@@ -658,8 +634,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.0236405332883198,
-      "eagerMS": 2.566166392962138,
+      "iterationMS": 1.0236405332883198,
       "forwardMS": 1.0214410622914631,
       "backwardMS": null,
       "usefulTFPerGPU": 1850.337609679736,
@@ -683,8 +658,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.7799829324086507,
-      "eagerMS": 3.0224053462346396,
+      "iterationMS": 2.7799829324086507,
       "forwardMS": 2.77718292872111,
       "backwardMS": null,
       "usefulTFPerGPU": 681.3281317144341,
@@ -708,8 +682,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 5.163138103485108,
-      "eagerMS": 5.2638325691223145,
+      "iterationMS": 5.163138103485108,
       "forwardMS": 5.160971736907959,
       "backwardMS": null,
       "usefulTFPerGPU": 366.8467779813016,
@@ -733,8 +706,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 0.7512128015359243,
-      "eagerMS": 2.5830527782440185,
+      "iterationMS": 0.7512128015359243,
       "forwardMS": 0.7490602652231853,
       "backwardMS": null,
       "usefulTFPerGPU": 1260.6817759650637,
@@ -758,8 +730,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.0270101388295492,
-      "eagerMS": 3.0449226538340253,
+      "iterationMS": 1.0270101388295492,
       "forwardMS": 1.0247349341710408,
       "backwardMS": null,
       "usefulTFPerGPU": 1844.2666785107142,
@@ -783,8 +754,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.8397141377131143,
-      "eagerMS": 2.6573823928833007,
+      "iterationMS": 1.8397141377131143,
       "forwardMS": 1.8369461297988892,
       "backwardMS": null,
       "usefulTFPerGPU": 2059.1031385892015,
@@ -808,8 +778,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.787875195344289,
-      "eagerMS": 1.8173909346262613,
+      "iterationMS": 1.787875195344289,
       "forwardMS": 1.7856789231300354,
       "backwardMS": null,
       "usefulTFPerGPU": 1059.4031297420954,
@@ -833,8 +802,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 5.0953877131144205,
-      "eagerMS": 5.208027712504069,
+      "iterationMS": 5.0953877131144205,
       "forwardMS": 5.0932085355122885,
       "backwardMS": null,
       "usefulTFPerGPU": 371.7245250368384,
@@ -858,8 +826,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 9.61128740310669,
-      "eagerMS": 9.656967544555664,
+      "iterationMS": 9.61128740310669,
       "forwardMS": 9.609075228373209,
       "backwardMS": null,
       "usefulTFPerGPU": 197.06835287474286,
@@ -883,8 +850,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.664148251215617,
-      "eagerMS": 2.8072917302449545,
+      "iterationMS": 1.664148251215617,
       "forwardMS": 1.6618794679641724,
       "backwardMS": null,
       "usefulTFPerGPU": 1138.1681747118525,
@@ -908,8 +874,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 4.7187829653422035,
-      "eagerMS": 4.892158921559652,
+      "iterationMS": 4.7187829653422035,
       "forwardMS": 4.716485341389974,
       "backwardMS": null,
       "usefulTFPerGPU": 401.3917553418654,
@@ -933,8 +898,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 8.988277339935303,
-      "eagerMS": 9.092337036132813,
+      "iterationMS": 8.988277339935303,
       "forwardMS": 8.985945701599121,
       "backwardMS": null,
       "usefulTFPerGPU": 210.7278743080744,
@@ -958,8 +922,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.010262397925059,
-      "eagerMS": 2.3426794608434043,
+      "iterationMS": 1.010262397925059,
       "forwardMS": 1.0080469310283662,
       "backwardMS": null,
       "usefulTFPerGPU": 1874.8402211407483,
@@ -983,8 +946,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.7500863949457806,
-      "eagerMS": 2.8588010629018146,
+      "iterationMS": 2.7500863949457806,
       "forwardMS": 2.74781973361969,
       "backwardMS": null,
       "usefulTFPerGPU": 688.7349361158317,
@@ -1008,8 +970,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 4.988869349161784,
-      "eagerMS": 5.100258111953735,
+      "iterationMS": 4.988869349161784,
       "forwardMS": 4.98656636873881,
       "backwardMS": null,
       "usefulTFPerGPU": 379.66129096049355,
@@ -1033,8 +994,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.3321663896242777,
-      "eagerMS": 1.3711381236712137,
+      "iterationMS": 1.3321663896242777,
       "forwardMS": 1.330029877026876,
       "backwardMS": null,
       "usefulTFPerGPU": 1421.8048077839615,
@@ -1058,8 +1018,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 3.540881069501241,
-      "eagerMS": 3.6020991961161295,
+      "iterationMS": 3.540881069501241,
       "forwardMS": 3.5387210766474406,
       "backwardMS": null,
       "usefulTFPerGPU": 534.9178750594962,
@@ -1083,8 +1042,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 6.610096025466919,
-      "eagerMS": 6.667260837554932,
+      "iterationMS": 6.610096025466919,
       "forwardMS": 6.607921075820923,
       "backwardMS": null,
       "usefulTFPerGPU": 286.5435797360005,
@@ -1108,8 +1066,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 1.0744874715805053,
-      "eagerMS": 2.5870912075042725,
+      "iterationMS": 1.0744874715805053,
       "forwardMS": 1.0722901344299316,
       "backwardMS": null,
       "usefulTFPerGPU": 1762.7758607086628,
@@ -1133,8 +1090,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.830664539337158,
-      "eagerMS": 3.095570127169291,
+      "iterationMS": 2.830664539337158,
       "forwardMS": 2.8283498764038084,
       "backwardMS": null,
       "usefulTFPerGPU": 669.1292985143082,
@@ -1158,8 +1114,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 5.111320543289184,
-      "eagerMS": 5.226899178822835,
+      "iterationMS": 5.111320543289184,
       "forwardMS": 5.109170166651408,
       "backwardMS": null,
       "usefulTFPerGPU": 370.56579830877536,
@@ -1183,8 +1138,7 @@
       "imbalance": 1.0,
       "profile": "A",
       "layers": 10,
-      "graphMS": 102.78860524495443,
-      "eagerMS": 103.20667190551758,
+      "iterationMS": 102.78860524495443,
       "forwardMS": 30.803587086995442,
       "backwardMS": 71.98617172241211,
       "usefulTFPerGPU": 552.8085257180707,
@@ -1241,8 +1195,7 @@
       "imbalance": 1.0,
       "profile": "B",
       "layers": 10,
-      "graphMS": 110.35971298217774,
-      "eagerMS": 110.98980967203777,
+      "iterationMS": 110.35971298217774,
       "forwardMS": 31.99002653757731,
       "backwardMS": 78.34827982584635,
       "usefulTFPerGPU": 514.8836997723653,
@@ -1299,8 +1252,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 4.483590412139892,
-      "eagerMS": 4.574995168050131,
+      "iterationMS": 4.483590412139892,
       "forwardMS": 1.5771477341651916,
       "backwardMS": 2.90733118057251,
       "usefulTFPerGPU": 1267.3418422036514,
@@ -1324,8 +1276,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 14.412835184733073,
-      "eagerMS": 14.388562202453613,
+      "iterationMS": 14.412835184733073,
       "forwardMS": 4.966465044021606,
       "backwardMS": 9.447564792633056,
       "usefulTFPerGPU": 394.2487137178233,
@@ -1349,8 +1300,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 27.804005177815757,
-      "eagerMS": 27.91768849690755,
+      "iterationMS": 27.804005177815757,
       "forwardMS": 9.533583068847657,
       "backwardMS": 18.271653175354004,
       "usefulTFPerGPU": 204.36774113183318,
@@ -1374,8 +1324,7 @@
       "imbalance": 1.0,
       "profile": "A",
       "layers": 10,
-      "graphMS": 84.58301137288412,
-      "eagerMS": 86.45169169108073,
+      "iterationMS": 84.58301137288412,
       "forwardMS": 29.94110825856527,
       "backwardMS": 54.64611625671387,
       "usefulTFPerGPU": 671.7946831613554,
@@ -1411,8 +1360,7 @@
       "imbalance": 1.0,
       "profile": "B",
       "layers": 10,
-      "graphMS": 88.25528106689453,
-      "eagerMS": 97.51366068522135,
+      "iterationMS": 88.25528106689453,
       "forwardMS": 31.24911263783773,
       "backwardMS": 57.014715830485024,
       "usefulTFPerGPU": 643.8415541729512,
@@ -1448,8 +1396,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 4.198279476165771,
-      "eagerMS": 8.363105042775471,
+      "iterationMS": 4.198279476165771,
       "forwardMS": 1.5382431983947753,
       "backwardMS": 2.716723171869914,
       "usefulTFPerGPU": 1353.4691448882556,
@@ -1473,8 +1420,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 13.03269001642863,
-      "eagerMS": 13.184008471171062,
+      "iterationMS": 13.03269001642863,
       "forwardMS": 4.519406938552857,
       "backwardMS": 8.565122111638386,
       "usefulTFPerGPU": 435.9991471787583,
@@ -1498,8 +1444,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 25.07634245554606,
-      "eagerMS": 25.159694989522297,
+      "iterationMS": 25.07634245554606,
       "forwardMS": 8.511569054921468,
       "backwardMS": 16.570217641194663,
       "usefulTFPerGPU": 226.59770828545513,
@@ -1523,8 +1468,7 @@
       "imbalance": 1.0,
       "profile": "A",
       "layers": 10,
-      "graphMS": 55.833187103271484,
-      "eagerMS": 93.78370157877605,
+      "iterationMS": 55.833187103271484,
       "forwardMS": 21.050084495544432,
       "backwardMS": 34.96414705912272,
       "usefulTFPerGPU": 1017.7176026326205,
@@ -1560,8 +1504,7 @@
       "imbalance": 1.0,
       "profile": "B",
       "layers": 10,
-      "graphMS": 57.623893356323244,
-      "eagerMS": 110.8065569559733,
+      "iterationMS": 57.623893356323244,
       "forwardMS": 21.83856970469157,
       "backwardMS": 36.00784861246745,
       "usefulTFPerGPU": 986.0912551450275,
@@ -1597,8 +1540,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 3.123201060295105,
-      "eagerMS": 7.037332264582316,
+      "iterationMS": 3.123201060295105,
       "forwardMS": 1.2514901280403137,
       "backwardMS": 1.9649301369984944,
       "usefulTFPerGPU": 1819.3646911963767,
@@ -1622,8 +1564,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 8.395078404744465,
-      "eagerMS": 8.551037883758545,
+      "iterationMS": 8.395078404744465,
       "forwardMS": 3.355942400296529,
       "backwardMS": 5.29029229482015,
       "usefulTFPerGPU": 676.8539206729374,
@@ -1647,8 +1588,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 15.711488024393718,
-      "eagerMS": 15.823481623331705,
+      "iterationMS": 15.711488024393718,
       "forwardMS": 6.021947765350342,
       "backwardMS": 9.920983441670735,
       "usefulTFPerGPU": 361.6615895188113,
@@ -1672,8 +1612,7 @@
       "imbalance": 1.0,
       "profile": "A",
       "layers": 10,
-      "graphMS": 74.3393564860026,
-      "eagerMS": 74.79222132364909,
+      "iterationMS": 74.3393564860026,
       "forwardMS": 23.48637440999349,
       "backwardMS": 50.85444564819336,
       "usefulTFPerGPU": 764.3652031986464,
@@ -1730,8 +1669,7 @@
       "imbalance": 1.0,
       "profile": "B",
       "layers": 10,
-      "graphMS": 80.5498779296875,
-      "eagerMS": 81.03222986857097,
+      "iterationMS": 80.5498779296875,
       "forwardMS": 24.295484606424967,
       "backwardMS": 56.25278803507487,
       "usefulTFPerGPU": 705.4314517482031,
@@ -1788,8 +1726,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 3.369385592142741,
-      "eagerMS": 3.422610147794088,
+      "iterationMS": 3.369385592142741,
       "forwardMS": 1.2231263955434164,
       "backwardMS": 2.147494427363078,
       "usefulTFPerGPU": 1686.432608324419,
@@ -1813,8 +1750,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 9.534516334533691,
-      "eagerMS": 9.616035143534342,
+      "iterationMS": 9.534516334533691,
       "forwardMS": 3.5655797322591147,
       "backwardMS": 5.969721635182698,
       "usefulTFPerGPU": 595.9653886193593,
@@ -1838,8 +1774,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 18.184922472635904,
-      "eagerMS": 18.248598480224608,
+      "iterationMS": 18.184922472635904,
       "forwardMS": 6.94224747021993,
       "backwardMS": 11.249847571055094,
       "usefulTFPerGPU": 312.4699454264079,
@@ -1863,8 +1798,7 @@
       "imbalance": 1.0,
       "profile": "A",
       "layers": 10,
-      "graphMS": 56.21011390686035,
-      "eagerMS": 100.53847478230794,
+      "iterationMS": 56.21011390686035,
       "forwardMS": 20.246474520365396,
       "backwardMS": 36.12820154825847,
       "usefulTFPerGPU": 1010.89311827822,
@@ -1900,8 +1834,7 @@
       "imbalance": 1.0,
       "profile": "B",
       "layers": 10,
-      "graphMS": 58.00989011128743,
-      "eagerMS": 113.29048461914063,
+      "iterationMS": 58.00989011128743,
       "forwardMS": 20.820731735229494,
       "backwardMS": 37.20214195251465,
       "usefulTFPerGPU": 979.5298218471132,
@@ -1937,8 +1870,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 3.0559871832529706,
-      "eagerMS": 8.007743946711223,
+      "iterationMS": 3.0559871832529706,
       "forwardMS": 1.1713087956110637,
       "backwardMS": 1.9698624014854431,
       "usefulTFPerGPU": 1859.380092870511,
@@ -1962,8 +1894,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 8.623060321807861,
-      "eagerMS": 11.806843757629395,
+      "iterationMS": 8.623060321807861,
       "forwardMS": 3.2583199977874755,
       "backwardMS": 5.536523739496867,
       "usefulTFPerGPU": 658.9588290641452,
@@ -1987,8 +1918,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 16.010382843017577,
-      "eagerMS": 16.11416746775309,
+      "iterationMS": 16.010382843017577,
       "forwardMS": 5.835179726282756,
       "backwardMS": 10.32259407043457,
       "usefulTFPerGPU": 354.9097974934516,
@@ -2012,8 +1942,7 @@
       "imbalance": 1.0,
       "profile": "A",
       "layers": 10,
-      "graphMS": 97.99274978637695,
-      "eagerMS": 98.57709986368815,
+      "iterationMS": 97.99274978637695,
       "forwardMS": 29.80009822845459,
       "backwardMS": 68.22826080322265,
       "usefulTFPerGPU": 579.8634842878907,
@@ -2070,8 +1999,7 @@
       "imbalance": 1.0,
       "profile": "B",
       "layers": 10,
-      "graphMS": 104.94571406046549,
-      "eagerMS": 105.69837341308593,
+      "iterationMS": 104.94571406046549,
       "forwardMS": 30.836193211873372,
       "backwardMS": 74.11048482259115,
       "usefulTFPerGPU": 541.4458116254391,
@@ -2128,8 +2056,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 4.320784044265747,
-      "eagerMS": 4.426238981882731,
+      "iterationMS": 4.320784044265747,
       "forwardMS": 1.5578442573547364,
       "backwardMS": 2.7614282608032226,
       "usefulTFPerGPU": 1315.0950555256486,
@@ -2153,8 +2080,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 14.069906107584636,
-      "eagerMS": 14.184193102518718,
+      "iterationMS": 14.069906107584636,
       "forwardMS": 4.87127997080485,
       "backwardMS": 9.204820410410564,
       "usefulTFPerGPU": 403.85782884115235,
@@ -2178,8 +2104,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 27.78475507100423,
-      "eagerMS": 27.925040117899577,
+      "iterationMS": 27.78475507100423,
       "forwardMS": 9.500474611918131,
       "backwardMS": 18.28512535095215,
       "usefulTFPerGPU": 204.50933319681863,
@@ -2203,8 +2128,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.870951437950134,
-      "eagerMS": 2.9327296177546183,
+      "iterationMS": 2.870951437950134,
       "forwardMS": 1.0658506592114767,
       "backwardMS": 1.80632746219635,
       "usefulTFPerGPU": 989.6095171615186,
@@ -2228,8 +2152,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 4.333810138702392,
-      "eagerMS": 4.415667231877645,
+      "iterationMS": 4.333810138702392,
       "forwardMS": 1.568504520257314,
       "backwardMS": 2.766218654314677,
       "usefulTFPerGPU": 1311.14228605994,
@@ -2253,8 +2176,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 8.224929110209148,
-      "eagerMS": 8.311535962422688,
+      "iterationMS": 8.224929110209148,
       "forwardMS": 2.795353587468465,
       "backwardMS": 5.430443795522054,
       "usefulTFPerGPU": 1381.7120260781212,
@@ -2278,8 +2200,7 @@
       "imbalance": 1.0,
       "profile": "A",
       "layers": 10,
-      "graphMS": 80.4921137491862,
-      "eagerMS": 87.45373916625977,
+      "iterationMS": 80.4921137491862,
       "forwardMS": 28.62822208404541,
       "backwardMS": 51.91948356628418,
       "usefulTFPerGPU": 705.9376959976341,
@@ -2315,8 +2236,7 @@
       "imbalance": 1.0,
       "profile": "B",
       "layers": 10,
-      "graphMS": 83.66207122802734,
-      "eagerMS": 99.76346842447917,
+      "iterationMS": 83.66207122802734,
       "forwardMS": 29.627559407552084,
       "backwardMS": 54.06590957641602,
       "usefulTFPerGPU": 679.1897031954442,
@@ -2352,8 +2272,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 4.12414186000824,
-      "eagerMS": 7.347477277119954,
+      "iterationMS": 4.12414186000824,
       "forwardMS": 1.5676991860071818,
       "backwardMS": 2.5875850836435954,
       "usefulTFPerGPU": 1377.7997764113397,
@@ -2377,8 +2296,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 12.713062381744384,
-      "eagerMS": 12.890847937266033,
+      "iterationMS": 12.713062381744384,
       "forwardMS": 4.396715720494588,
       "backwardMS": 8.327931785583496,
       "usefulTFPerGPU": 446.9608943921762,
@@ -2402,8 +2320,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 24.46835091908773,
-      "eagerMS": 24.582200622558595,
+      "iterationMS": 24.46835091908773,
       "forwardMS": 8.346006472905477,
       "backwardMS": 16.127088006337484,
       "usefulTFPerGPU": 232.22822622571147,
@@ -2427,8 +2344,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.5324000120162964,
-      "eagerMS": 8.850194136301676,
+      "iterationMS": 2.5324000120162964,
       "forwardMS": 0.9834250628948211,
       "backwardMS": 1.5503840049107869,
       "usefulTFPerGPU": 1121.9084081593808,
@@ -2452,8 +2368,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 4.0959391593933105,
-      "eagerMS": 10.299177583058675,
+      "iterationMS": 4.0959391593933105,
       "forwardMS": 1.5564042687416078,
       "backwardMS": 2.5801589330037435,
       "usefulTFPerGPU": 1387.2866542894774,
@@ -2477,8 +2392,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 7.696775499979655,
-      "eagerMS": 9.382469336191813,
+      "iterationMS": 7.696775499979655,
       "forwardMS": 2.790287979443868,
       "backwardMS": 5.031280008951823,
       "usefulTFPerGPU": 1476.5252624616685,
@@ -2502,8 +2416,7 @@
       "imbalance": 1.0,
       "profile": "A",
       "layers": 10,
-      "graphMS": 52.927848434448244,
-      "eagerMS": 92.7111717224121,
+      "iterationMS": 52.927848434448244,
       "forwardMS": 20.08404604593913,
       "backwardMS": 33.061967849731445,
       "usefulTFPerGPU": 1073.5826036166052,
@@ -2539,8 +2452,7 @@
       "imbalance": 1.0,
       "profile": "B",
       "layers": 10,
-      "graphMS": 54.63423233032226,
-      "eagerMS": 102.89955825805664,
+      "iterationMS": 54.63423233032226,
       "forwardMS": 20.762462933858234,
       "backwardMS": 33.98707516988119,
       "usefulTFPerGPU": 1040.0515373315366,
@@ -2576,8 +2488,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.931769585609436,
-      "eagerMS": 9.840366967519124,
+      "iterationMS": 2.931769585609436,
       "forwardMS": 1.262119472026825,
       "backwardMS": 1.795084802309672,
       "usefulTFPerGPU": 1938.1610889543404,
@@ -2601,8 +2512,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 8.114518388112385,
-      "eagerMS": 11.233043257395426,
+      "iterationMS": 8.114518388112385,
       "forwardMS": 3.268566377957662,
       "backwardMS": 5.098596286773682,
       "usefulTFPerGPU": 700.2561903035892,
@@ -2626,8 +2536,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 15.505108292897543,
-      "eagerMS": 15.607825056711834,
+      "iterationMS": 15.505108292897543,
       "forwardMS": 5.972500212987264,
       "backwardMS": 9.786971728006998,
       "usefulTFPerGPU": 366.47546249069904,
@@ -2651,8 +2560,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.0520320097605387,
-      "eagerMS": 10.11562344233195,
+      "iterationMS": 2.0520320097605387,
       "forwardMS": 0.9178005377451579,
       "backwardMS": 1.1560799956321717,
       "usefulTFPerGPU": 1384.5402278279003,
@@ -2676,8 +2584,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.9315274556477866,
-      "eagerMS": 11.35730136235555,
+      "iterationMS": 2.9315274556477866,
       "forwardMS": 1.2663861354192099,
       "backwardMS": 1.7707253376642862,
       "usefulTFPerGPU": 1938.3211716679562,
@@ -2701,8 +2608,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 5.225540272394816,
-      "eagerMS": 9.839743995666504,
+      "iterationMS": 5.225540272394816,
       "forwardMS": 2.108567484219869,
       "backwardMS": 3.397762147585551,
       "usefulTFPerGPU": 2174.795881920888,
@@ -2726,8 +2632,7 @@
       "imbalance": 1.0,
       "profile": "A",
       "layers": 10,
-      "graphMS": 70.73482360839844,
-      "eagerMS": 71.24847691853842,
+      "iterationMS": 70.73482360839844,
       "forwardMS": 23.157299359639484,
       "backwardMS": 47.57805658976237,
       "usefulTFPerGPU": 803.3160249421106,
@@ -2784,8 +2689,7 @@
       "imbalance": 1.0,
       "profile": "B",
       "layers": 10,
-      "graphMS": 76.54772109985352,
-      "eagerMS": 77.10080134073893,
+      "iterationMS": 76.54772109985352,
       "forwardMS": 24.008308283487956,
       "backwardMS": 52.54009157816569,
       "usefulTFPerGPU": 742.3136379456336,
@@ -2842,8 +2746,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 3.1929973284403483,
-      "eagerMS": 3.2773600021998086,
+      "iterationMS": 3.1929973284403483,
       "forwardMS": 1.224243195851644,
       "backwardMS": 1.9691392024358114,
       "usefulTFPerGPU": 1779.5948909808667,
@@ -2867,8 +2770,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 9.400117365519206,
-      "eagerMS": 9.461784489949544,
+      "iterationMS": 9.400117365519206,
       "forwardMS": 3.605842145284017,
       "backwardMS": 5.785875225067139,
       "usefulTFPerGPU": 604.4862539111657,
@@ -2892,8 +2794,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 18.023618125915526,
-      "eagerMS": 18.099785486857098,
+      "iterationMS": 18.023618125915526,
       "forwardMS": 6.995222409566243,
       "backwardMS": 11.03064324061076,
       "usefulTFPerGPU": 315.2664294655525,
@@ -2917,8 +2818,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.4470272064208984,
-      "eagerMS": 2.5103456179300943,
+      "iterationMS": 2.4470272064208984,
       "forwardMS": 1.0420234600702922,
       "backwardMS": 1.4057226777076721,
       "usefulTFPerGPU": 1161.0499706946518,
@@ -2942,8 +2842,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 3.1921759923299153,
-      "eagerMS": 3.277904009819031,
+      "iterationMS": 3.1921759923299153,
       "forwardMS": 1.229091211160024,
       "backwardMS": 1.9637493332227072,
       "usefulTFPerGPU": 1780.0527747408526,
@@ -2967,8 +2866,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 5.781945594151815,
-      "eagerMS": 5.897778129577636,
+      "iterationMS": 5.781945594151815,
       "forwardMS": 2.10239253838857,
       "backwardMS": 3.6825034856796264,
       "usefulTFPerGPU": 1965.5120028646893,
@@ -2992,8 +2890,7 @@
       "imbalance": 1.0,
       "profile": "A",
       "layers": 10,
-      "graphMS": 54.57124354044596,
-      "eagerMS": 101.27606150309245,
+      "iterationMS": 54.57124354044596,
       "forwardMS": 20.034262275695802,
       "backwardMS": 34.66030082702637,
       "usefulTFPerGPU": 1041.2520155228926,
@@ -3029,8 +2926,7 @@
       "imbalance": 1.0,
       "profile": "B",
       "layers": 10,
-      "graphMS": 56.49126930236817,
-      "eagerMS": 115.41541188557943,
+      "iterationMS": 56.49126930236817,
       "forwardMS": 20.6727081934611,
       "backwardMS": 35.82345403035482,
       "usefulTFPerGPU": 1005.86193278716,
@@ -3066,8 +2962,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.9545536120732625,
-      "eagerMS": 10.625401655832926,
+      "iterationMS": 2.9545536120732625,
       "forwardMS": 1.1696277340253194,
       "backwardMS": 1.8665450771649679,
       "usefulTFPerGPU": 1923.2149687142316,
@@ -3091,8 +2986,7 @@
       "imbalance": 4.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 8.408859697977702,
-      "eagerMS": 12.224776522318523,
+      "iterationMS": 8.408859697977702,
       "forwardMS": 3.221996784210205,
       "backwardMS": 5.3461824258168535,
       "usefulTFPerGPU": 675.7446237299639,
@@ -3116,8 +3010,7 @@
       "imbalance": 8.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 15.845878410339356,
-      "eagerMS": 16.02473176320394,
+      "iterationMS": 15.845878410339356,
       "forwardMS": 5.784082126617432,
       "backwardMS": 10.19619197845459,
       "usefulTFPerGPU": 358.5943035445966,
@@ -3141,8 +3034,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.2116469462712605,
-      "eagerMS": 10.55007038116455,
+      "iterationMS": 2.2116469462712605,
       "forwardMS": 0.942217602332433,
       "backwardMS": 1.27036372423172,
       "usefulTFPerGPU": 1284.617723951829,
@@ -3166,8 +3058,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 2.9556373357772827,
-      "eagerMS": 11.414964294433593,
+      "iterationMS": 2.9556373357772827,
       "forwardMS": 1.1810080011685689,
       "backwardMS": 1.8550357302029927,
       "usefulTFPerGPU": 1922.5097963900455,
@@ -3191,8 +3082,7 @@
       "imbalance": 1.0,
       "profile": null,
       "layers": 1,
-      "graphMS": 5.174753077824911,
-      "eagerMS": 7.609717321395874,
+      "iterationMS": 5.174753077824911,
       "forwardMS": 2.0504672129948935,
       "backwardMS": 3.344034131368001,
       "usefulTFPerGPU": 2196.1402397953257,
@@ -3209,11 +3099,6 @@
     {
       "dist": "dist_moe-inference-ep16-bf16-standard-single_layer-i1-F3072",
       "mok": "mok-inference-ep16-bf16-native-single_layer-i1-F3072",
-      "speedupRange": [
-        1.0586931849531773,
-        1.1563697749018755
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep16-bf16-standard-single_layer-i1-F3072"
       ]
@@ -3221,11 +3106,6 @@
     {
       "dist": "dist_moe-inference-ep16-bf16-standard-single_layer-i4-F3072",
       "mok": "mok-inference-ep16-bf16-native-single_layer-i4-F3072",
-      "speedupRange": [
-        1.0467894601872958,
-        1.188338392505616
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep16-bf16-standard-single_layer-i4-F3072"
       ]
@@ -3233,11 +3113,6 @@
     {
       "dist": "dist_moe-inference-ep16-bf16-standard-single_layer-i8-F3072",
       "mok": "mok-inference-ep16-bf16-native-single_layer-i8-F3072",
-      "speedupRange": [
-        1.0678548419107878,
-        1.1652191610493536
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep16-bf16-standard-single_layer-i8-F3072"
       ]
@@ -3245,11 +3120,6 @@
     {
       "dist": "dist_moe-inference-ep16-bf16-standard-width-i1-F1536",
       "mok": "mok-inference-ep16-bf16-native-width-i1-F1536",
-      "speedupRange": [
-        1.102234965392445,
-        1.1064418587514835
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep16-bf16-standard-width-i1-F1536"
       ]
@@ -3257,11 +3127,6 @@
     {
       "dist": "dist_moe-inference-ep16-bf16-standard-width-i1-F3072",
       "mok": "mok-inference-ep16-bf16-native-width-i1-F3072",
-      "speedupRange": [
-        1.0691522144493562,
-        1.1661041874364078
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep16-bf16-standard-width-i1-F3072"
       ]
@@ -3269,11 +3134,6 @@
     {
       "dist": "dist_moe-inference-ep16-bf16-standard-width-i1-F6144",
       "mok": "mok-inference-ep16-bf16-native-width-i1-F6144",
-      "speedupRange": [
-        1.0348549309076913,
-        1.1277401258162847
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep16-bf16-standard-width-i1-F6144"
       ]
@@ -3281,11 +3141,6 @@
     {
       "dist": "dist_moe-inference-ep16-mxfp8-mega-single_layer-i1-F3072",
       "mok": "mok-inference-ep16-mxfp8-native-single_layer-i1-F3072",
-      "speedupRange": [
-        1.2123222520858876,
-        1.2674876295454547
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep16-mxfp8-mega-single_layer-i1-F3072",
         "dist_moe-inference-ep16-mxfp8-staged-single_layer-i1-F3072"
@@ -3294,11 +3149,6 @@
     {
       "dist": "dist_moe-inference-ep16-mxfp8-mega-single_layer-i4-F3072",
       "mok": "mok-inference-ep16-mxfp8-native-single_layer-i4-F3072",
-      "speedupRange": [
-        1.2602375443439995,
-        1.368214673558221
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep16-mxfp8-mega-single_layer-i4-F3072",
         "dist_moe-inference-ep16-mxfp8-staged-single_layer-i4-F3072"
@@ -3307,11 +3157,6 @@
     {
       "dist": "dist_moe-inference-ep16-mxfp8-mega-single_layer-i8-F3072",
       "mok": "mok-inference-ep16-mxfp8-native-single_layer-i8-F3072",
-      "speedupRange": [
-        1.282608740817282,
-        1.4122191665877724
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep16-mxfp8-mega-single_layer-i8-F3072",
         "dist_moe-inference-ep16-mxfp8-staged-single_layer-i8-F3072"
@@ -3320,11 +3165,6 @@
     {
       "dist": "dist_moe-inference-ep16-mxfp8-staged-width-i1-F1536",
       "mok": "mok-inference-ep16-mxfp8-native-width-i1-F1536",
-      "speedupRange": [
-        1.331055693779407,
-        1.3415899070315587
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep16-mxfp8-mega-width-i1-F1536",
         "dist_moe-inference-ep16-mxfp8-staged-width-i1-F1536"
@@ -3333,11 +3173,6 @@
     {
       "dist": "dist_moe-inference-ep16-mxfp8-mega-width-i1-F3072",
       "mok": "mok-inference-ep16-mxfp8-native-width-i1-F3072",
-      "speedupRange": [
-        1.21823614900808,
-        1.2689242105663412
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep16-mxfp8-mega-width-i1-F3072",
         "dist_moe-inference-ep16-mxfp8-staged-width-i1-F3072"
@@ -3346,11 +3181,6 @@
     {
       "dist": "dist_moe-inference-ep16-mxfp8-mega-width-i1-F6144",
       "mok": "mok-inference-ep16-mxfp8-native-width-i1-F6144",
-      "speedupRange": [
-        1.1731507602783242,
-        1.2867976039902387
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep16-mxfp8-mega-width-i1-F6144",
         "dist_moe-inference-ep16-mxfp8-staged-width-i1-F6144"
@@ -3359,11 +3189,6 @@
     {
       "dist": "dist_moe-inference-ep8-bf16-standard-single_layer-i1-F3072",
       "mok": "mok-inference-ep8-bf16-native-single_layer-i1-F3072",
-      "speedupRange": [
-        1.0451403802557298,
-        1.133241135159196
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep8-bf16-standard-single_layer-i1-F3072"
       ]
@@ -3371,11 +3196,6 @@
     {
       "dist": "dist_moe-inference-ep8-bf16-standard-single_layer-i4-F3072",
       "mok": "mok-inference-ep8-bf16-native-single_layer-i4-F3072",
-      "speedupRange": [
-        0.9834923669680828,
-        1.155888730847855
-      ],
-      "nonoverlappingWindows": false,
       "allDistPipelines": [
         "dist_moe-inference-ep8-bf16-standard-single_layer-i4-F3072"
       ]
@@ -3383,11 +3203,6 @@
     {
       "dist": "dist_moe-inference-ep8-bf16-standard-single_layer-i8-F3072",
       "mok": "mok-inference-ep8-bf16-native-single_layer-i8-F3072",
-      "speedupRange": [
-        1.0075044254933383,
-        1.1255661855364192
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep8-bf16-standard-single_layer-i8-F3072"
       ]
@@ -3395,11 +3210,6 @@
     {
       "dist": "dist_moe-inference-ep8-mxfp8-mega-single_layer-i1-F3072",
       "mok": "mok-inference-ep8-mxfp8-native-single_layer-i1-F3072",
-      "speedupRange": [
-        1.2999271893933964,
-        1.3555851800390002
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep8-mxfp8-mega-single_layer-i1-F3072",
         "dist_moe-inference-ep8-mxfp8-staged-single_layer-i1-F3072"
@@ -3408,11 +3218,6 @@
     {
       "dist": "dist_moe-inference-ep8-mxfp8-mega-single_layer-i4-F3072",
       "mok": "mok-inference-ep8-mxfp8-native-single_layer-i4-F3072",
-      "speedupRange": [
-        1.263178102002105,
-        1.3200390961411366
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep8-mxfp8-mega-single_layer-i4-F3072",
         "dist_moe-inference-ep8-mxfp8-staged-single_layer-i4-F3072"
@@ -3421,11 +3226,6 @@
     {
       "dist": "dist_moe-inference-ep8-mxfp8-mega-single_layer-i8-F3072",
       "mok": "mok-inference-ep8-mxfp8-native-single_layer-i8-F3072",
-      "speedupRange": [
-        1.2695903416319552,
-        1.3765944746041108
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-inference-ep8-mxfp8-mega-single_layer-i8-F3072",
         "dist_moe-inference-ep8-mxfp8-staged-single_layer-i8-F3072"
@@ -3434,11 +3234,6 @@
     {
       "dist": "dist_moe-training-ep32-bf16-standard-packing-A-F3072",
       "mok": "mok-training-ep32-bf16-native-packing-A-F3072",
-      "speedupRange": [
-        1.2089463526478637,
-        1.2258027738126667
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep32-bf16-standard-packing-A-F3072"
       ]
@@ -3446,11 +3241,6 @@
     {
       "dist": "dist_moe-training-ep32-bf16-standard-packing-B-F3072",
       "mok": "mok-training-ep32-bf16-native-packing-B-F3072",
-      "speedupRange": [
-        1.2443346552524324,
-        1.2607980694218144
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep32-bf16-standard-packing-B-F3072"
       ]
@@ -3458,11 +3248,6 @@
     {
       "dist": "dist_moe-training-ep32-bf16-standard-single_layer-i1-F3072",
       "mok": "mok-training-ep32-bf16-native-single_layer-i1-F3072",
-      "speedupRange": [
-        1.0443732557698133,
-        1.1218824526822755
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep32-bf16-standard-single_layer-i1-F3072"
       ]
@@ -3470,11 +3255,6 @@
     {
       "dist": "dist_moe-training-ep32-bf16-standard-single_layer-i4-F3072",
       "mok": "mok-training-ep32-bf16-native-single_layer-i4-F3072",
-      "speedupRange": [
-        1.0627911497226596,
-        1.1503081306497918
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep32-bf16-standard-single_layer-i4-F3072"
       ]
@@ -3482,11 +3262,6 @@
     {
       "dist": "dist_moe-training-ep32-bf16-standard-single_layer-i8-F3072",
       "mok": "mok-training-ep32-bf16-native-single_layer-i8-F3072",
-      "speedupRange": [
-        1.0903715537177252,
-        1.137185729107188
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep32-bf16-standard-single_layer-i8-F3072"
       ]
@@ -3494,11 +3269,6 @@
     {
       "dist": "dist_moe-training-ep32-mxfp8-mega-packing-A-F3072",
       "mok": "mok-training-ep32-mxfp8-native-packing-A-F3072",
-      "speedupRange": [
-        1.3279549932525008,
-        1.3394094721239054
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep32-mxfp8-mega-packing-A-F3072",
         "dist_moe-training-ep32-mxfp8-staged-packing-A-F3072"
@@ -3507,11 +3277,6 @@
     {
       "dist": "dist_moe-training-ep32-mxfp8-mega-packing-B-F3072",
       "mok": "mok-training-ep32-mxfp8-native-packing-B-F3072",
-      "speedupRange": [
-        1.3888740688396124,
-        1.4023670067157867
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep32-mxfp8-mega-packing-B-F3072",
         "dist_moe-training-ep32-mxfp8-staged-packing-B-F3072"
@@ -3520,11 +3285,6 @@
     {
       "dist": "dist_moe-training-ep32-mxfp8-staged-single_layer-i1-F3072",
       "mok": "mok-training-ep32-mxfp8-native-single_layer-i1-F3072",
-      "speedupRange": [
-        1.0874895235846693,
-        1.1232295268225192
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep32-mxfp8-mega-single_layer-i1-F3072",
         "dist_moe-training-ep32-mxfp8-staged-single_layer-i1-F3072"
@@ -3533,11 +3293,6 @@
     {
       "dist": "dist_moe-training-ep32-mxfp8-mega-single_layer-i4-F3072",
       "mok": "mok-training-ep32-mxfp8-native-single_layer-i4-F3072",
-      "speedupRange": [
-        1.1096697923366576,
-        1.1825251167246373
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep32-mxfp8-mega-single_layer-i4-F3072",
         "dist_moe-training-ep32-mxfp8-staged-single_layer-i4-F3072"
@@ -3546,11 +3301,6 @@
     {
       "dist": "dist_moe-training-ep32-mxfp8-mega-single_layer-i8-F3072",
       "mok": "mok-training-ep32-mxfp8-native-single_layer-i8-F3072",
-      "speedupRange": [
-        1.138102406689832,
-        1.2060200146202864
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep32-mxfp8-mega-single_layer-i8-F3072",
         "dist_moe-training-ep32-mxfp8-staged-single_layer-i8-F3072"
@@ -3559,11 +3309,6 @@
     {
       "dist": "dist_moe-training-ep64-bf16-standard-packing-A-F3072",
       "mok": "mok-training-ep64-bf16-native-packing-A-F3072",
-      "speedupRange": [
-        1.2043836214672468,
-        1.2280591479437182
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-bf16-standard-packing-A-F3072"
       ]
@@ -3571,11 +3316,6 @@
     {
       "dist": "dist_moe-training-ep64-bf16-standard-packing-B-F3072",
       "mok": "mok-training-ep64-bf16-native-packing-B-F3072",
-      "speedupRange": [
-        1.24585010041142,
-        1.2630943112070037
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-bf16-standard-packing-B-F3072"
       ]
@@ -3583,11 +3323,6 @@
     {
       "dist": "dist_moe-training-ep64-bf16-standard-single_layer-i1-F3072",
       "mok": "mok-training-ep64-bf16-native-single_layer-i1-F3072",
-      "speedupRange": [
-        1.0334296164078445,
-        1.1171140330573797
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-bf16-standard-single_layer-i1-F3072"
       ]
@@ -3595,11 +3330,6 @@
     {
       "dist": "dist_moe-training-ep64-bf16-standard-single_layer-i4-F3072",
       "mok": "mok-training-ep64-bf16-native-single_layer-i4-F3072",
-      "speedupRange": [
-        1.0727627264560304,
-        1.152746828418968
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-bf16-standard-single_layer-i4-F3072"
       ]
@@ -3607,11 +3337,6 @@
     {
       "dist": "dist_moe-training-ep64-bf16-standard-single_layer-i8-F3072",
       "mok": "mok-training-ep64-bf16-native-single_layer-i8-F3072",
-      "speedupRange": [
-        1.1185104237203696,
-        1.1580033465769968
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-bf16-standard-single_layer-i8-F3072"
       ]
@@ -3619,11 +3344,6 @@
     {
       "dist": "dist_moe-training-ep64-bf16-standard-width-i1-F1536",
       "mok": "mok-training-ep64-bf16-native-width-i1-F1536",
-      "speedupRange": [
-        1.1314717752433312,
-        1.1370323563120082
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-bf16-standard-width-i1-F1536"
       ]
@@ -3631,11 +3351,6 @@
     {
       "dist": "dist_moe-training-ep64-bf16-standard-width-i1-F3072",
       "mok": "mok-training-ep64-bf16-native-width-i1-F3072",
-      "speedupRange": [
-        1.0238164294797694,
-        1.1055578557911194
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-bf16-standard-width-i1-F3072"
       ]
@@ -3643,11 +3358,6 @@
     {
       "dist": "dist_moe-training-ep64-bf16-standard-width-i1-F6144",
       "mok": "mok-training-ep64-bf16-native-width-i1-F6144",
-      "speedupRange": [
-        1.0241873670747152,
-        1.1213954393663534
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-bf16-standard-width-i1-F6144"
       ]
@@ -3655,11 +3365,6 @@
     {
       "dist": "dist_moe-training-ep64-mxfp8-mega-packing-A-F3072",
       "mok": "mok-training-ep64-mxfp8-native-packing-A-F3072",
-      "speedupRange": [
-        1.3298299856942695,
-        1.345887636714626
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-mxfp8-mega-packing-A-F3072",
         "dist_moe-training-ep64-mxfp8-staged-packing-A-F3072"
@@ -3668,11 +3373,6 @@
     {
       "dist": "dist_moe-training-ep64-mxfp8-mega-packing-B-F3072",
       "mok": "mok-training-ep64-mxfp8-native-packing-B-F3072",
-      "speedupRange": [
-        1.398996708072285,
-        1.4091364539942832
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-mxfp8-mega-packing-B-F3072",
         "dist_moe-training-ep64-mxfp8-staged-packing-B-F3072"
@@ -3681,11 +3381,6 @@
     {
       "dist": "dist_moe-training-ep64-mxfp8-mega-single_layer-i1-F3072",
       "mok": "mok-training-ep64-mxfp8-native-single_layer-i1-F3072",
-      "speedupRange": [
-        1.0749922935328136,
-        1.1215765174601042
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-mxfp8-mega-single_layer-i1-F3072",
         "dist_moe-training-ep64-mxfp8-staged-single_layer-i1-F3072"
@@ -3694,11 +3389,6 @@
     {
       "dist": "dist_moe-training-ep64-mxfp8-mega-single_layer-i4-F3072",
       "mok": "mok-training-ep64-mxfp8-native-single_layer-i4-F3072",
-      "speedupRange": [
-        1.1209509142531433,
-        1.191768364327238
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-mxfp8-mega-single_layer-i4-F3072",
         "dist_moe-training-ep64-mxfp8-staged-single_layer-i4-F3072"
@@ -3707,11 +3397,6 @@
     {
       "dist": "dist_moe-training-ep64-mxfp8-mega-single_layer-i8-F3072",
       "mok": "mok-training-ep64-mxfp8-native-single_layer-i8-F3072",
-      "speedupRange": [
-        1.1324217564422392,
-        1.2022726920863995
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-mxfp8-mega-single_layer-i8-F3072",
         "dist_moe-training-ep64-mxfp8-staged-single_layer-i8-F3072"
@@ -3720,11 +3405,6 @@
     {
       "dist": "dist_moe-training-ep64-mxfp8-mega-width-i1-F1536",
       "mok": "mok-training-ep64-mxfp8-native-width-i1-F1536",
-      "speedupRange": [
-        1.1894880593590924,
-        1.1950328021090706
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-mxfp8-mega-width-i1-F1536",
         "dist_moe-training-ep64-mxfp8-staged-width-i1-F1536"
@@ -3733,11 +3413,6 @@
     {
       "dist": "dist_moe-training-ep64-mxfp8-mega-width-i1-F3072",
       "mok": "mok-training-ep64-mxfp8-native-width-i1-F3072",
-      "speedupRange": [
-        1.0646213057059692,
-        1.1193693229879964
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-mxfp8-mega-width-i1-F3072",
         "dist_moe-training-ep64-mxfp8-staged-width-i1-F3072"
@@ -3746,11 +3421,6 @@
     {
       "dist": "dist_moe-training-ep64-mxfp8-staged-width-i1-F6144",
       "mok": "mok-training-ep64-mxfp8-native-width-i1-F6144",
-      "speedupRange": [
-        1.0838376713507623,
-        1.1639801113652402
-      ],
-      "nonoverlappingWindows": true,
       "allDistPipelines": [
         "dist_moe-training-ep64-mxfp8-mega-width-i1-F6144",
         "dist_moe-training-ep64-mxfp8-staged-width-i1-F6144"

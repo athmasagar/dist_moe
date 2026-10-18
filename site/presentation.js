@@ -26,11 +26,10 @@
     { id: 'title', kind: 'cover', chapter: 'content' },
     { id: 'moe', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
     { id: 'capabilities', figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes'], setup: '#motivation-setup' },
-    { id: 'comparison-packing', figure: 'compare-packing-figure', controller: 'compare-packing', chapter: 'mok-comparison', range: [0,2], parts: ['compare-packing-view'], preset: '#compare-packing-presets [data-focus="64"]', setup: '#compare-packing-config', title: 'key-idea' },
-    { id: 'comparison-inference', figure: 'compare-scaling-figure', controller: 'compare-scaling', chapter: 'mok-comparison', range: [0,0], parts: ['compare-scaling-view','compare-scaling-table'], preset: '#compare-scaling-presets [data-ep="16"]', setup: '#compare-scaling-config', title: 'key-idea' },
-    { id: 'comparison-training', figure: 'compare-scaling-figure', controller: 'compare-scaling', chapter: 'mok-comparison', range: [0,0], parts: ['compare-scaling-view','compare-scaling-table'], preset: '#compare-scaling-presets [data-ep="64"]', setup: '#compare-scaling-config', title: 'key-idea' },
-    { id: 'comparison-width', figure: 'compare-width-figure', controller: 'compare-width', chapter: 'mok-comparison', range: [0,0], parts: ['compare-width-view','compare-width-table'], setup: '#compare-width-config', title: 'key-idea' },
-    { id: 'comparison-graphs', figure: 'compare-graphs-figure', controller: 'compare-graphs', chapter: 'mok-comparison', range: [0,0], parts: ['compare-graphs-view','compare-graphs-table'], preset: '#compare-graphs-presets [data-focus="presentation"]', setup: '#compare-graphs-config', title: 'key-idea' },
+    { id: 'comparison-policy', figure: 'compare-policy-figure', chapter: 'mok-comparison', parts: ['compare-policy-view'], setup: '#compare-policy-config', title: 'key-idea' },
+    { id: 'comparison-packing', figure: 'compare-packing-figure', controller: 'compare-packing', chapter: 'mok-comparison', range: [0,0], parts: ['compare-packing-legend','compare-packing-view','compare-packing-table'], setup: '#compare-packing-config', title: 'key-idea' },
+    { id: 'comparison-scaling', figure: 'compare-scaling-figure', controller: 'compare-scaling', chapter: 'mok-comparison', range: [0,0], parts: ['compare-scaling-legend','compare-scaling-view','compare-scaling-table'], setup: '#compare-scaling-config', title: 'key-idea' },
+    { id: 'comparison-width', figure: 'compare-width-figure', controller: 'compare-width', chapter: 'mok-comparison', range: [0,0], parts: ['compare-width-legend','compare-width-view','compare-width-table'], setup: '#compare-width-config', title: 'key-idea' },
     { id: 'system', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 8], setup: '.diagram-key' },
     { id: 'routing', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 6], bounds: [0,0,1120,740], setup: '#token-config', title: 'key-idea' },
     { id: 'quantization', figure: 'precision-figure', chapter: 'precision', parts: ['precision-svg', 'quant-detail'] },
@@ -53,7 +52,7 @@
     { id: 'reading', kind: 'resources', chapter: 'start' }
   ];
 
-  const sceneAliases = {configuration:'public-api','expert-call':'public-api',assignments:'routing','expert-rows':'routing','return-slots':'routing','results-memory':'layer-packing','expert-math':'moe','dynamic-recompute':'layer-packing',offsets:'layer-packing','gather-tiles':'gpu-tile','tensor-cores':'gpu-tile','warp-groups':'mega-pipeline','chunk-readiness':'mega-pipeline'};
+  const sceneAliases = {'comparison-inference':'comparison-scaling','comparison-training':'comparison-scaling','comparison-graphs':'comparison-scaling',configuration:'public-api','expert-call':'public-api',assignments:'routing','expert-rows':'routing','return-slots':'routing','results-memory':'layer-packing','expert-math':'moe','dynamic-recompute':'layer-packing',offsets:'layer-packing','gather-tiles':'gpu-tile','tensor-cores':'gpu-tile','warp-groups':'mega-pipeline','chunk-readiness':'mega-pipeline'};
   /** Preserve links to examples that now share one complete slide. */
   function sceneIndex(id) { return scenes.findIndex(scene=>scene.id===(sceneAliases[id]||id)); }
 
@@ -498,9 +497,9 @@
   }
   function scopeFor(scene){
     const f=figures[scene.figure];if(!f)return '';
-    if(scene.id==='results-metrics')return 'Extra padding/replay FLOPs are not separately instrumented. All routed-operation costs remain in measured latency; effective HBM bandwidth is a model.';
+    if(scene.id==='results-metrics')return 'Extra padding/replay FLOPs are not separately instrumented. All routed-operation costs remain in measured iteration time; effective HBM bandwidth is a model.';
     if(scene.chapter==='results')return window.ResultsApp.scope(scene.controller,app.controllers[scene.controller].phase);
-    if(scene.chapter==='mok-comparison')return window.ComparisonApp.scope(scene.controller);
+    if(scene.chapter==='mok-comparison')return window.ComparisonApp.scope(scene.controller || scene.id.replace('comparison-','compare-'));
     if(scene.id==='capabilities')return source('#capability-scope').textContent;
     if(scene.id==='routing')return 'Two ranks, four tokens; output components are illustrative before BF16 rounding.';
     const text=f.querySelector('figcaption').textContent;
