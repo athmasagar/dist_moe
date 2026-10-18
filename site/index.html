@@ -88,7 +88,7 @@
         <div class="figure-top"><div><span class="fig-number">COMPARISON · PACKING</span><h3>Cross-layer packing delivers up to 1.40× speedup over MoK</h3></div><button class="expand" aria-label="Expand the ten-layer iteration-time results">Expand ⤢</button></div>
         <div class="config-summary" id="compare-packing-config">Ten-layer training · profiles A and B · F = 3,072</div>
         <div class="cmp-ep-legend" id="compare-packing-legend"></div>
-        <div class="comparison-view diagram-scroll cmp-two-charts cmp-bars-view" id="compare-packing-view"><div class="cmp-panel" id="compare-packing-bf16"></div><div class="cmp-panel" id="compare-packing-mxfp8"></div></div>
+        <div class="comparison-view diagram-scroll cmp-two-charts cmp-bars-view cmp-packing-view" id="compare-packing-view"><div class="cmp-panel" id="compare-packing-bf16"></div><div class="cmp-panel" id="compare-packing-mxfp8"></div></div>
         <div class="table-scroll cmp-time-tables cmp-packing-times" id="compare-packing-table"></div>
         <div class="phase-caption" id="compare-packing-caption"></div>
         <figcaption>Each bar compares the same ten-layer workload and precision. The faster measured Dist-MoE pipeline is used for each case. Both pipelines and the capacity measurements are available in the downloads.</figcaption>
@@ -113,7 +113,7 @@
         <div class="figure-top"><div><span class="fig-number">COMPARISON · WIDTH</span><h3>Dist-MoE shortens iteration time at every measured expert width</h3></div><button class="expand" aria-label="Expand the expert-width results">Expand ⤢</button></div>
         <div class="config-summary" id="compare-width-config">One layer · balanced workload · F = 1,536 / 3,072 / 6,144</div>
         <div class="cmp-ep-legend" id="compare-width-legend"></div>
-        <div class="comparison-view diagram-scroll cmp-two-charts cmp-bars-view" id="compare-width-view"><div class="cmp-panel" id="compare-width-bf16"></div><div class="cmp-panel" id="compare-width-mxfp8"></div></div>
+        <div class="comparison-view diagram-scroll cmp-two-charts cmp-bars-view cmp-width-view" id="compare-width-view"><div class="cmp-panel" id="compare-width-bf16"></div><div class="cmp-panel" id="compare-width-mxfp8"></div></div>
         <div class="table-scroll cmp-time-tables" id="compare-width-table"></div>
         <div class="phase-caption" id="compare-width-caption"></div>
         <figcaption>Only EP16 inference and EP64 training were measured in this sweep. F = 3,072 is a separate control from the imbalance sweep’s balanced case.</figcaption>

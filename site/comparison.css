@@ -172,12 +172,12 @@
 .deck-visual .cmp-bar-note{font-size:12px;line-height:1.2;margin-top:3px}
 
 /* Fewer conditions get larger rows without changing the shared ratio scale. */
-.deck-visual #compare-packing-view .cmp-bar-row{height:38px;min-height:38px}
-.deck-visual #compare-packing-view .cmp-bar-group{margin-bottom:14px}
-.deck-visual #compare-width-view .cmp-bar-row{height:28px;min-height:28px}
-.deck-visual #compare-width-view .cmp-bar-group{margin-bottom:9px}
-.deck-visual :is(#compare-packing-view,#compare-width-view) .cmp-bar-track{height:19px}
-.deck-visual :is(#compare-packing-view,#compare-width-view) .cmp-gain-bar{top:4px;height:11px}
-.deck-visual :is(#compare-packing-view,#compare-width-view) .cmp-bar-ep{font-size:16px}
-.deck-visual :is(#compare-packing-view,#compare-width-view) .cmp-bar-value{font-size:19px}
-.deck-visual :is(#compare-packing-view,#compare-width-view) .cmp-bar-value small{font-size:14px}
+.deck-visual .cmp-packing-view .cmp-bar-row{height:38px;min-height:38px}
+.deck-visual .cmp-packing-view .cmp-bar-group{margin-bottom:14px}
+.deck-visual .cmp-width-view .cmp-bar-row{height:28px;min-height:28px}
+.deck-visual .cmp-width-view .cmp-bar-group{margin-bottom:9px}
+.deck-visual :is(.cmp-packing-view,.cmp-width-view) .cmp-bar-track{height:19px}
+.deck-visual :is(.cmp-packing-view,.cmp-width-view) .cmp-gain-bar{top:4px;height:11px}
+.deck-visual :is(.cmp-packing-view,.cmp-width-view) .cmp-bar-ep{font-size:16px}
+.deck-visual :is(.cmp-packing-view,.cmp-width-view) .cmp-bar-value{font-size:19px}
+.deck-visual :is(.cmp-packing-view,.cmp-width-view) .cmp-bar-value small{font-size:14px}

@@ -214,3 +214,5 @@ body:not(.presentation-mode) #content .diagram-scroll svg.routing-visual{min-wid
 @media(max-width:950px){body:not(.presentation-mode) #content .dep-mobile-phases{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));position:absolute;top:0;left:0;right:0}body:not(.presentation-mode) #content .dep-time{height:72px;min-height:72px}body:not(.presentation-mode) #content .dep-time-grid{top:35px}body:not(.presentation-mode) #content .dep-span,body:not(.presentation-mode) #content .dep-last-reader{top:54px}}
 
 .dep-region{background:none!important;border:0!important;padding:0!important;height:auto!important;min-height:0!important;width:auto!important}
+
+.dep-note-diamond{display:inline-block;width:8px;height:8px;background:var(--purple);transform:rotate(45deg);margin:0 4px 1px;vertical-align:baseline}
