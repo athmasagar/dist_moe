@@ -165,18 +165,7 @@ html:fullscreen .deck-drawer{top:0;bottom:0}
 .deck-drawer .api-layout,.deck-drawer .api-full-program,.deck-drawer .api-examples .code-description,.deck-drawer .api-examples .code-footer,.deck-drawer .api-examples .code-tools{display:none!important}
 .deck-drawer .api-examples{background:transparent;border:0;margin:0}.deck-drawer .api-examples .code-top{padding:0;background:transparent;border:0}
 .deck-code{padding:16px 24px}.deck-code-label{font-size:20px;margin-bottom:12px}.deck-code pre{line-height:1.25}.deck-code-line{min-height:1.25em}
-.deck-api-plan{margin-top:14px}.deck-api-plan .api-plan-output{margin:0;padding:12px}
-.deck-api-plan .api-plan-heading{font-size:20px;line-height:1.2;margin-bottom:12px}
-.deck-api-plan .api-plan-heading b{font-size:16px}
-.deck-api-plan .api-plan-stats{grid-template-columns:repeat(4,minmax(0,1fr));gap:20px}
-.deck-api-plan .api-plan-stat>span,.deck-api-plan .api-plan-bound>span{font-size:16px}
-.deck-api-plan .api-plan-stat>strong{font-size:27px;line-height:1.1}
-.deck-api-plan .api-plan-stat>small{font-size:14px;line-height:1.2}
-.deck-api-plan .api-plan-range{margin-top:10px;padding:10px 0}
-.deck-api-plan .api-plan-range>span{font-size:15px;margin-bottom:6px}
-.deck-api-plan .api-plan-strip{height:18px}
-.deck-api-plan .api-plan-regions{font-size:14px;gap:16px}
-.deck-api-plan .api-plan-bounds{padding:10px 0}.deck-api-plan .api-plan-bound>b{font-size:23px;line-height:1.1}
-.deck-api-plan .api-plan-slot-bounds{padding:10px 0}.deck-api-plan .api-plan-slot-bounds strong{font-size:22px}
-.deck-api-plan .api-plan-recompute{font-size:17px;line-height:1.3}
-.deck-api-plan .api-plan-raw{display:none}
+.deck-api-plan{margin-top:14px}.deck-api-plan .api-plan-output{margin:0;padding:0}
+.deck-api-plan .api-console-toolbar{font-size:16px;margin-bottom:8px}.deck-api-plan .api-console-toolbar button{display:none}
+.deck-api-plan .api-console{padding:12px!important;margin:0;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--line);background:var(--raised);border-radius:6px}
+.deck-api-plan .api-console code{font:17px/1.5 ui-monospace,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink)}

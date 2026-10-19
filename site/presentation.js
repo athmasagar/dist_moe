@@ -487,7 +487,7 @@
     $('deck-code-label').textContent=$('code-tabs').querySelector('[aria-pressed="true"]').textContent+' · '+['configuration','inspect','execution'][build];
     $('deck-api-plan').hidden=build!==1;$('deck-api-plan').replaceChildren();
     $('deck-visual').querySelector('.deck-code').classList.toggle('api-inspect-slide',build===1);
-    if(build===1)$('deck-api-plan').append(cleanClone(source('#api-plan-output')));
+    if(build===1){const output=cleanClone(source('#api-plan-output')),toolbar=output.querySelector('.api-console-toolbar');toolbar.replaceChildren(toolbar.querySelector('span'));$('deck-api-plan').append(output);}
   }
 
   function firstSentenceFragment(node,count=2){

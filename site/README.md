@@ -62,7 +62,7 @@ Slide 17 keeps all six tile handoffs together. Slide 18 pairs the complete
 producer/consumer graph with the SM/CTA warp layout; Mega is the default,
 with Staged selectable. The same resident TMA/MMA and epilogue roles serve
 both W13 and W2 tasks. There is no separate memory-results slide. Slide 26 combines configuration,
-plan.explain() with formatted output, and context execution in
+plan.explain() with its printed output, and context execution in
 three steps. The article has one example selector and shows those sections
 in reading order; it has no second step-tab row. Excerpts, full programs,
 and logical output share one source. The Figure 03 planning-only option has
@@ -290,8 +290,9 @@ configuration and execution use the same policy. Full-program expansion is
 independent of the static configure/inspect/execute sections and closes when
 another example is selected. Copy always uses the selected complete program.
 
-The formatted plan displays exact logical MemoryPlan fields as allocation
-sizes, a proportional virtual-range strip, routing row bounds, slot limits,
-and recompute policy. The exact explain() text can be expanded and copied.
+The plan output is a monospaced text console containing the exact returned
+explain() string. Styling adds readable labels and numbers while preserving
+its words, line breaks, units, rounding, and byte counts. Copy output preserves
+that same string.
 The displayed call omits device, so physical VMM granularity is unresolved.
 Figure 03's current controls generate its planning-only code and output together.
