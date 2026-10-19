@@ -252,6 +252,7 @@
     return scene.range ? [scene.range[0], scene.range[1] ?? c.count - 1] : [0, 0];
   }
   function slideSteps(scene) {
+    if(scene.kind==='code')return app.apiSteps();
     if(scene.builds)return scene.builds.map((_,index)=>index);
     const c=app.controllers[scene.controller];
     if(!c)return [0];
@@ -261,7 +262,7 @@
   }
   function step(direction, slideOnly = false) {
     const scene = scenes[index], c = app.controllers[scene.controller];
-    if(scene.builds&&!slideOnly){const target=build+direction;if(target>=0&&target<scene.builds.length){setBuild(scene,target);update();return;}}
+    if(scene.builds&&!slideOnly){const steps=slideSteps(scene),target=steps[steps.indexOf(build)+direction];if(target!=null){setBuild(scene,target);update();return;}}
     if (c && !slideOnly) {
       const points=checkpoints(scene);
       if(points){const target=direction>0?points.find(p=>p>c.phase):[...points].reverse().find(p=>p<c.phase);if(target!=null){c.set(target);update();return;}}
@@ -272,8 +273,8 @@
   }
   /** Apply a presentation build through the same controls used by the article. */
   function setBuild(scene, position) {
-    build=position;
-    source(scene.builds[position]).click();
+    const steps=slideSteps(scene);build=steps.includes(position)?position:steps.at(-1);
+    source(scene.builds[build]).click();
   }
   function part(figure, id) {
     const element = figure.querySelector('#' + id);
@@ -425,7 +426,7 @@
     } else if (scene.kind === 'code') {
       move(original.code, $('deck-controls-content'));
       const box = document.createElement('div'); box.className = 'deck-code';
-      box.innerHTML = '<div class="deck-code-label" id="deck-code-label">Quickstart excerpt</div><pre><code id="deck-code-excerpt"></code></pre>';
+      box.innerHTML = '<div class="deck-code-label" id="deck-code-label">Quickstart excerpt</div><pre><code id="deck-code-excerpt"></code></pre><div class="deck-api-plan" id="deck-api-plan" hidden></div>';
       $('deck-visual').append(box);
       if(scene.builds)setBuild(scene,lastStep?scene.builds.length-1:0);
     }
@@ -474,14 +475,19 @@
     $('deck-fit').setAttribute('aria-pressed',String(fullView));
   }
   function updateCode(scene) {
-    const excerpt=app.apiExcerpt(build);
-    const cut=excerpt.length>22?Math.ceil(excerpt.length/2):excerpt.length;
-    const columns=[excerpt.slice(0,cut),...(cut<excerpt.length?[excerpt.slice(cut)]:[])];
+    const excerpt=app.apiExcerpt(build),blocks=[];let block=[];
+    for(const line of excerpt){if(!line.trim()&&block.length){blocks.push(block);block=[];}else block.push(line);}if(block.length)blocks.push(block);
+    const columns=build===1?[excerpt]:blocks.length>1?[blocks.slice(0,-1).flatMap((b,i)=>[...(i?['']:[]),...b]),blocks.at(-1)]:[excerpt];
     $('deck-code-excerpt').classList.toggle('deck-code-columns',columns.length>1);
-    $('deck-code-excerpt').innerHTML=columns.map((lines,c)=>`<span class="deck-code-column">${lines.map((line,i)=>`<span class="deck-code-line" data-source-line="${c*cut+i+1}">${app.highlight(line)||' '}</span>`).join('')}</span>`).join('');
-    $('deck-visual').dataset.codeLines = excerpt.length;
-    $('deck-code-excerpt').style.fontSize = excerpt.length > 24 ? '24px' : '30px';
-    $('deck-code-label').textContent = $('code-tabs').querySelector('[aria-pressed="true"]').textContent + ' · excerpt';
+    $('deck-code-excerpt').innerHTML=columns.map(lines=>`<span class="deck-code-column">${lines.map((line,i)=>`<span class="deck-code-line" data-source-line="${i+1}">${app.highlight(line)||' '}</span>`).join('')}</span>`).join('');
+    $('deck-code-excerpt').style.fontSize=Math.max(...columns.map(c=>c.length))>16?'22px':'26px';
+    let ratio=1;for(const line of $('deck-code-excerpt').querySelectorAll('.deck-code-line')){const range=document.createRange();range.selectNodeContents(line);const width=line.getBoundingClientRect().width;if(width)ratio=Math.max(ratio,range.getBoundingClientRect().width/width);}
+    if(ratio>1)$('deck-code-excerpt').style.fontSize=Math.floor(parseFloat($('deck-code-excerpt').style.fontSize)/ratio)+'px';
+    $('deck-visual').dataset.codeLines=excerpt.length;
+    $('deck-code-label').textContent=$('code-tabs').querySelector('[aria-pressed="true"]').textContent+' · '+['configuration','inspect','execution'][build];
+    $('deck-api-plan').hidden=build!==1;$('deck-api-plan').replaceChildren();
+    $('deck-visual').querySelector('.deck-code').classList.toggle('api-inspect-slide',build===1);
+    if(build===1)$('deck-api-plan').append(cleanClone(source('#api-plan-output')));
   }
 
   function firstSentenceFragment(node,count=2){
@@ -527,7 +533,7 @@
     $('deck-page').textContent = `${index + 1} / ${scenes.length}`;
     $('deck-reference').href = '#' + scene.chapter;
     const c = app.controllers[scene.controller];
-    const steps=slideSteps(scene),at=scene.builds?build:c?steps.indexOf(c.phase):0;
+    const steps=slideSteps(scene),at=scene.builds?steps.indexOf(build):c?steps.indexOf(c.phase):0;
     const position=at>=0?at:Math.max(0,steps.findIndex(p=>p>=c.phase));
     $('deck-step').textContent=`Step ${position+1} / ${steps.length}${scene.controller==='slots'?' · '+Moe.schedule[c.phase]:''}`;
     $('deck-back').disabled = index === 0;

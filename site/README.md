@@ -62,8 +62,11 @@ Slide 17 keeps all six tile handoffs together. Slide 18 pairs the complete
 producer/consumer graph with the SM/CTA warp layout; Mega is the default,
 with Staged selectable. The same resident TMA/MMA and epilogue roles serve
 both W13 and W2 tasks. There is no separate memory-results slide. Slide 26 combines configuration,
-context creation/execution, and plan.explain() in three steps; the API excerpts
-and full programs share the article’s code source.
+plan.explain() with formatted output, and context execution in
+three steps. The article has one example selector and shows those sections
+in reading order; it has no second step-tab row. Excerpts, full programs,
+and logical output share one source. The Figure 03 planning-only option has
+two presentation steps and does not borrow execution code from a quickstart.
 
 Figure 07 first compares stage–microbatch and whole-microbatch lifetimes and
 peak counts. Its second tab shows the simple schedule timeline, with one row
@@ -277,3 +280,18 @@ the MoK suite has one BF16 shared expert in both implementations.
 Article headings state the mechanism or measured takeaway throughout the
 introduction and all eight chapters. Slide titles use the same source, with
 data-dependent performance titles regenerated from the selected measurements.
+
+## API examples and plan output
+
+Section 8 uses one teaching shape to generate complete BF16 and MXFP8 programs.
+Both explicitly set activation factor 1.0 and device scratch factor 1.0.
+The MXFP8 program initializes its inputs before preparing weights. Its
+configuration and execution use the same policy. Full-program expansion is
+independent of the static configure/inspect/execute sections and closes when
+another example is selected. Copy always uses the selected complete program.
+
+The formatted plan displays exact logical MemoryPlan fields as allocation
+sizes, a proportional virtual-range strip, routing row bounds, slot limits,
+and recompute policy. The exact explain() text can be expanded and copied.
+The displayed call omits device, so physical VMM granularity is unresolved.
+Figure 03's current controls generate its planning-only code and output together.

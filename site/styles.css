@@ -220,3 +220,45 @@ body:not(.presentation-mode) #content .diagram-scroll svg.routing-visual{min-wid
 /* Match Fig. 06 to the tile diagram after both use a 1040-wide article view. */
 body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) :is(.small,.small.bold,.mono){font-size:13px}
 body:not(.presentation-mode) #content .fusion-visual.article-layout-mobile :is(.small,.small.bold,.bold,.mono){font-size:20px}
+
+/* One example selector owns the code and the matching logical plan. */
+.api-examples.code-block{max-width:none;background:var(--card)}
+.api-examples .code-top{flex-wrap:wrap}
+.api-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"configure inspect" "execute inspect";gap:24px;padding:20px;align-items:start}
+.api-config-panel{grid-area:configure}.api-inspect-panel{grid-area:inspect}.api-execute-panel{grid-area:execute}
+.api-code-panel{min-width:0;padding:0;margin:0}
+.api-code-panel h4{display:flex;align-items:center;gap:10px;font-size:17px;margin:0 0 13px;font-weight:600;line-height:1.3}
+.api-code-panel h4>span{font-size:12px;display:grid;place-items:center;width:23px;height:23px;border:1px solid var(--blue);border-radius:50%;color:var(--blue)}
+.api-examples .api-code-panel pre{padding:0;max-height:none;overflow:visible}
+.api-examples .api-code-panel code{font-size:13px;line-height:1.65}
+.api-examples .api-code-panel .code-line{min-width:0;padding:0 0 0 31px;white-space:pre-wrap;overflow-wrap:anywhere}
+.api-examples .api-code-panel .code-line::before{left:0;width:21px;font-size:10px}
+.api-input-note{font-size:12px;line-height:1.5;color:var(--faint);margin:0 0 10px}
+.api-plan-output{border:1px solid var(--line);border-radius:6px;padding:14px;margin-top:14px;background:var(--raised);min-width:0}
+.api-plan-heading{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:13px;line-height:1.3;color:var(--ink);margin-bottom:15px}
+.api-plan-heading>span{font-family:ui-monospace,Menlo,monospace;color:var(--green)}
+.api-plan-heading b{font-size:11px;color:var(--muted);font-weight:500}
+.api-plan-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 16px}
+.api-plan-stat{min-width:0}
+.api-plan-stat>span,.api-plan-bound>span{display:block;font-size:11px;color:var(--muted);line-height:1.3}
+.api-plan-stat>strong{display:block;font-size:20px;color:var(--ink);font-weight:600;line-height:1.3;margin:4px 0}
+.api-plan-stat>small{display:block;font-size:10px;line-height:1.4;color:var(--faint)}
+.api-plan-range{padding:13px 0;margin:14px 0 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.api-plan-range>span{font-size:11px;color:var(--muted);display:block;line-height:1.4;margin-bottom:8px}
+.api-plan-strip{display:flex;height:15px;overflow:hidden;border-radius:3px}
+.api-plan-strip>i{display:block;height:100%;flex:none}
+.api-plan-regions{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:10px;line-height:1.3;color:var(--muted);margin-top:7px}
+.api-plan-regions>span{display:inline-flex;align-items:center;gap:5px}
+.api-plan-regions i{width:8px;height:8px;display:inline-block;border-radius:2px}
+.api-plan-bounds{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:13px 0}
+.api-plan-bound>b{display:block;font-size:16px;font-weight:550;line-height:1.3;margin-top:4px}
+.api-plan-slot-bounds{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:13px 0;border-top:1px solid var(--line)}
+.api-plan-slot-bounds strong{font-size:15px;white-space:normal}
+.api-plan-recompute{font-size:12px;line-height:1.5;margin:0;color:var(--green);max-width:none}
+.api-plan-raw{font-size:11px;color:var(--muted);margin:13px 0 0;border-top:1px solid var(--line);padding-top:10px}
+.api-plan-raw summary{cursor:pointer}.api-plan-raw button{margin:8px 0}
+.api-examples .api-console{padding:0;max-height:none;overflow:visible;white-space:pre-wrap;overflow-wrap:anywhere}
+.api-examples .api-console code{font-size:11px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted)}
+.api-full-program{border-top:1px solid var(--line);padding-top:16px}.api-full-program h4{font-size:15px;line-height:1.4;margin:0 20px}
+.api-examples .api-full-program pre{max-height:none}
+@media(max-width:850px){.api-layout{grid-template-columns:1fr;grid-template-areas:"configure" "inspect" "execute";padding:16px;gap:22px}.api-examples .code-top{gap:10px}.api-examples .code-tabs{flex-wrap:wrap;overflow:visible}.api-plan-output{padding:12px}.api-plan-slot-bounds{gap:8px}.api-examples .api-code-panel code{font-size:12px}}

@@ -62,6 +62,26 @@ window.Moe = (() => {
     const deviceParts=scratchParts(c,b.rd),totalParts=scratchParts(c,b.rt),deviceScratch=sum(deviceParts),totalScratch=sum(totalParts),hostScratch=Math.max(0,totalScratch-deviceScratch);
     return {...b,slot,deviceParts,totalParts,deviceScratch,totalScratch,hostScratch,activation:c.N*slot,device:slot*c.N+deviceScratch,virtual:slot*c.N+totalScratch,savedParts:savedParts(c,b.rb)};
   }
+  /** Format exact byte counts using MemoryPlan.explain's three-decimal GiB output. */
+  function planSize(bytes){
+    const denominator=1n<<30n,numerator=BigInt(bytes)*1000n,remainder=numerator%denominator;let rounded=numerator/denominator;
+    if(remainder*2n>denominator||(remainder*2n===denominator&&rounded%2n))rounded++;
+    return `${rounded/1000n}.${String(rounded%1000n).padStart(3,'0')} GiB (${bytes.toLocaleString('en-US')} bytes)`;
+  }
+  /** Match Python's default :g formatting for public capacity factors. */
+  function planFactor(value){
+    if(value===0)return '0';const exponent=Math.floor(Math.log10(Math.abs(value)));
+    if(exponent<-4||exponent>=6){const [mantissa,power]=value.toExponential(5).split('e');return mantissa.replace(/\.?0+$/,'')+'e'+(Number(power)<0?'-':'+')+String(Math.abs(Number(power))).padStart(2,'0');}
+    return value.toFixed(Math.max(0,5-exponent)).replace(/(\.\d*?)0+$/,'$1').replace(/\.$/,'');
+  }
+  /** Return logical MemoryPlan fields and the API's exact explain() text. */
+  function memoryReport(c){
+    const m=memory(c),fields={balanced_recv_rows:m.balanced,device_scratch_capacity_rows:m.rd,total_scratch_capacity_rows:m.rt,device_scratch_capacity_factor:m.deviceFactor,total_scratch_capacity_factor:m.totalFactor,saved_input_bytes_per_layer:align(c.T*c.D*2),device_scratch_bytes:m.deviceScratch,host_scratch_bytes:m.hostScratch,minimum_activation_slot_bytes:m.minimum,balanced_full_save_activation_slot_bytes:m.full,maximum_useful_activation_slot_bytes:m.maximumUseful,activation_slot_bytes:m.slot,activation_slot_capacity_factor:c.activation_slot_capacity_factor??null,total_activation_bytes:m.activation,total_device_buffer_bytes:m.device,total_virtual_bytes:m.virtual,num_activation_slots:c.N,inference:false,vmm_granularity_bytes:null,vmm_device_prefix_bytes:null,vmm_host_section_bytes:null,vmm_device_scratch_section_bytes:null,vmm_padding_bytes:0};
+    const policy=fields.activation_slot_capacity_factor!=null?`balanced capacity factor ${planFactor(fields.activation_slot_capacity_factor)}`:m.slot===m.minimum?'minimum all-recompute':'exact per-slot bytes';
+    const recompute=m.slot===m.minimum?'all layers recompute at the minimum budget':m.slot>=m.maximumUseful?'all executable routing fits without recompute':m.slot>=m.full?'balanced routing fits without recompute; larger saved-state usage may recompute':'the activation budget may avoid recompute for some layers';
+    const text=['Distributed MoE memory plan:',`  balanced/device/total rows: ${m.balanced}/${m.rd}/${m.rt}`,`  device/total scratch capacity factors: ${planFactor(m.deviceFactor)}/${planFactor(m.totalFactor)}`,`  activation slots: ${c.N} x ${planSize(m.slot)} = ${planSize(m.activation)} (${policy})`,`  device scratch: ${planSize(m.deviceScratch)}`,`  host overflow scratch: ${planSize(m.hostScratch)}`,`  total device buffer: ${planSize(m.device)}`,`  activation slot minimum/balanced full-save/maximum useful: ${planSize(m.minimum)} / ${planSize(m.full)} / ${planSize(m.maximumUseful)}`,`  virtual address range: ${planSize(m.virtual)}; ${recompute}`,'  activation slots are a soft limit (recompute on exhaustion); total scratch capacity is a hard limit'].join('\n');
+    return {config:c,fields,policy,recompute,text};
+  }
   // Four ordinary BF16 layers, exactly matching the device look-ahead branch.
   // Each layer routes 8 assignments across two ranks; no physical row padding.
   function packing(slotBytes=28672,rank=1) {
@@ -137,5 +157,5 @@ window.Moe = (() => {
   function fp8Value(code) {const sign=code&128?-1:1,u=code&127,e=u>>3,m=u&7;if(e===15&&m===7)return NaN;return sign*(e===0?m*2**-9:(1+m/8)*2**(e-7));}
   function fp8Byte(value) {const sign=value<0||Object.is(value,-0)?128:0,v=Math.abs(value);let best=0,error=Infinity;for(let b=0;b<=126;b++){const e=Math.abs(fp8Value(b)-v);if(e<error||(e===error&&b%2===0)){best=b;error=e;}}return best|sign;}
   function quantBlock(outlier=false) {const seed=[-13.25,-7.5,-3.5625,-1.3125,-.234375,0,.005859375,.0009765625,2.75,3.625,6.75,9.5,11.25,13.5,15.75,17.25];const x=[...seed,...seed.map(v=>v*.75)];if(outlier)x[31]=512;const amax=Math.max(...x.map(Math.abs)),exponent=Math.ceil(Math.log2(amax/448)),scale=2**exponent,scaleByte=exponent+127;const bytes=x.map(v=>fp8Byte(v/scale)),q=bytes.map(fp8Value),decoded=q.map(v=>v*scale);return {x,amax,scale,scaleByte,bytes,q,decoded};}
-  return {align,sum,packing,row,col,capacity,savedParts,scratchParts,forwardScratchParts,memoryBounds,slotFromFactor,factorForSlot,memory,tokenData,routingRows,layout,schedule,lifetimes,intervals,fp8Value,fp8Byte,quantBlock};
+  return {align,sum,packing,row,col,capacity,savedParts,scratchParts,forwardScratchParts,memoryBounds,slotFromFactor,factorForSlot,memory,memoryReport,tokenData,routingRows,layout,schedule,lifetimes,intervals,fp8Value,fp8Byte,quantBlock};
 })();

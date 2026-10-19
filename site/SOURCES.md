@@ -17,7 +17,7 @@ blog informs its visual language; all figures were drawn for this guide.
 | 05 · GPU tiles | [BF16 kernel design](https://github.com/meta-pytorch/dist_moe/blob/main/docs/bf16_kernel_design.md) | Complete width-D row gathering, followed by TMA selection of A[B<sub>M</sub>,B<sub>K</sub>], B[B<sub>K</sub>,B<sub>N</sub>], and accumulation of C[B<sub>M</sub>,B<sub>N</sub>], memory residency, gather completion, TMA/MMA/epilogue handoffs, and predicated tails. Geometry is a logical shape sketch, not a lane-layout diagram. |
 | 06 · Resident warp roles and chunk readiness | [MXFP8 design](https://github.com/meta-pytorch/dist_moe/blob/main/docs/mxfp8_kernel_design.md#mega-forward), [chunked launch](https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/kernels/chunked_mega_blockscaled_grouped_gemm.py), [CTA topology](https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/kernels/chunked_mega_blockscaled_grouped_gemm_kernel.py), and [warp work loops](https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/kernels/gemm_warp_roles.py) | Fixed roles coexist in each resident CTA and process multiple W13/W2 work records. The narrow non-interleaved MXFP8 topology has 16 warps/512 threads; the wide non-interleaved topology has 20/640. Readiness snapshots depict dependencies, with no measured warp-issue timing or occupancy. |
 | 07 · Lifetimes and later slot reuse | [Pipeline slots](https://github.com/meta-pytorch/dist_moe/blob/main/docs/pipeline_activation_slots.md) | Exact documented first nine local actions, continued into a complete teaching schedule. Liveness is computed before coloring, with one interval per stage–microbatch pair or whole microbatch. Counts are measured after each action; the full trace peaks at 6 pairs and 4 microbatches (the documented prefix peaks at 5 and 4). The first view has no physical assignments. The second uses a simple schedule timeline with one row per physical slot, colored owner intervals, and the selected slot’s address. Coloring uses half-open intervals ending after terminal backward. Capacity calculations are expandable. The continuation omits distributed communication and is not a prescribed full PP schedule. |
-| API/code | [README](https://github.com/meta-pytorch/dist_moe), [MXFP8 guide](https://github.com/meta-pytorch/dist_moe/blob/main/docs/mxfp8_execution.md) | BF16 quickstart copied from the public README; other tabs are labeled integration/configuration fragments. |
+| API/code | [README](https://github.com/meta-pytorch/dist_moe), [MXFP8 guide](https://github.com/meta-pytorch/dist_moe/blob/main/docs/mxfp8_execution.md) | Complete BF16 and MXFP8 teaching programs adapted from the public README and execution guide, with one example selector. The Figure 03 option generates only planning code. Logical MemoryPlan fields and exact explain() text are source-validated. |
 
 ## Important distinctions
 
@@ -178,7 +178,9 @@ The two scratch views use the forward and backward planner offsets in
 state omitted, forward scratch is aligned x_gathered + h1 + h2; h3 uses symmetric
 combine HBM. Backward’s recompute peak adds gradients and reuse. Both views
 use the same device received-row bound. The public API’s three excerpts are
-derived from the same full BF16/MXFP8 example programs as the article.
+derived from the same full BF16/MXFP8 example programs as the article, ordered
+as configure, inspect the logical plan, and execute. The plan output is
+shared with the article. The planning-only option skips execution.
 
 ## Matched MoK iteration-time comparison
 
@@ -227,3 +229,19 @@ it is not physical DRAM throughput. TX/RX are NVML GPM hardware byte rates,
 collected separately for at least one second and averaged across ranks in
 decimal GB/s. Their ordering need not match iteration-time ordering. These
 rates do not isolate transfer overlap or prove proximity to hardware peaks.
+
+## Logical plan display
+
+The Section 8 previews use the existing browser planner and the field names,
+selection predicates, and diagnostic formatting in MemoryPlan.explain().
+The programs and previews use one teaching shape (T=16, D=F=256, top-2,
+four local experts, EP2), with activation factor 1 and device scratch factor 1.
+BF16 resolves 64 KiB per slot plus 96 KiB scratch; MXFP8 resolves 792 KiB
+per slot plus 1,757,184 B scratch because its per-expert row bound is padded.
+The Figure 03 preview instead uses that figure's current configuration.
+
+Nine logical previews, including fractional budgets, exact bytes, host scratch,
+and a GiB rounding tie, are checked against the repository's actual planner
+classes, plan_memory() logic, and MemoryPlan.explain() method without importing
+CUDA. The raw text preserves the API's rounding and byte counts. Physical
+VMM section fields remain unresolved because the shown call omits device.
