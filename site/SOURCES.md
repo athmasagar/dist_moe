@@ -193,9 +193,9 @@ and one BF16 shared expert. The later standalone suite has no shared expert.
 The comparison uses iteration time throughout. The plotted ratio is MoK time
 when divided by Dist-MoE time for the same workload. Eager controls and timing
 window classifications are omitted; measured values are preserved in the
-original workspace report. Packing, imbalance, and width use grouped horizontal
-speedup bars with the same 1× parity baseline and scale. Their independent
-conditions are not connected by lines.
+original workspace report. Packing, imbalance, and width use paired zero-based iteration-time columns.
+Both precisions share the same time scale within each EP; speedup labels
+compare the two implementations within each workload.
 
 Packing executes ten forwards before reverse-order backward. Layer-imbalance
 profiles A/B average 2.31/2.39 and peak at 7.5/7.2 on the tracked GPU.
@@ -205,7 +205,18 @@ Dist capacity-induced recompute flags are zero across tested ranks and layers.
 The saved-state diagram is schematic and does not infer byte sizes from load
 factors. Its claims are verified for EP32/64 and BF16/MXFP8.
 
-Every chart and table uses the same EP colors, explicit precision labels,
+Every chart and table uses the same provider colors, explicit EP/precision labels,
 iteration-time units, and mode labels. The source data retains every measured
 Dist pipeline. The observed speedup is not attributed solely to avoided
 recompute; total allocated HBM remains distinct from saved-state flexibility.
+
+Paired metrics use the existing report fields, checked against all 110 original
+execution rows: usefulTFPerGPU, modeledHBMGBps, meanTXGBps, and meanRXGBps.
+Useful forward work is 6*T*(K+1)*D*F per GPU; training triples it and packing
+multiplies it by the layer count. This is average useful work per GPU divided
+by the slowest-GPU iteration time, excluding padding and replay. HBM uses the
+report's logical-byte model, with a coarse 3× forward model for training;
+it is not physical DRAM throughput. TX/RX are NVML GPM hardware byte rates,
+collected separately for at least one second and averaged across ranks in
+decimal GB/s. Their ordering need not match iteration-time ordering. These
+rates do not isolate transfer overlap or prove proximity to hardware peaks.

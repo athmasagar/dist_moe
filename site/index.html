@@ -75,6 +75,8 @@
       <p class="cmp-method">GB300 · CUDA 13.0 · 2,048 input tokens per GPU · D = 7,168 · 384 experts · top-6 + one BF16 shared expert. Both implementations use CUDA graphs.</p>
       <p class="cmp-method"><strong>Iteration time</strong> covers forward in inference and forward + backward in training. The packing workload runs ten layer forwards followed by their backwards. A 1.22× speedup over MoK means MoK’s iteration takes 1.22 times as long. Speedup = MoK iteration time ÷ Dist-MoE iteration time.</p>
 
+      <p class="cmp-method" id="comparison-metric-context"><strong>Read the rates alongside time.</strong> Useful TFLOP/s counts the GEMM work completed per GPU, excluding padding and replay. HBM model is logical bytes divided by iteration time. NVLink TX/RX is measured separately using NVML GPM and averaged across GPUs. Higher NVLink byte rates alone do not establish better performance.</p>
+
       <h3>Spare capacity in light layers keeps hot layers from recomputing</h3>
       <p>The same GPU can have a light workload in one layer and a heavy workload in another. MoK assigns a separate saved-state budget to each layer. Dist-MoE shares one activation slot across the layers, so spare capacity from lighter layers can support heavier layers.</p>
       <figure class="interactive comparison-figure" id="compare-policy-figure">
@@ -88,23 +90,27 @@
         <div class="figure-top"><div><span class="fig-number">COMPARISON · PACKING</span><h3>Cross-layer packing delivers up to 1.40× speedup over MoK</h3></div><button class="expand" aria-label="Expand the ten-layer iteration-time results">Expand ⤢</button></div>
         <div class="config-summary" id="compare-packing-config">Ten-layer training · profiles A and B · F = 3,072</div>
         <div class="cmp-ep-legend" id="compare-packing-legend"></div>
-        <div class="comparison-view diagram-scroll cmp-two-charts cmp-bars-view cmp-packing-view" id="compare-packing-view"><div class="cmp-panel" id="compare-packing-bf16"></div><div class="cmp-panel" id="compare-packing-mxfp8"></div></div>
+        <div class="comparison-view diagram-scroll cmp-results-view cmp-packing-view" id="compare-packing-view"></div>
+        <details class="cmp-raw-data"><summary>Exact iteration times · all measured EPs</summary>
         <div class="table-scroll cmp-time-tables cmp-packing-times" id="compare-packing-table"></div>
+        </details>
         <div class="phase-caption" id="compare-packing-caption"></div>
-        <figcaption>Each bar compares the same ten-layer workload and precision. The faster measured Dist-MoE pipeline is used for each case. Both pipelines and the capacity measurements are available in the downloads.</figcaption>
+        <figcaption>Each column pair compares the same ten-layer workload and precision. Useful throughput counts all ten layers; peak allocation includes weights, scratch, and graph state. The faster measured Dist-MoE pipeline is used for each case. Both pipelines and the capacity measurements are available in the downloads.</figcaption>
       </figure>
       <p id="comparison-packing-story"></p>
 
       <h3>Dist-MoE keeps its speedup as imbalance grows to 8× the balanced load</h3>
-      <p>Each group compares the same imbalance factor across EP settings. Bars show speedup over MoK, with 1× marking equal iteration time. The tables give the times behind every bar.</p>
+      <p>Each EP panel shows how iteration time grows with imbalance. Paired columns compare Dist-MoE and MoK at the same load; the tables show the useful compute and byte rates achieved during each workload.</p>
       <figure class="interactive comparison-figure" id="compare-scaling-figure">
         <div class="figure-top"><div><span class="fig-number">COMPARISON · IMBALANCE</span><h3>The speedup holds as imbalance grows from 1× to 8×</h3></div><button class="expand" aria-label="Expand the imbalance results">Expand ⤢</button></div>
         <div class="config-summary" id="compare-scaling-config">One layer · imbalance factors 1×, 4×, and 8× · F = 3,072</div>
         <div class="cmp-ep-legend" id="compare-scaling-legend"></div>
-        <div class="comparison-view diagram-scroll cmp-two-charts cmp-bars-view" id="compare-scaling-view"><div class="cmp-panel" id="compare-scaling-bf16"></div><div class="cmp-panel" id="compare-scaling-mxfp8"></div></div>
+        <div class="comparison-view diagram-scroll cmp-results-view cmp-scaling-view" id="compare-scaling-view"></div>
+        <details class="cmp-raw-data"><summary>Exact iteration times · all measured EPs</summary>
         <div class="table-scroll cmp-time-tables cmp-scaling-times" id="compare-scaling-table"></div>
+        </details>
         <div class="phase-caption" id="compare-scaling-caption"></div>
-        <figcaption>EP8/16 measure inference; EP32/64 measure training. Speedups compare implementations within each workload. All four EP settings remain visible together.</figcaption>
+        <figcaption>EP8/16 measure inference; EP32/64 measure training. Speedups compare implementations within each workload. The article includes all four EP settings; the slides focus on EP16 inference and EP64 training.</figcaption>
       </figure>
 
       <h3>Wider experts preserve the speedup while adding more compute per byte</h3>
@@ -113,18 +119,20 @@
         <div class="figure-top"><div><span class="fig-number">COMPARISON · WIDTH</span><h3>Dist-MoE shortens iteration time at every measured expert width</h3></div><button class="expand" aria-label="Expand the expert-width results">Expand ⤢</button></div>
         <div class="config-summary" id="compare-width-config">One layer · balanced workload · F = 1,536 / 3,072 / 6,144</div>
         <div class="cmp-ep-legend" id="compare-width-legend"></div>
-        <div class="comparison-view diagram-scroll cmp-two-charts cmp-bars-view cmp-width-view" id="compare-width-view"><div class="cmp-panel" id="compare-width-bf16"></div><div class="cmp-panel" id="compare-width-mxfp8"></div></div>
+        <div class="comparison-view diagram-scroll cmp-results-view cmp-width-view" id="compare-width-view"></div>
+        <details class="cmp-raw-data"><summary>Exact iteration times · all measured EPs</summary>
         <div class="table-scroll cmp-time-tables" id="compare-width-table"></div>
+        </details>
         <div class="phase-caption" id="compare-width-caption"></div>
         <figcaption>Only EP16 inference and EP64 training were measured in this sweep. F = 3,072 is a separate control from the imbalance sweep’s balanced case.</figcaption>
       </figure>
 
       <details class="cmp-evidence" id="comparison-methods"><summary>Measurement definitions and source data</summary>
         <p>Iteration times are medians of five 30-iteration timing windows, reduced across GPUs using the slowest GPU. Inference includes forward; training includes forward and backward. Both implementations include one BF16 shared expert. Weight preparation is outside timing.</p>
-        <p>The plotted speedup uses the faster valid Dist-MoE pipeline for each measured case. Every pipeline is included in the downloadable data. The ten-layer workloads use independent inputs and weights, with all forwards issued before reverse-order backward.</p>
+        <p>The columns and metrics use the faster valid Dist-MoE pipeline for each measured case. Every pipeline is included in the downloadable data. The ten-layer workloads use independent inputs and weights, with all forwards issued before reverse-order backward.</p>
         <p>MoK’s requested activation factor 2.5 rounds to about 2.67 under its native per-layer allocation policy. Dist-MoE uses one shared slot at factor 2.5, with zero capacity-induced recompute flags in every packing case. These factors describe different policies and do not imply equal byte budgets. The experiment does not isolate how much of the speedup comes solely from avoided recompute.</p>
         <p>Total allocated GPU memory includes weights, scratch, and graph state. In EP64 MXFP8 packing, it peaks at 49.73 GiB for Dist-MoE and 48.37 GiB for MoK. Saved-state capacity flexibility and total allocation are reported separately.</p>
-        <p class="cmp-downloads"><a href="data/mok-comparison.csv" download>All iteration-time measurements · CSV ↓</a><a href="data/mok-comparison-pairs.csv" download>All Dist-MoE pipeline comparisons · CSV ↓</a><a href="data/mok-comparison.json" download>Measurements and saved-state evidence · JSON ↓</a><a href="data/mok-comparison-methodology.md">Measurement definitions ↗</a></p>
+        <p class="cmp-downloads"><a href="data/mok-comparison.csv" download>All timings and metrics · CSV ↓</a><a href="data/mok-comparison-pairs.csv" download>All Dist-MoE pipeline comparisons · CSV ↓</a><a href="data/mok-comparison.json" download>Measurements and saved-state evidence · JSON ↓</a><a href="data/mok-comparison-methodology.md">Measurement definitions ↗</a></p>
       </details>
       <p class="bridge">The next sections explain the execution path and the shared activation-slot planner behind these results.</p>
     </div>

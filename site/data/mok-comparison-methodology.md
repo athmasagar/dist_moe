@@ -27,6 +27,24 @@ throughput and about 28.6% less iteration time.
 The faster measured Dist-MoE pipeline is selected per case; all pipelines
 remain available in the source data.
 
+## Useful work and byte rates
+
+Columns show iteration milliseconds; speedup labels use MoK time divided by
+Dist-MoE time. Both precision panels share a time axis within one EP.
+Paired table values are always Dist-MoE / MoK.
+
+| Metric | Construction |
+| --- | --- |
+| Useful TFLOP/s / GPU | Average useful GEMM work per GPU divided by slowest-GPU iteration time. Forward work is 6*T*(K+1)*D*F; training triples it and packing multiplies it by ten layers. Padding and replay are excluded. |
+| HBM model, TB/s | Analytical logical bytes divided by iteration time, in decimal TB/s. The report uses a coarse 3× forward byte model for training. This is not measured physical HBM traffic. |
+| NVLink TX/RX, GB/s | NVML GPM hardware byte rates, converted to decimal GB/s and averaged across GPUs. Collection runs separately from timing for at least one second. |
+| Peak allocated, GiB | Maximum allocated GPU memory in the report's allocator diagnostic, including weights, scratch and graph state. This is different from saved activation capacity. |
+
+Useful TFLOP/s under imbalance is a cluster-average work rate, not the hot
+GPU's work rate. Higher NVLink byte rates alone do not imply shorter iteration
+time. These counters do not isolate communication overlap or provide hardware
+peak utilization; the native quantization and scheduling policies are retained.
+
 ## Layer imbalance and saved state
 
 The ten-layer profiles set imbalance factors on the tracked GPU:

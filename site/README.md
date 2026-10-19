@@ -245,12 +245,12 @@ MoK's partly saved hot layers from the eligible state saved by Dist-MoE across
 all ten layers. Status cells indicate ownership and retention, not byte sizes.
 Both BF16 and MXFP8 have the shown capacity-decision pattern.
 
-All performance charts use BF16/MXFP8 panels and one consistent EP color key.
-Packing, imbalance, and width use grouped horizontal speedup bars. Bars start
-at 1× parity and share the same scale; conditions are separate groups rather
-than a connected trend. Imbalance charts contain all four EPs together. Every raw table names its
-EP and execution mode in the caption, and includes explicit precision, condition,
-Dist-MoE iteration time, MoK iteration time, and speedup columns.
+All performance charts use paired zero-based columns of iteration milliseconds,
+with a speedup label above each Dist-MoE/MoK pair. Provider colors and hatching
+stay identical across figures. Both precisions share a time axis within each EP.
+The tables directly below the columns add useful TFLOP/s, modeled HBM byte rate,
+and measured mean NVLink TX/RX. Packing also reports total peak allocated GiB.
+Exact iteration-time tables are expandable rather than duplicated on slides.
 The slides emphasize EP16 inference and EP64 training; the article exposes
 all measured EPs without dropdowns. Four comparison slides follow the
 capability table; each has one step showing the complete comparison.
