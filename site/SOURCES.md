@@ -202,8 +202,15 @@ profiles A/B average 2.31/2.39 and peak at 7.5/7.2 on the tracked GPU.
 The native MoK budget rounds requested factor 2.5 to an effective 2.667 per layer.
 The two/three hot layers are partly saved under its native source policy.
 Dist capacity-induced recompute flags are zero across tested ranks and layers.
-The saved-state diagram is schematic and does not infer byte sizes from load
-factors. Its claims are verified for EP32/64 and BF16/MXFP8.
+The saved-state diagram explicitly uses normalized layer demand, with one unit
+representing a balanced layer. Each MoK bin caps at the native effective factor
+32768/12288, showing retained demand, unused capacity, and excess demand
+recomputed under its source policy. Dist-MoE packs segments proportional to the
+profile factors into an illustrative pool of 10 × 2.5 = 25 units. Demand totals
+are 23.1/23.9, with 1.9/1.1 units spare. Fixed input state, precision formats,
+and padding make physical byte allocations different from this normalized
+illustration. Capacity factors, replay patterns, and zero Dist capacity flags
+are checked across EP32/64 and BF16/MXFP8.
 
 Every chart and table uses the same provider colors, explicit EP/precision labels,
 iteration-time units, and mode labels. The source data retains every measured

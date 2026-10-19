@@ -242,7 +242,13 @@ same live HTML figures. There are no result EP or precision selectors.
 
 The saved-state view shows both layer-imbalance profiles and distinguishes
 MoK's partly saved hot layers from the eligible state saved by Dist-MoE across
-all ten layers. Status cells indicate ownership and retention, not byte sizes.
+all ten layers. MoK has ten outlined capacity bins: retained demand fills the
+bottom, lighter layers leave spare capacity, and hatched demand above the
+boundary is recomputed. Dist-MoE has one contiguous strip with layer widths
+proportional to their imbalance factors and free capacity at the end.
+The illustration uses normalized demand (one unit is one balanced layer),
+not precision-specific bytes. Profiles total 23.1/23.9 units in an illustrated
+25-unit shared pool; native MoK has approximately 2.67 units per layer.
 Both BF16 and MXFP8 have the shown capacity-decision pattern.
 
 All performance charts use paired zero-based columns of iteration milliseconds,

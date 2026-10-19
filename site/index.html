@@ -81,9 +81,9 @@
       <p>The same GPU can have a light workload in one layer and a heavy workload in another. MoK assigns a separate saved-state budget to each layer. Dist-MoE shares one activation slot across the layers, so spare capacity from lighter layers can support heavier layers.</p>
       <figure class="interactive comparison-figure" id="compare-policy-figure">
         <div class="figure-top"><div><span class="fig-number">COMPARISON · SAVED STATE</span><h3>One shared slot saves the layers that per-layer budgets partly replay</h3></div><button class="expand" aria-label="Expand the saved-state comparison">Expand ⤢</button></div>
-        <div class="config-summary" id="compare-policy-config">EP32 and EP64 training · BF16 and MXFP8 · imbalance varies across ten layers</div>
+        <div class="config-summary" id="compare-policy-config">One GPU · ten layers · EP32/64 training · BF16/MXFP8 · normalized units (1 = balanced layer)</div>
         <div class="comparison-view diagram-scroll cmp-policy-view" id="compare-policy-view"></div>
-        <figcaption>Each profile shows imbalance across layers on one GPU; 1× is balanced load. “Saved” refers to the forward state normally retained by each implementation. A partly saved layer recomputes the remaining state in backward. MoK’s partial-retention pattern is derived from its native policy; Dist-MoE’s capacity decisions are recorded.</figcaption>
+        <figcaption>Widths and fills illustrate normalized layer demand: one unit is a balanced layer. MoK’s lighter slots keep spare capacity while hot layers exceed their separate limits. Dist-MoE packs the ten layer demands into one illustrated 25-unit pool. Physical byte allocations also include fixed input state, precision-specific formats, and padding. MoK’s partial-retention pattern follows its native policy; Dist-MoE records zero capacity-induced recompute.</figcaption>
       </figure>
 
       <figure class="interactive comparison-figure" id="compare-packing-figure">
