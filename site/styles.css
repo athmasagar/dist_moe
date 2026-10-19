@@ -137,9 +137,9 @@ body:not(.presentation-mode) #content .table-scroll{max-width:100%}
 body:not(.presentation-mode) #content .phase-tabs{flex-wrap:wrap;overflow-x:visible}
 body:not(.presentation-mode) #content .phase-tabs button{white-space:normal;flex:1 1 130px}
 /* The article uses one readable typography scale across its technical figures. */
-body:not(.presentation-mode) #content .diagram-scroll svg.fusion-visual:not(.article-layout-mobile){font-size:17px}
-body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) .bold{font-size:17px}
-body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) .small,body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) .small.bold,body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) .mono{font-size:16px}
+body:not(.presentation-mode) #content .diagram-scroll svg.fusion-visual:not(.article-layout-mobile){font-size:14px}
+body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) .bold{font-size:14px}
+body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) .small,body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) .small.bold,body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) .mono{font-size:13px}
 .dependency-equations{padding:0 20px 20px;color:var(--ink)}
 .dependency-equation-header,.dependency-equation-row{display:grid;grid-template-columns:1fr 1fr;gap:30px}
 .dependency-equation-header{font-size:13px;color:var(--muted);padding-bottom:8px}
@@ -172,11 +172,11 @@ body:not(.presentation-mode) #content .diagram-scroll svg.routing-visual{min-wid
 .dependency-equation-row.dep-matrix-row{padding:14px 0;border-top:1px solid var(--line);align-items:center;min-height:87px}
 .dep-value{min-width:0}
 .dep-value-label{display:flex;gap:13px;align-items:baseline}
-.dep-value-label>strong{font-size:20px;font-weight:500}
+.dep-value-label>strong{font-size:17px;font-weight:500}
 .dep-value-label code{font-size:11px;color:var(--faint);background:none;padding:0}
 .dep-region{display:block;font-size:11px;margin-top:7px;line-height:1.35;color:var(--muted)}
 .dep-region.green{color:var(--green)}.dep-region.amber{color:var(--amber)}.dep-region.blue{color:var(--blue)}
-.dependency-formula{font-size:19px;line-height:1.35;padding:3px 0;margin:0;max-width:none}
+.dependency-formula{font-size:16px;line-height:1.35;padding:3px 0;margin:0;max-width:none}
 .dep-forward{margin-top:6px}
 .dep-reader{min-width:0}
 .dep-reader h4{font-size:12px;color:var(--muted);font-weight:600;margin:0 0 8px;line-height:1.35}
@@ -204,7 +204,7 @@ body:not(.presentation-mode) #content .diagram-scroll svg.routing-visual{min-wid
 }
 @media(max-width:650px){
  .dependency-equations{padding-inline:14px}
- body:not(.presentation-mode) #content .dependency-formula{font-size:17px}
+ body:not(.presentation-mode) #content .dependency-formula{font-size:15px}
 }
 
 
@@ -216,3 +216,7 @@ body:not(.presentation-mode) #content .diagram-scroll svg.routing-visual{min-wid
 .dep-region{background:none!important;border:0!important;padding:0!important;height:auto!important;min-height:0!important;width:auto!important}
 
 .dep-note-diamond{display:inline-block;width:8px;height:8px;background:var(--purple);transform:rotate(45deg);margin:0 4px 1px;vertical-align:baseline}
+
+/* Match Fig. 06 to the tile diagram after both use a 1040-wide article view. */
+body:not(.presentation-mode) #content .fusion-visual:not(.article-layout-mobile) :is(.small,.small.bold,.mono){font-size:13px}
+body:not(.presentation-mode) #content .fusion-visual.article-layout-mobile :is(.small,.small.bold,.bold,.mono){font-size:20px}

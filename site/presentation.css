@@ -147,9 +147,9 @@ html:fullscreen .deck-drawer{top:0;bottom:0}
 .deck-visual .dep-phase{font-size:15px}.deck-visual .dep-phase small{font-size:12px}
 .deck-visual .dependency-equation-row.dep-matrix-row{padding:3px 0;min-height:88px}
 .deck-visual .dep-value-label{line-height:1.1}
-.deck-visual .dep-value-label>strong{font-size:26px}
+.deck-visual .dep-value-label>strong{font-size:22px}
 .deck-visual .dep-value-label code{font-size:15px}
-.deck-visual .dependency-formula{font-size:23px;line-height:1.2;padding:2px 0}
+.deck-visual .dependency-formula{font-size:20px;line-height:1.2;padding:2px 0}
 .deck-visual .dep-forward{margin-top:2px}
 .deck-visual .dep-region{font-size:15px;line-height:1.15;margin-top:3px}
 .deck-visual .dep-reader h4{font-size:16px;line-height:1.15;margin-bottom:6px}
@@ -158,3 +158,5 @@ html:fullscreen .deck-drawer{top:0;bottom:0}
 .deck-visual .dep-last-reader{width:11px;height:11px}
 .deck-visual .dependency-equation-note{font-size:16px;line-height:1.35;margin:8px 0 0}
 .deck-visual .dependency-derivatives{display:none}
+
+.deck-visual .diagram-scroll svg.fusion-visual{font-size:17px}.deck-visual .fusion-visual .bold{font-size:17px}.deck-visual .fusion-visual :is(.small,.small.bold,.mono){font-size:15px}
