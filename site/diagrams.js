@@ -15,44 +15,6 @@ window.Views = (() => {
     return html;
   }
   const t=(x,y,s,cls='',anchor='start',extra='')=>`<text x="${x}" y="${y}" class="${cls}" text-anchor="${anchor}" ${extra}>${mathSVG(s)}</text>`;
-  const equationCache=new Map();
-  /** Record shared TeX and its baseline in SVG coordinates. */
-  function equation(x,y,tex,cls='',size=26,width=520){
-    return `<g class="math-equation ${cls}" data-tex="${esc(tex)}" data-x="${x}" data-baseline="${y}" data-size="${size}" data-width="${width}"></g>`;
-  }
-  const mathLayers=new WeakMap();
-  /** Match the equation layer to its SVG viewport, including scroll and slide scaling. */
-  function positionMath(svg){
-    const entry=mathLayers.get(svg);if(!entry)return;
-    const parent=svg.parentElement,box=svg.getBoundingClientRect(),container=parent.getBoundingClientRect(),view=svg.viewBox.baseVal;
-    if(!container.width||!container.height||!view.width)return;
-    const sx=parent.clientWidth/container.width,sy=parent.clientHeight/container.height;
-    const scale=Math.min(svg.clientWidth/view.width,svg.clientHeight/view.height);
-    const left=(box.left-container.left)*sx+parent.scrollLeft+(svg.clientWidth-view.width*scale)/2;
-    const top=(box.top-container.top)*sy+parent.scrollTop+(svg.clientHeight-view.height*scale)/2;
-    const style=`left:${left}px;top:${top}px;width:${view.width*scale}px;height:${view.height*scale}px;`;
-    if(entry.style!==style){entry.layer.style.cssText=style;entry.style=style;}
-    const stageStyle=`width:${view.width}px;height:${view.height}px;transform:scale(${scale}) translate(${-view.x}px,${-view.y}px);`;
-    if(entry.stageStyle!==stageStyle){entry.stage.style.cssText=stageStyle;entry.stageStyle=stageStyle;}
-  }
-  /** Typeset each shared equation in an HTML layer that follows the SVG. */
-  function renderMath(svg){
-    const markers=[...svg.querySelectorAll('.math-equation')];let entry=mathLayers.get(svg);
-    if(!markers.length){if(entry){entry.observer.disconnect();entry.layer.remove();mathLayers.delete(svg);}return;}
-    if(!entry){
-      const layer=document.createElement('div');layer.className='math-layer';const stage=document.createElement('div');stage.className='math-stage';layer.append(stage);svg.after(layer);
-      const observer=new ResizeObserver(()=>positionMath(svg));observer.observe(svg);
-      entry={layer,stage,observer,markup:''};mathLayers.set(svg,entry);
-    }
-    const markup=markers.map(marker=>{
-      const tex=marker.dataset.tex,size=Number(marker.dataset.size);
-      if(!equationCache.has(tex))equationCache.set(tex,{tree:window.katex.__renderToHTMLTree(tex,{throwOnError:true,strict:'error'}),markup:window.katex.renderToString(tex,{throwOnError:true,strict:'error',output:'htmlAndMathml'})});
-      const cached=equationCache.get(tex),top=Number(marker.dataset.baseline)-cached.tree.height*size;
-      return `<div class="math-tex ${marker.classList.contains('blue-text')?'math-forward':'math-backward'}" data-tex="${esc(tex)}" data-x="${marker.dataset.x}" data-baseline="${marker.dataset.baseline}" style="left:${marker.dataset.x}px;top:${top}px;font-size:${size}px">${cached.markup}</div>`;
-    }).join('');
-    if(entry.markup!==markup){entry.stage.innerHTML=markup;entry.markup=markup;}
-    positionMath(svg);
-  }
   const r=(x,y,w,h,cls='box',extra='')=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5" class="${cls}" ${extra}/>`;
   const l=(x1,y1,x2,y2,color='line',extra='')=>`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${C(color)}" stroke-width="1.4" ${extra}/>`;
   let prefix='',motion=[];
@@ -369,5 +331,5 @@ window.Views = (() => {
     const counts=Moe.lifetimes(policy).counts;
     s+=l(x0+(p+1)*step-5,76,x0+(p+1)*step-5,104+info.slots*47,'amber','stroke-dasharray="4 4"')+`<g data-sticky-slot>${r(0,0,122,78,'panel','stroke="none"')}${t(15,31,'ACTION','small muted')}${sticky}</g>`;return {svg:finish(s),info,counts,height:124+info.slots*47};
   }
-  return {esc,mathHTML,num,hex,bytes,t,r,l,card,grid,badge,moe,overview,tokens,tokenPhases,consumption,calculations,packing,lookahead,retention,lifetimeRows,renderMath,positionMath,kernel,precision,orientation,fusion,liveness,slots};
+  return {esc,mathHTML,num,hex,bytes,t,r,l,card,grid,badge,moe,overview,tokens,tokenPhases,consumption,calculations,packing,lookahead,retention,lifetimeRows,kernel,precision,orientation,fusion,liveness,slots};
 })();

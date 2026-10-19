@@ -78,7 +78,6 @@
   /** Show both precisions and both measured training EPs together. */
   function renderPacking(){A.renderHTML('compare-packing-legend',legend());A.renderHTML('compare-packing-view',comparisonView([32,64],'packing',['A','B']));
     A.renderHTML('compare-packing-table',timeTables([32,64],'packing',['A','B'],'Profile'));A.phaseCaption('compare-packing-caption',packingCaption());
-    const p=pair(64,'mxfp8','packing','B');$('comparison-packing-story').textContent=`At EP64 with profile B, MXFP8 runs the ten-layer iteration in ${f(p.dist.iterationMS)} ms instead of ${f(p.mok.iterationMS)} ms: a ${f(speedup(p),3)}× speedup over MoK and ${f((1-1/speedup(p))*100,1)}% less iteration time. The shared slot avoids capacity-induced recompute in the hot layers.`;
   }
   function scalingCaption(){const a=pair(16,'mxfp8','single_layer',8),b=pair(64,'mxfp8','single_layer',8);return ['The advantage persists under higher imbalance',`At 8× imbalance, MXFP8 delivers a ${f(speedup(a),2)}× speedup over MoK for EP16 inference and a ${f(speedup(b),2)}× speedup for EP64 training. Both precisions deliver a shorter iteration time across the measured EP settings.`];}
   /** All four EP groups are visible; the deck emphasizes its two focus EPs. */
@@ -92,11 +91,7 @@
   }
   renderPolicy();
   renderPacking();renderScaling();renderWidth();
-  for(const [id,pair]of [['comparison-packing',packingCaption()],['comparison-scaling',scalingCaption()],['comparison-width',widthCaption()]])document.querySelector(`[data-slide-summary="${id}"]`).textContent=pair[1];
-  const oldCaption=A.getStepCaption;A.getStepCaption=(name,p)=>name==='compare-packing'?packingCaption():name==='compare-scaling'?scalingCaption():name==='compare-width'?widthCaption():oldCaption(name,p);
-  /** Static figures need only one layout sample. */
-  function sample(name,pass){pass();}
   function scope(name){return name==='compare-policy'?'Widths illustrate normalized layer demand. Byte budgets depend on precision and padding; recorded Dist-MoE capacity flags are zero.':'Matched shapes; one BF16 shared expert. TFLOP/s counts useful work; HBM is modeled; NVLink TX/RX is measured separately.';}
   $('comparison-intro').textContent=`Dist-MoE has a shorter median iteration time in all ${M.matchedWorkloads} matched workloads. Its strongest measured advantage comes from ten-layer training with uneven layer imbalance, where sharing saved-state capacity avoids recompute.`;
-  window.ComparisonApp={data:D,pair,speedup,timeScale,metricSpecs,policyPattern,policyPacking,renderPolicy,sample,scope};
+  window.ComparisonApp={data:D,pair,speedup,timeScale,metricSpecs,policyPattern,policyPacking,renderPolicy,scope};
 })();

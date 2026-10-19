@@ -34,10 +34,13 @@ svg.result-visual{font-size:20px}
 .metric-definition h4{font-size:20px;line-height:1.3;margin:7px 0 11px;font-weight:600}
 .metric-definition p{max-width:none;font-size:15px;line-height:1.5;margin:10px 0}
 .metric-method{font-size:11px;letter-spacing:1px;font-weight:650}
-.metric-method.counted{color:var(--blue)}.metric-method.measured{color:var(--green)}.metric-method.modeled{color:var(--purple)}
+.metric-method.counted{color:var(--blue)}
+.metric-method.measured{color:var(--green)}
+.metric-method.modeled{color:var(--purple)}
 .metrics-equation{border:0;background:none;max-width:none;margin:10px 0;padding:0}
 .metrics-equation p{font-family:inherit;font-size:19px;margin:0;white-space:normal;overflow:visible}
-.metric-qualification{color:var(--faint)}.metric-timing-flow{color:var(--green)}
+.metric-qualification{color:var(--faint)}
+.metric-timing-flow{color:var(--green)}
 .deck-visual .metrics-overview.deck-part{display:grid;flex:1;min-height:0;padding:0;gap:24px 60px;grid-template-columns:1fr 1fr}
 .deck-visual .metric-definition{padding-top:10px}
 .deck-visual .metric-definition h4{font-size:31px;margin:7px 0 12px}
@@ -46,9 +49,15 @@ svg.result-visual{font-size:20px}
 .deck-visual .metrics-equation p{font-size:29px;line-height:1.2;margin:0}
 .deck-visual .metrics-equation{margin:10px 0 13px}
 .deck-visual .metric-qualification{font-size:23px}
-@media(max-width:750px){.metrics-overview{grid-template-columns:1fr;padding:10px 14px 20px}}
-@media(max-width:750px){.result-table{padding:0 14px}.results-figure .figure-controls{gap:12px}.results-figure .figure-controls label{max-width:100%;flex-wrap:wrap}.results-figure select{max-width:100%}}
-
+@media(max-width:750px){
+  .metrics-overview{grid-template-columns:1fr;padding:10px 14px 20px}
+}
+@media(max-width:750px){
+  .result-table{padding:0 14px}
+  .results-figure .figure-controls{gap:12px}
+  .results-figure .figure-controls label{max-width:100%;flex-wrap:wrap}
+  .results-figure select{max-width:100%}
+}
 .result-complete .r-head{font-size:25px}
 .result-complete .r-label{font-size:23px}
 .result-complete .r-small{font-size:21px}

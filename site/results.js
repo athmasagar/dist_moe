@@ -123,7 +123,7 @@
   }
   /** Explain measured work growth, not an interpolated iteration time prediction. */
   function widthCaption(phase){const rows=widths.map(F=>row(S.resultWidthEP,S.resultWidthVariant,'width',F)),r=rows[phase],bf=row(r.ep,'bf16:standard','width',r.F);
-    if(phase===2)return ['More compute per routed byte',`Four times the narrow-width GEMM work takes ${f(r.layerMS/rows[0].layerMS,2)}× its iteration time and delivers ${f(rate(r)/1000)} PFLOP/s per GPU. At F = ${V.num(r.F)}, ${name(r)} is ${f(bf.layerMS/r.layerMS,2)}× the corresponding BF16 width control.`];
+    if(phase===2)return ['More compute per routed byte',`Four times the narrow-width GEMM work takes ${f(r.layerMS/rows[0].layerMS,2)}× its iteration time and delivers ${f(rate(r)/1000)} PFLOP/s per GPU. At F = ${V.num(r.F)}, ${name(r)} delivers a ${f(bf.layerMS/r.layerMS,2)}× speedup over the corresponding BF16 width control.`];
     return [`Measured F = ${V.num(r.F)}`,`The input/output feature width remains D = 7,168 while the expert intermediate width is F = ${V.num(r.F)}. ${name(r)} takes ${f(r.layerMS)} ms and delivers ${f(rate(r)/1000)} PFLOP/s at ${V.num(Math.round(r.forwardFlopsPerLogicalPayloadByteRank0))} FLOPs per logical forward payload byte.`];
   }
   /** Render raw width controls, keeping the repeated F3072 control separate. */
@@ -145,17 +145,9 @@
   function sample(name,pass){if(name==='efficiency'){for(const mode of ['inference','training'])for(const ep of mode==='inference'?[8,16]:[32,64]){S.resultMode=mode;S.resultEP=ep;pass();}}else if(name==='skew'){for(const ep of [8,16,32,64])for(const variant of variants(ep)){S.resultSkewEP=ep;S.resultSkewVariant=variant;pass();}}else if(name==='width'){for(const ep of [16,64])for(const variant of variants(ep)){S.resultWidthEP=ep;S.resultWidthVariant=variant;pass();}}}
   /** Return a short scope statement matching the current measured/projection view. */
   function scope(name,phase){if(name==='efficiency')return meta.peakNote+' HBM is modeled, not a DRAM counter.';if(name==='skew')return 'Busiest-rank throughput is derived from assigned work and maximum-rank iteration time. NVLink is measured separately; peaks are theoretical.';if(name==='width')return 'Three measured widths; fixed balanced routing and logical activation payload. HBM weight/intermediate traffic grows with F; peaks are theoretical.';return '';}
-  /** Generate the article's numerical prose from the same immutable measurements. */
-  function narrative(){
-    const bf=row(32,'bf16:standard'),st=row(32,'mxfp8:staged'),balancedNV=row(16,'nvfp4:mega'),hot=row(16,'nvfp4:mega','single_layer',3072,8),small=row(16,'nvfp4:mega','width',1536),large=row(16,'nvfp4:mega','width',6144);
-    $('result-compute-story').textContent=`EP32 BF16 training delivers ${f(rate(bf)/1000)} PFLOP/s per GPU (${f(percent(bf),1)}% of dense theory) through the complete forward/backward path. MXFP8 Staged delivers ${f(rate(st)/1000)} PFLOP/s. Its larger arithmetic peak leaves communication and the other layer costs in place, so read iteration time and useful throughput together.`;
-    $('result-skew-story').textContent=`At EP16 with NVFP4, 8× skew gives the busiest rank ${V.num(Math.max(...hot.receiveRows))} rows. Its derived useful rate grows ${f(busy(balancedNV)/1000,2)} → ${f(busy(hot)/1000,2)} PFLOP/s, and maximum TX reaches ${f(hot.nvlinkMaxTXGBps,0)} GB/s. Dist-MoE continues to process the concentrated work; the cluster average falls because the router leaves other GPUs with less work.`;
-    $('result-width-story').textContent=`Quadrupling F in the EP16 NVFP4 sweep gives four times the GEMM work for ${f(large.layerMS/small.layerMS,2)}× the iteration time (${f(small.layerMS)} → ${f(large.layerMS)} ms). Useful throughput reaches ${f(rate(large)/1000)} PFLOP/s per GPU, and speedup over the corresponding BF16 controls rises ${f(row(16,'bf16:standard','width',1536).layerMS/small.layerMS,2)}× → ${f(row(16,'bf16:standard','width',6144).layerMS/large.layerMS,2)}×. The wider experts amortize more compute over the same routed activation payload.`;
-
-  }
   /** Explain effective bandwidth using the cached byte model and timing. */
   function metricsExample(){if(!$('metrics-worked-example')||!meta.metricsExample)return;const e=meta.metricsExample,r=D.cases.find(r=>r.id===e.caseID),bandwidth=e.trainingModelBytes/r.layerMS/1e6;
     $('metrics-worked-example').innerHTML=`<p>EP64, balanced MXFP8 Mega training. The forward model counts ${V.num(e.forwardModelBytes)} logical bytes per GPU. Combined training uses 3× that amount: ${V.num(e.trainingModelBytes)} bytes. Dividing by the ${f(r.layerMS,6)} ms maximum-rank median gives <strong>${f(bandwidth,1)} GB/s effective HBM byte rate</strong>. This is calculated from the model and timer, not measured DRAM traffic.</p>`+table(['Forward byte-model component','Logical bytes'],Object.entries(e.forwardByteBuckets).map(([key,value])=>[({inputs:'Input rows',routed_activations:'Routed activations',routed_weights:'Local routed weights + scales',routing_scores:'Routing scores',shared_work:'Shared-expert work'})[key],V.num(value)]))+`<p>For comparison, the separate rank-0 NVLink TX counter reports ${f(e.rank0TXMiBs,1)} MiB/s = ${f(e.rank0TXMiBs*2**20/1e9,1)} GB/s. The figures report rank means and maxima, so their values can differ from this rank-0 example.</p>`;
   }
-  narrative();metricsExample();window.ResultsApp={data:D,row,work,rate,percent,busy,range,sample,scope,reset};
+  metricsExample();window.ResultsApp={data:D,row,work,rate,percent,busy,range,sample,scope,reset};
 })();

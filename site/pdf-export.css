@@ -14,9 +14,12 @@
 .deck-print-sheet>.deck-canvas{position:absolute;left:0!important;top:0!important;transform:scale(.6666666667)!important;transform-origin:top left;border:0}
 .deck-print .deck-slide-footer{flex-wrap:nowrap}
 .deck-print .deck-page{white-space:nowrap}
-.deck-print *, .deck-print-mode{print-color-adjust:exact;-webkit-print-color-adjust:exact}
+.deck-print *,.deck-print-mode{print-color-adjust:exact;-webkit-print-color-adjust:exact}
 .deck-print *{animation:none!important;transition:none!important}
-@media(max-width:750px){.deck-tools{justify-content:flex-start;overflow-x:auto;scrollbar-width:none}.deck-toolbar .deck-tools button{flex:none}}
+@media(max-width:750px){
+  .deck-tools{justify-content:flex-start;overflow-x:auto;scrollbar-width:none}
+  .deck-toolbar .deck-tools button{flex:none}
+}
 @page dist-moe-slides{size:20in 11.25in;margin:0}
 @media print{
   html.deck-print-mode,html.deck-print-mode body{margin:0;padding:0;overflow:visible;height:auto;scroll-padding:0}

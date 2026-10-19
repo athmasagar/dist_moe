@@ -16,7 +16,7 @@ blog informs its visual language; all figures were drawn for this guide.
 | 04B · Retention and offsets | [Device planner](https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/_activation_buffer_planner_kernel.py) | Exact forward-view offsets for T=2, D=F=256, K=2, E=4, EP=2, three slots, one layer/slot. Save uses balanced full-save capacity; recompute uses minimum input capacity. |
 | 05 · GPU tiles | [BF16 kernel design](https://github.com/meta-pytorch/dist_moe/blob/main/docs/bf16_kernel_design.md) | Complete width-D row gathering, followed by TMA selection of A[B<sub>M</sub>,B<sub>K</sub>], B[B<sub>K</sub>,B<sub>N</sub>], and accumulation of C[B<sub>M</sub>,B<sub>N</sub>], memory residency, gather completion, TMA/MMA/epilogue handoffs, and predicated tails. Geometry is a logical shape sketch, not a lane-layout diagram. |
 | 06 · Resident warp roles and chunk readiness | [MXFP8 design](https://github.com/meta-pytorch/dist_moe/blob/main/docs/mxfp8_kernel_design.md#mega-forward), [chunked launch](https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/kernels/chunked_mega_blockscaled_grouped_gemm.py), [CTA topology](https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/kernels/chunked_mega_blockscaled_grouped_gemm_kernel.py), and [warp work loops](https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/kernels/gemm_warp_roles.py) | Fixed roles coexist in each resident CTA and process multiple W13/W2 work records. The narrow non-interleaved MXFP8 topology has 16 warps/512 threads; the wide non-interleaved topology has 20/640. Readiness snapshots depict dependencies, with no measured warp-issue timing or occupancy. |
-| 07 · Lifetimes and later slot reuse | [Pipeline slots](https://github.com/meta-pytorch/dist_moe/blob/main/docs/pipeline_activation_slots.md) | Exact documented first nine local actions, continued into a complete teaching schedule. Liveness is computed before coloring, with one interval per stage–microbatch pair or whole microbatch. Counts are measured after each action; the full trace peaks at 6 pairs and 4 microbatches (the documented prefix peaks at 5 and 4). The first view has no physical assignments. The second uses a simple schedule timeline with one row per physical slot, colored owner intervals, and the selected slot’s address. Coloring uses half-open intervals ending after terminal backward. Capacity calculations are expandable. The continuation omits distributed communication and is not a prescribed full PP schedule. |
+| 07 · Lifetimes and later slot reuse | [Pipeline slots](https://github.com/meta-pytorch/dist_moe/blob/main/docs/pipeline_activation_slots.md) | Exact documented first nine local actions, continued into a complete teaching schedule. Liveness is computed before coloring, with one interval per stage–microbatch pair or whole microbatch. Counts are measured after each action; the full trace peaks at 6 pairs and 4 microbatches (the documented prefix peaks at 5 and 4). Live counts come from unassigned lifetimes; the first view uses illustrative interval coloring to compare the two ownership policies. The second applies that coloring to physical-slot rows and shows the selected slot’s address. Coloring uses half-open intervals ending after terminal backward. Capacity calculations are expandable. The continuation omits distributed communication and is not a prescribed full PP schedule. |
 | API/code | [README](https://github.com/meta-pytorch/dist_moe), [MXFP8 guide](https://github.com/meta-pytorch/dist_moe/blob/main/docs/mxfp8_execution.md) | Complete BF16 and MXFP8 teaching programs adapted from the public README and execution guide, with one example selector. The Figure 03 option generates only planning code. The displayed explain() stdout is source-validated. |
 
 ## Important distinctions
@@ -67,7 +67,7 @@ this is validation of the educational page, not GPU correctness or performance.
 
 ## OSS capability comparison
 
-The motivation table is shared by the article and presentation slide 3. Its
+The motivation table is shared by the article and motivation slide. Its
 source-evidence fold links to the reviewed public snapshots: Dist-MoE
 `60ce816`, MoK `f3a8bd2`, Comet/Flux `19831ca`, and Mega MoE/DeepGEMM `1fc9c66`.
 It records CUDA graph compatibility for MoK and Mega MoE, scopes
@@ -110,13 +110,13 @@ through Full diagram, and detailed source explanations populate speaker notes.
 
 The setup figure illustrates one token selecting two of four expert MLPs. It
 separates token data from the router’s expert IDs and combine scores. The
-canonical Key ideas section supplies static slide takeaways; stepped slides
-derive their changing summaries from the shared figure captions. The complete
+article’s headings and introductory prose supply static slide titles and takeaways;
+stepped slides derive their changing summaries from the shared figure captions. The complete
 layer-packing figure follows all nine calls in one slide, showing saved state,
 recompute decisions, planner offsets, and backward releases together. The
 28 KiB default saves L2 and retains only L3's replay input. Article and slides
 use the same source-derived planner records.
-Pipeline liveness checkpoints select 0F0, 2B0, 0F4, 0B7 to show acquisition,
+Pipeline liveness steps select 0F0, 2B0, 0F4, 0B7 to show acquisition,
 individual-stage release, the whole-trace peak, and final completion. The next
 slide selects 2F0, 2B0, 0F3 to show a physical slot’s acquisition, release, and
 next owner. Both views use the same schedule and source-derived lifetime rules.
@@ -148,7 +148,7 @@ case descriptors. Article plots, tables, prose, and slides share
   These are theoretical datasheet peaks, not benchmarked ceilings.
 - NVLink TX/RX come from a separate hardware-counter collection of at least
   one second, converted to decimal GB/s. HBM is modeled useful bytes over
-  latency; training uses the report's coarse 3× forward byte model. It cannot
+  iteration time; training uses the report's coarse 3× forward byte model. It cannot
   establish actual DRAM utilization or communication/compute overlap.
 - EP32 and EP64 training use different sites. Some allocations shared a
   fabric and overlapped in lifetime; actual timing-window overlap is unknown.

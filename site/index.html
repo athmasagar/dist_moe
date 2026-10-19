@@ -8,10 +8,10 @@
   <meta name="copyright" content="Meta Platforms, Inc. and affiliates.">
   <title>Dist-MoE · Speed-of-light distributed expert kernels</title>
   <script>if(new URLSearchParams(location.search).get('view')==='print'){document.documentElement.classList.add('deck-print-mode');document.querySelector('meta[name="viewport"]').content='width=1440';}</script>
-  <link rel="stylesheet" href="assets/katex/katex.css"><link rel="stylesheet" href="styles.css?v=api-v7"><link rel="stylesheet" href="results.css"><link rel="stylesheet" href="comparison.css">
-<link rel="stylesheet" href="presentation.css?v=api-v7"><link rel="stylesheet" href="pdf-export.css">
+  <link rel="stylesheet" href="assets/katex/katex.css"><link rel="stylesheet" href="styles.css?v=article-audit-20261018"><link rel="stylesheet" href="results.css?v=article-audit-20261018"><link rel="stylesheet" href="comparison.css?v=article-audit-20261018">
+<link rel="stylesheet" href="presentation.css?v=article-audit-20261018"><link rel="stylesheet" href="pdf-export.css?v=article-audit-20261018">
   <script src="assets/katex/katex.js" defer></script>
-  <script src="models.js?v=api-v7" defer></script><script src="diagrams.js" defer></script><script src="examples.js?v=api-v7" defer></script><script src="article-layout.js" defer></script><script src="app.js?v=api-v7" defer></script><script src="results-data.js" defer></script><script src="results.js" defer></script><script src="comparison-data.js" defer></script><script src="comparison.js" defer></script><script src="presentation.js?v=api-v7" defer></script><script src="pdf-export.js" defer></script>
+  <script src="models.js?v=article-audit-20261018" defer></script><script src="diagrams.js?v=article-audit-20261018" defer></script><script src="examples.js?v=article-audit-20261018" defer></script><script src="article-layout.js?v=article-audit-20261018" defer></script><script src="app.js?v=article-audit-20261018" defer></script><script src="results-data.js?v=article-audit-20261018" defer></script><script src="results.js?v=article-audit-20261018" defer></script><script src="comparison-data.js?v=article-audit-20261018" defer></script><script src="comparison.js?v=article-audit-20261018" defer></script><script src="presentation.js?v=article-audit-20261018" defer></script><script src="pdf-export.js?v=article-audit-20261018" defer></script>
 </head>
 <body>
 <a class="skip" href="#content">Skip to the article</a>
@@ -26,19 +26,30 @@
   <div class="article-meta"><span>SM100 and newer GPUs</span><span>BF16 · MXFP8 · NVFP4</span><span><i class="status-dot"></i> Interactive figures · step through and inspect</span></div>
   <div class="moe-primer" id="moe-primer">
     <h2>A token activates a few experts, then combines their outputs</h2>
-    <p>A Mixture-of-Experts (MoE) layer contains several expert networks, usually MLPs. For each token, a router selects a few experts and assigns their scores. The selected experts run, and their weighted outputs are summed into one output row.</p>
+    <p data-slide-summary="moe">A Mixture-of-Experts (MoE) layer contains several expert MLPs. A router selects a few for each token and assigns their scores. Only those experts run; their weighted outputs form one output row.</p>
     <figure class="interactive" id="moe-figure">
       <div class="figure-top"><div><span class="fig-number">SETUP</span><h3>A router selects experts for each token</h3></div><button class="expand" aria-label="Expand the MoE setup">Expand ⤢</button></div>
       <div class="diagram-scroll"><svg id="moe-svg" viewBox="0 0 1040 440" role="img" aria-label="One token, a router selecting two of four expert MLPs, and weighted combine"></svg></div>
-      <div class="equation setup-equation"><p data-math-source="expert"></p></div>
       <figcaption>One-token illustration with top-2 routing and four experts. Blue paths carry the token, purple paths carry routing metadata, and green paths carry expert results. The router is supplied by the caller; Dist-MoE implements the distributed expert operation.</figcaption>
     </figure>
-    <p>Expert parallelism places experts on different GPUs. A remote expert reads the token from its owner and returns its result there. Training also keeps the forward values needed by backward; their sizes depend on how tokens are routed.</p>
+    <p>Expert parallelism (EP) places experts on GPU ranks; this guide uses one GPU per rank. A remote expert reads a token from its owner and returns the result there. Training retains the forward values needed by backward.</p>
   </div>
+  <p class="notation-key">Notation: <b>T</b> input tokens per GPU, <b>D</b> token width, <b>F</b> expert intermediate width, <b>K</b> experts selected per token, <b>E</b> global experts, and <b>EP</b> GPUs in the expert-parallel group. <b>R</b> is the routed-row count received by the current GPU.</p>
+  <p>The overview follows one BF16 row across GPU memory and compute: dispatch, expert execution, then combine. Expert weights stay on their owning GPU; Section 01 will explain how routing metadata selects the addresses.</p>
+  <p class="diagram-key"><strong>Reading the diagrams.</strong> HBM is the GPU’s main memory; SMEM is on-chip shared memory; TMEM is Blackwell tensor memory for accumulators. TMA (Tensor Memory Accelerator) stages operand tiles, and MMA is matrix multiply–accumulate. Symmetric dispatch and combine buffers are both peer-addressable device HBM.</p>
+  <figure class="interactive hero-figure" id="overview-figure">
+    <div class="figure-top"><div><span class="fig-number">OVERVIEW</span><h3>Peer HBM feeds local tensor cores; combine returns the result</h3></div><button class="expand" aria-label="Expand the complete data path">Expand ⤢</button></div>
+    <div class="figure-controls"><span class="legend"><i class="blue"></i>Data movement <i class="orange"></i>Compute <i class="green"></i>HBM storage <i class="purple"></i>Synchronization</span><span class="micro-label">Next step follows one labeled handoff</span></div>
+    <div class="diagram-scroll"><svg id="overview-svg" viewBox="0 0 1040 710" role="img" aria-label="Remote symmetric HBM to NVLink to local HBM to tensor cores and back to remote combine buffers"></svg></div>
+    <div class="transport" data-controller="overview"><button class="previous" aria-label="Previous phase">←</button><label class="scrub-label">Phase <input class="scrub" type="range" min="0" max="8" value="0"></label><button class="next" aria-label="Next phase">Next step →</button><output class="phase-count">1 / 9</output></div>
+    <div class="flow-payloads" id="overview-payloads" aria-live="polite"></div>
+    <div class="phase-caption" id="overview-caption" aria-live="polite"></div>
+    <figcaption>BF16 forward on an expert owner and its peers. W13 and W2 use the same local memory hierarchy. Steps show data residency and dependency order; moving dots indicate the selected transfer. <a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/bf16_execution.md#forward">Execution guide ↗</a></figcaption>
+  </figure>
   <div class="motivation" id="motivation" data-title="Motivation">
     <h2>Fused kernels need a plan for the activations they leave behind</h2>
-    <p id="motivation-setup">Routing changes both the work assigned to each GPU and the activation memory needed for backward.</p>
-    <p>A reusable <strong>context</strong> owns peer buffers, activation slots, and shared scratch. Layers pack saved values into a slot. If full state would exceed its budget, a layer keeps its input and rebuilds the intermediates in backward. The planner makes that choice on the GPU, including during CUDA graph replay.</p>
+    <p id="motivation-setup" data-slide-summary="capabilities">Routing changes both GPU work and saved-state sizes. Dist-MoE combines fused expert execution with a shared activation budget and GPU-side recompute.</p>
+    <p>A reusable <strong>context</strong> owns peer buffers and an activation buffer. Its <strong>slots</strong> retain values until backward; <strong>scratch</strong> holds temporary values reused between calls. Layers pack eligible saved state into a slot. If the budget is exhausted, the planner keeps the input and rebuilds the remaining state in backward, including during CUDA graph replay.</p>
     <figure class="interactive capability-figure" id="capability-figure">
       <div class="figure-top"><div><span class="fig-number">MOTIVATION</span><h3>Fused execution and a shared activation budget in one API</h3></div></div>
       <div class="table-scroll" id="capability-table">
@@ -68,22 +79,22 @@
         </ul></details>
       </figcaption>
     </figure>
-    <p>MoK’s current API requires a shared-expert branch. Dist-MoE also runs without one. For the throughput comparison below, both execute <strong>one BF16 shared expert alongside the six routed experts</strong>, with the same shapes, routing, and CUDA runtime.</p>
+    <p>MoK’s reviewed API requires a shared-expert branch; Dist-MoE supports routed-only execution. To compare the same work, the measurements below include <strong>one BF16 shared expert alongside six routed experts in both implementations</strong>.</p>
     <div id="mok-comparison" class="measured-comparison" data-title="Dist-MoE versus MoK">
       <h2>Dist-MoE reaches 1.40× speedup over MoK in packed multi-layer training</h2>
       <p id="comparison-intro"></p>
       <p class="cmp-method">GB300 · CUDA 13.0 · 2,048 input tokens per GPU · D = 7,168 · 384 experts · top-6 + one BF16 shared expert. Both implementations use CUDA graphs.</p>
-      <p class="cmp-method"><strong>Iteration time</strong> covers forward in inference and forward + backward in training. The packing workload runs ten layer forwards followed by their backwards. A 1.22× speedup over MoK means MoK’s iteration takes 1.22 times as long. Speedup = MoK iteration time ÷ Dist-MoE iteration time.</p>
+      <p class="cmp-method"><strong>Iteration time</strong> covers forward in inference and forward + backward in training. The packing workload runs ten layer forwards followed by their backwards. <strong>Speedup over MoK = MoK iteration time ÷ Dist-MoE iteration time.</strong> A 1.22× speedup means MoK takes 1.22 times as long.</p>
 
       <p class="cmp-method" id="comparison-metric-context"><strong>Read the rates alongside time.</strong> Useful TFLOP/s counts the GEMM work completed per GPU, excluding padding and replay. HBM model is logical bytes divided by iteration time. NVLink TX/RX is measured separately using NVML GPM and averaged across GPUs. Higher NVLink byte rates alone do not establish better performance.</p>
 
       <h3>Spare capacity in light layers keeps hot layers from recomputing</h3>
-      <p>The same GPU can have a light workload in one layer and a heavy workload in another. MoK assigns a separate saved-state budget to each layer. Dist-MoE shares one activation slot across the layers, so spare capacity from lighter layers can support heavier layers.</p>
+      <p data-slide-summary="comparison-policy">A GPU can be lightly loaded in one layer and heavily loaded in the next. Dist-MoE shares saved-state capacity across those layers; MoK reserves a separate budget for each.</p>
       <figure class="interactive comparison-figure" id="compare-policy-figure">
         <div class="figure-top"><div><span class="fig-number">COMPARISON · SAVED STATE</span><h3>One shared slot saves the layers that per-layer budgets partly replay</h3></div><button class="expand" aria-label="Expand the saved-state comparison">Expand ⤢</button></div>
         <div class="config-summary" id="compare-policy-config">One GPU · ten layers · EP32/64 training · BF16/MXFP8 · normalized units (1 = balanced layer)</div>
         <div class="comparison-view diagram-scroll cmp-policy-view" id="compare-policy-view"></div>
-        <figcaption>Widths and fills illustrate normalized layer demand: one unit is a balanced layer. MoK’s lighter slots keep spare capacity while hot layers exceed their separate limits. Dist-MoE packs the ten layer demands into one illustrated 25-unit pool. Physical byte allocations also include fixed input state, precision-specific formats, and padding. MoK’s partial-retention pattern follows its native policy; Dist-MoE records zero capacity-induced recompute.</figcaption>
+        <figcaption>Normalized layer-demand illustration. Physical byte budgets also include mandatory inputs, precision formats, and padding. MoK’s partial retention follows its native policy; Dist-MoE’s zero capacity-induced recompute flags were recorded.</figcaption>
       </figure>
 
       <figure class="interactive comparison-figure" id="compare-packing-figure">
@@ -97,12 +108,11 @@
         <div class="phase-caption" id="compare-packing-caption"></div>
         <figcaption>Each column pair compares the same ten-layer workload and precision. Useful throughput counts all ten layers; peak allocation includes weights, scratch, and graph state. The faster measured Dist-MoE pipeline is used for each case. Both pipelines and the capacity measurements are available in the downloads.</figcaption>
       </figure>
-      <p id="comparison-packing-story"></p>
 
-      <h3>Dist-MoE keeps its speedup as imbalance grows to 8× the balanced load</h3>
-      <p>Each EP panel shows how iteration time grows with imbalance. Paired columns compare Dist-MoE and MoK at the same load; the tables show the useful compute and byte rates achieved during each workload.</p>
+      <h3>Dist-MoE stays faster when one GPU receives 8× the balanced load</h3>
+      <p>Balanced routing gives each GPU R = TK rows on average. An imbalance factor of 8 gives the tracked GPU eight times that load while the others divide the remaining rows. Each column pair compares the same workload.</p>
       <figure class="interactive comparison-figure" id="compare-scaling-figure">
-        <div class="figure-top"><div><span class="fig-number">COMPARISON · IMBALANCE</span><h3>The speedup holds as imbalance grows from 1× to 8×</h3></div><button class="expand" aria-label="Expand the imbalance results">Expand ⤢</button></div>
+        <div class="figure-top"><div><span class="fig-number">COMPARISON · IMBALANCE</span><h3>Compare iteration time and throughput at 1×, 4×, and 8× imbalance</h3></div><button class="expand" aria-label="Expand the imbalance results">Expand ⤢</button></div>
         <div class="config-summary" id="compare-scaling-config">One layer · imbalance factors 1×, 4×, and 8× · F = 3,072</div>
         <div class="cmp-ep-legend" id="compare-scaling-legend"></div>
         <div class="comparison-view diagram-scroll cmp-results-view cmp-scaling-view" id="compare-scaling-view"></div>
@@ -116,7 +126,7 @@
       <h3>Wider experts preserve the speedup while adding more compute per byte</h3>
       <p>Increasing F adds expert compute while keeping the input/output payload fixed. Dist-MoE has a shorter iteration time in all twelve measured width settings.</p>
       <figure class="interactive comparison-figure" id="compare-width-figure">
-        <div class="figure-top"><div><span class="fig-number">COMPARISON · WIDTH</span><h3>Dist-MoE shortens iteration time at every measured expert width</h3></div><button class="expand" aria-label="Expand the expert-width results">Expand ⤢</button></div>
+        <div class="figure-top"><div><span class="fig-number">COMPARISON · WIDTH</span><h3>More expert work per token preserves Dist-MoE’s speedup</h3></div><button class="expand" aria-label="Expand the expert-width results">Expand ⤢</button></div>
         <div class="config-summary" id="compare-width-config">One layer · balanced workload · F = 1,536 / 3,072 / 6,144</div>
         <div class="cmp-ep-legend" id="compare-width-legend"></div>
         <div class="comparison-view diagram-scroll cmp-results-view cmp-width-view" id="compare-width-view"></div>
@@ -134,30 +144,18 @@
         <p>Total allocated GPU memory includes weights, scratch, and graph state. In EP64 MXFP8 packing, it peaks at 49.73 GiB for Dist-MoE and 48.37 GiB for MoK. Saved-state capacity flexibility and total allocation are reported separately.</p>
         <p class="cmp-downloads"><a href="data/mok-comparison.csv" download>All timings and metrics · CSV ↓</a><a href="data/mok-comparison-pairs.csv" download>All Dist-MoE pipeline comparisons · CSV ↓</a><a href="data/mok-comparison.json" download>Measurements and saved-state evidence · JSON ↓</a><a href="data/mok-comparison-methodology.md">Measurement definitions ↗</a></p>
       </details>
-      <p class="bridge">The next sections explain the execution path and the shared activation-slot planner behind these results.</p>
+      <p class="bridge">We have seen the measured benefit. Next, follow the route pointers, derive the memory budget, and inspect the tile handoffs that implement it.</p>
     </div>
   </div>
-  <p>Follow a BF16 row from its owner’s dispatch buffer, across NVLink, through expert-local HBM and tensor cores, and back to the owner’s combine buffer. Expert weights remain local.</p>
-  <p class="diagram-key"><strong>Reading the diagrams.</strong> HBM is the GPU’s main memory; SMEM is on-chip shared memory; TMEM is Blackwell tensor memory for accumulators. TMA (Tensor Memory Accelerator) stages operand tiles, and MMA is matrix multiply–accumulate. Symmetric dispatch and combine buffers are both peer-addressable device HBM.</p>
-  <figure class="interactive hero-figure" id="overview-figure">
-    <div class="figure-top"><div><span class="fig-number">OVERVIEW</span><h3>Peer HBM feeds local tensor cores; combine returns the result</h3></div><button class="expand" aria-label="Expand the complete data path">Expand ⤢</button></div>
-    <div class="figure-controls"><span class="legend"><i class="blue"></i>Data movement <i class="orange"></i>Compute <i class="green"></i>HBM storage <i class="purple"></i>Synchronization</span><span class="micro-label">Next step follows one labeled handoff</span></div>
-    <div class="diagram-scroll"><svg id="overview-svg" viewBox="0 0 1040 710" role="img" aria-label="Remote symmetric HBM to NVLink to local HBM to tensor cores and back to remote combine buffers"></svg></div>
-    <div class="transport" data-controller="overview"><button class="previous" aria-label="Previous phase">←</button><label class="scrub-label">Phase <input class="scrub" type="range" min="0" max="8" value="0"></label><button class="next" aria-label="Next phase">Next step →</button><output class="phase-count">1 / 9</output></div>
-    <div class="flow-payloads" id="overview-payloads" aria-live="polite"></div>
-    <div class="phase-caption" id="overview-caption" aria-live="polite"></div>
-    <figcaption>BF16 forward, focusing on an expert owner and its peers. The same local SMEM/TMEM pipeline serves both W13 and W2. Steps show dependencies and data residency. Packet motion illustrates each selected handoff, not measured iteration time. <a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/bf16_execution.md#forward">Execution guide ↗</a></figcaption>
-  </figure>
-  <p>The kernels connect communication and compute through tile handoffs: gather produces local operands, tensor cores consume them, and the epilogue scatters results to their owners.</p>
   <div class="reading-map"><span class="small-label">FROM ASSIGNMENTS TO AN EXECUTION PLAN</span><a href="#tokens">01 · Routing metadata and symmetric buffers</a><a href="#precision">02 · Expert values and precision</a><a href="#memory">03 · Layer costs, allocation, and VMM</a><a href="#recompute">04 · Layer packing and recompute</a><a href="#kernels">05 · Tiles and warp groups</a><a href="#slots">06 · Pipeline slot reuse</a><a href="#results">07 · Measured performance</a><a href="#start">08 · Public API</a></div>
 
 <section id="tokens" data-title="Follow the tokens">
     <h2><span>01</span> Routing metadata gives every token its gather and return addresses</h2>
     <p>The running example uses two GPU ranks. Rank 0 owns E0/E1 and starts with A/B; rank 1 owns E2/E3 and starts with C/D. Every token selects two experts. The caller supplies the IDs and scores.</p>
-    <p>T counts local input tokens, K counts selected routes per token, D is hidden width, and F is expert intermediate width. R counts the expert-major rows received by a rank. Here T = 2, K = 2, D = F = 256, and balanced R = 4.</p>
+    <p>Here T = 2, K = 2, D = F = 256, and balanced R = TK = 4. Figure 01 adds the routing metadata and byte addresses behind the overview’s transfers.</p>
     <figure class="interactive" id="token-figure">
       <div class="figure-top"><div><span class="fig-number">FIG. 01</span><h3>One routing decision selects the expert row and the return slot</h3></div><button class="expand" aria-label="Expand the four-token example">Expand ⤢</button></div>
-      <div class="figure-controls"><div class="segmented" id="token-select" aria-label="Token to follow"><span>Follow</span><button data-token="all" aria-pressed="false" hidden>Legacy all</button><button data-token="A" aria-pressed="false">A</button><button data-token="B" aria-pressed="false">B</button><button data-token="C" aria-pressed="true">C</button><button data-token="D" aria-pressed="false">D</button></div><span class="micro-label">T = 2 per rank · K = 2 · D = F = 256</span></div>
+      <div class="figure-controls"><div class="segmented" id="token-select" aria-label="Token to follow"><span>Follow</span><button data-token="A" aria-pressed="false">A</button><button data-token="B" aria-pressed="false">B</button><button data-token="C" aria-pressed="true">C</button><button data-token="D" aria-pressed="false">D</button></div><span class="micro-label">T = 2 per rank · K = 2 · D = F = 256</span></div>
       <div class="phase-tabs" id="token-tabs" aria-label="Forward phases"></div>
       <div class="config-summary" id="token-config"></div><div class="diagram-scroll"><svg id="token-svg" class="routing-visual" viewBox="0 0 1120 740" role="img" aria-label="Symmetric peer-base rendezvous, routing publication and exchange, pointer construction, dispatch gather, combine scatter, and owner reduction"></svg></div>
       <div class="transport" data-controller="tokens"><button class="previous" aria-label="Previous token phase">←</button><label class="scrub-label">Phase <input class="scrub" type="range" min="0" max="6" value="0"></label><button class="next" aria-label="Next token phase">Next step →</button><output class="phase-count">1 / 7</output></div>
@@ -166,11 +164,11 @@
       <figcaption>The seven steps distinguish one-time peer mapping, per-call routing metadata, and activation payload movement. The route assignment is the <a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/bf16_execution.md#running-example">documented example</a>; scores and displayed output components are illustrative. Mathematical sums precede BF16 rounding.</figcaption>
     </figure>
     <h3>Map peer buffers once; build token pointers for every call</h3>
-    <p>Context creation allocates and rendezvouses three symmetric HBM buffers: routing, dispatch, and combine. Each rank keeps GPU <code>int64</code> arrays of their peer bases. These virtual addresses let a kernel read or write another GPU’s physical HBM.</p>
+    <p>Context creation allocates routing, dispatch, and combine buffers in symmetric HBM and exchanges their peer bases. Each rank keeps GPU <code>int64</code> arrays of their peer bases. These virtual addresses let a kernel read or write another GPU’s physical HBM.</p>
     <p><code>copy_routing_and_dispatch()</code> writes an <code>int32</code> token count into the 128-byte routing header, followed by <code>int16 [T,K]</code> expert IDs. It copies <code>x[T,D]</code> once into dispatch and leaves scores local. Dispatch has <code>[T_max,K,D]</code> capacity because backward needs a separate gradient row for each route.</p>
-    <h3>Exchange expert IDs before moving the token payload</h3>
+    <h3>Exchange IDs and build pointers before expert gather</h3>
     <p>After the publication barrier, GPU kernels read every rank’s IDs, check matching physical T, count local expert rows, and build their expert-major pointer order. IDs are gathered into local <code>[EP,T,K]</code> HBM. Counts and pointers remain on the GPU.</p>
-    <div class="table-scroll routing-pointer-reference"><table><caption>For route (owner r, token t, top-k slot k), σ is the payload row stride in bytes. In this BF16 example, σ = D × 2 = 512 B.</caption><thead><tr><th>Locally constructed table</th><th>Peer address</th><th>Consumer</th></tr></thead><tbody><tr><td><code>fwd_gather_ptrs</code></td><td><code>dispatch_base[r] + t × σ</code></td><td>Expert kernel reads the original source row</td></tr><tr><td><code>scatter_ptrs</code></td><td><code>combine_base[r] + (t × K + k) × σ</code></td><td>W2 epilogue writes the result to its return slot</td></tr><tr><td><code>bwd_gather_ptrs</code></td><td><code>dispatch_base[r] + (t × K + k) × σ</code></td><td>W13 DGRAD returns route input gradients; the owner reduces K rows</td></tr></tbody></table></div>
+    <div class="table-scroll routing-pointer-reference"><table><caption>For route (owner r, token t, top-k slot k), σ is the payload row stride in bytes. In this BF16 example, σ = D × 2 = 512 B.</caption><thead><tr><th>Locally constructed table</th><th>Peer address</th><th>Consumer</th></tr></thead><tbody><tr><td><code>fwd_gather_ptrs</code></td><td><code>dispatch_base[r] + t × σ</code></td><td>Expert kernel reads the original source row</td></tr><tr><td><code>scatter_ptrs</code></td><td><code>combine_base[r] + (t × K + k) × σ</code></td><td>W2 epilogue writes the result to its return slot</td></tr><tr><td><code>bwd_gather_ptrs</code></td><td><code>dispatch_base[r] + (t × K + k) × σ</code></td><td>W13 returns route input gradients; the owner reduces K rows</td></tr></tbody></table></div>
     <p>For E0(C), the source pointer is rank 1’s dispatch base + 0 B. The result pointer is its combine base + 512 B: C’s original k1 slot. Both addresses are built locally from the peer base and route indices.</p>
     <details class="technical-fold"><summary>Padding, decode, and backward routing</summary><p>Block-scaled execution pads each expert to its required row multiple. Initialized padding pointers are zero: gathers produce zero rows and scatters skip them. Small-decode kernels fuse the metadata passes. Inference omits backward pointers. Training retains routing state; combine carries route output gradients for W2 DGRAD, and dispatch receives route input gradients for owner-side reduction.</p></details>
     <h3>Gather into experts; scatter and reduce back at token owners</h3>
@@ -181,24 +179,24 @@
 
 <section id="precision" data-title="Quantization and intermediate precision">
     <h2><span>02</span> Quantization saves operand bytes; backward needs a different axis</h2>
-    <p>W13 produces gate/up values <strong>h1</strong> of width 2F. SwiGLU combines them into <strong>h2</strong> of width F, and W2 produces <strong>h3</strong> of width D. These names will be used throughout the guide.</p>
+    <p>W13 concatenates the gate and up projections into h1, of width 2F. SwiGLU forms h2, of width F; W2 maps it back to h3, of width D. The equation below fixes the notation used by later memory and kernel figures.</p>
     <div class="equation"><span class="small-label">EACH SELECTED EXPERT · COLUMN-VECTOR MATH</span><p data-tex="h_1=W_{13}x=[g;u]\;\longrightarrow\;h_2=\operatorname{SiLU}(g)\odot u\;\longrightarrow\;h_3=W_2h_2">h<sub>1</sub> = W<sub>13</sub> x = [g; u] <b>→</b> h<sub>2</sub> = SiLU(g) ⊙ u <b>→</b> h<sub>3</sub> = W<sub>2</sub> h<sub>2</sub></p><small>g and u are the gate and up projections. SiLU(z) = z × sigmoid(z); ⊙ is elementwise multiplication.</small></div>
     <p>BF16 uses two bytes per value. E4M3 has four exponent bits and three fraction bits; its maximum finite magnitude is 448. E8M0 encodes a power-of-two scale in one byte. E2M1 fits a sign, two exponent bits, and one fraction bit into four bits.</p>
-    <p>MXFP8 stores quantized values (<strong>qdata</strong>) in E4M3, with one E8M0 scale per 32 logical values. NVFP4 packs two E2M1 values per byte and uses E4M3 block scales plus global scales. A producer chooses the scale, rounds the values, and publishes data and scales together. Add the outlier below to see how a shared scale can make a small value underflow.</p>
+    <p><span>MXFP8 stores quantized values (<strong>qdata</strong>) in E4M3, with one E8M0 scale per 32 logical values. The shared scale controls the rounding of every value in that block.</span> NVFP4 packs two E2M1 values per byte and uses E4M3 block scales plus global scales. A producer chooses the scale, rounds the values, and publishes data and scales together. Add the outlier below to see how a shared scale can make a small value underflow.</p>
     <figure class="interactive" id="precision-figure">
       <div class="figure-top"><div><span class="fig-number">FIG. 02</span><h3>Quantization saves operand bytes and changes representable values</h3></div><button class="expand" aria-label="Expand quantization and precision inspection">Expand ⤢</button></div>
       <div class="figure-controls"><div class="segmented" id="format-select" aria-label="Compute format"><button data-format="bf16" aria-pressed="false">BF16</button><button data-format="mxfp8" aria-pressed="true">MXFP8 training</button><button data-format="nvfp4" aria-pressed="false">NVFP4 inference</button></div><label class="switch"><input id="quant-outlier" type="checkbox"><span>Add a 512 outlier</span></label><label>Row width <select id="row-width"><option value="256">256</option><option value="1024">1,024</option><option value="4096" selected>4,096</option></select></label></div>
       <div class="diagram-scroll"><svg id="precision-svg" viewBox="0 0 1040 470" role="group" aria-label="Quantization scale calculation, input values, qdata bytes, and decoded values; select a qdata byte"></svg></div>
-      <div class="address-card" id="quant-detail" aria-live="polite"></div>
+      <div class="address-card quant-detail" id="quant-detail" aria-live="polite"></div>
       <div class="metric-grid" id="precision-stats"></div>
       <h4 class="inside-heading">Every forward and backward intermediate keeps an explicit format</h4>
       <div class="figure-controls"><div class="segmented" id="precision-direction" aria-label="Pass to inspect"><button data-direction="forward" aria-pressed="true">Forward</button><button data-direction="backward" aria-pressed="false">Backward</button></div><span class="micro-label">Plain SwiGLU and score reduction</span></div>
-      <p class="inside-note">The prefix <code>grad_</code> names a gradient: grad_h1 is the gradient of h1. DGRAD computes input gradients; WGRAD computes expert-weight gradients. This table is the article’s precision reference.</p>
+      <p class="inside-note"><span data-slide-summary="precision">Operand precision, accumulation precision, and stored precision have different roles. Tensor cores accumulate in FP32; the table identifies each stored format.</span> The prefix <code>grad_</code> names a gradient: grad_h1 is the gradient of h1. DGRAD computes input gradients; WGRAD computes expert-weight gradients. This table is the article’s precision reference.</p>
       <div class="table-scroll"><table id="intermediate-table"></table></div>
       <figcaption>The finite MXFP8 example uses round-up E8M0 scaling and nearest-even E4M3 rounding. Select a byte to inspect q, scale, reconstructed value, and error. NVFP4 shows its packing/global-scale structure, not a numerical emulator of the full inference quantizer. <a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/mxfp8_kernel_design.md">MXFP8</a> · <a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/nvfp4_kernel_design.md">NVFP4</a></figcaption>
     </figure>
     <h3>Forward and weight gradients quantize along different axes</h3>
-    <p>Forward propagation (FPROP) contracts over features, so each activation row has scales along that axis. Weight gradients (WGRAD) contract over token rows and need a separately quantized column-oriented bundle. Static MXFP8 weights use grouped 32 × 32 quantization: forward and input-gradient GEMMs can share qdata, with distinct scale orientations.</p>
+    <p><span data-slide-summary="quantization-axis">Forward propagation (FPROP) contracts over features, so each activation row has scales along that axis. Weight gradients (WGRAD) contract over token rows and need a separately quantized column-oriented bundle.</span> Static MXFP8 weights use grouped 32 × 32 quantization: forward and input-gradient GEMMs can share qdata, with distinct scale orientations.</p>
     <div class="orientation-panel" id="orientation-panel"></div>
     <p>MXFP8 training publishes BF16 source rows and quantizes after peer gather. NVFP4 inference quantizes and packs on the source rank, so the peer reads packed data, block scales, and the row inverse global scale directly. BF16 route outputs return through the same combine protocol.</p>
     <p class="bridge">Qdata, scales, dense intermediates, and padding all consume memory. We can now derive a context budget from these representations and their shapes.</p>
@@ -208,7 +206,7 @@
     <h2><span>03</span> Live tensor costs determine the slot and scratch budgets</h2>
     <p>The activation buffer contains saved-state slots and one shared scratch region. Slots keep values until backward; scratch is reused between sequential calls. Here T is the configured maximum input rows per rank. A call may use fewer rows, with the same physical T on every EP rank.</p>
     <p>Count one layer’s bytes from its tensor shapes, using <code>align128(elements × 2)</code> for BF16. Saved state accumulates across layers in a slot. Scratch reserves the largest temporary layout needed by one call, including recompute; it is shared rather than multiplied by the layer count.</p>
-    <p>For BF16, forward scratch with eligible state omitted contains x_gathered, h1, and h2: <code>2R(D + 3F)</code> bytes before alignment. When D ≤ F, the backward recompute peak is <code>2R(D + 5F)</code>. It adds gradient storage and reuses the h2 region for grad_h1 after h2’s last read.</p>
+    <p>For BF16, forward scratch with eligible state omitted contains x_gathered, h1, and h2: <code>2R(D + 3F)</code> bytes before alignment. When D ≤ F, the backward recompute peak is <code>2R(D + 5F)</code>. It adds gradient storage; grad_h1 reuses the space occupied by h2 and gathered grad_h3 after both have been read.</p>
     <p>If D &gt; F, gathered grad_h3 needs an extra region. MXFP8 adds row/column qdata and scale bundles, with per-expert row padding. Figure 03 uses the same receive-row bound for its forward and backward comparisons.</p>
     <figure class="interactive" id="memory-figure">
       <div class="figure-top"><div><span class="fig-number">FIG. 03</span><h3>See how a layer’s tensors determine the full memory allocation</h3></div><button class="expand" aria-label="Expand the allocation and calculations">Expand ⤢</button></div>
@@ -222,7 +220,7 @@
       <details class="calculation-details"><summary>Exact tensor-by-tensor calculations</summary><div class="table-scroll"><table id="calculation-table"></table></div></details>
       <p class="inside-note">VMM maps one contiguous GPU virtual range onto device-backed activation slots, pinned-host overflow scratch, and a hot device scratch suffix. Scratch grows down from the high end. Pages are mapped at context creation and stay in their assigned tier during execution. Symmetric communication buffers remain separate HBM allocations.</p>
       <h4 class="inside-heading" id="memory-allocation-heading">A shared virtual range can place scratch in GPU and host memory</h4>
-      <p class="inside-note">First choose the executable receive-row bounds for device and total scratch. Then choose an activation-slot factor or exact cap; that saved-state policy is independent of scratch sizing.</p>
+      <p class="inside-note">Scratch factors bound the routed rows that can execute. The activation-slot factor scales optional balanced saved-state bytes above the mandatory-input minimum. An exact-byte cap selects the same saved-state budget directly.</p>
       <div class="figure-controls memory-examples" id="memory-examples" aria-label="Capacity policy examples"><span class="micro-label">Compare three capacity policies</span><button data-memory-example="saved" data-slot-factor="1.5" data-device-factor="4" data-total-factor="4" data-vmm="false" aria-pressed="false">1 · More saved state</button><button data-memory-example="scratch" data-slot-factor="0.5" data-device-factor="4" data-total-factor="16" data-vmm="true" aria-pressed="false">2 · More scratch with VMM</button><button data-memory-example="fixed" data-slot-bytes="34359738368" data-device-factor="16" data-total-factor="16" data-vmm="false" aria-pressed="false">3 · Fixed 32 GiB cap</button></div>
       <div id="memory-example-descriptions" hidden><p data-example="saved">Expect moderate routing skew and reserve more space for saved state. Activation factor 1.5 and device scratch factor 4 keep this example entirely in HBM.</p><p data-example="scratch">Reduce the activation factor to 0.5; keep device scratch factor 4 and use VMM total scratch factor 16 for a larger receive bound. Scratch beyond the hot HBM tier is backed by pinned host pages in the same virtual range; layers replay when saved state does not fit.</p><p data-example="fixed">Set one explicit activation budget per slot. Actual routed rows still determine each layer's save or replay decision; device scratch factor 16 keeps this example entirely in HBM.</p></div>
       <span id="memory-shape" hidden></span>
@@ -241,7 +239,7 @@
       <div class="equation compact" id="memory-equation"></div>
       <figcaption><code>align128(n) = ceil(n / 128) × 128</code>. The useful maximum retains eligible state at the total executable receive bound. Larger typed API budgets are permitted but cannot retain additional state. These logical bytes exclude caller tensors, weights/gradients, symmetric communication, CUDA mapping granularity, and allocator padding. <a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/memory_planner.md">Memory guide</a> · <a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/vmm.md">VMM</a> · <a href="https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/api.py">API policies</a></figcaption>
     </figure>
-    <p>The minimum slot holds every layer’s input for replay. Factor 1 adds the optional state needed for balanced full-save. The useful maximum covers full eligible state at the total executable receive bound. Slot factors scale saved-state capacity independently of scratch factors.</p>
+    <p>The minimum slot keeps every layer’s input available for replay. Factor 1 covers balanced full-save; the useful maximum covers eligible state at the total executable receive bound.</p>
     <p class="bridge">An allocation sets capacity. The device planner then chooses which forward values to keep. Next, pack successive layers into a slot and watch its recompute decisions, then inspect the individual values’ consumers and offsets.</p>
   </section>
 
@@ -267,12 +265,11 @@
       <figcaption>Four BF16 layers route eight assignments each, with receive counts [4,4], [6,2], [3,5], and [5,3]. A replay input is 1,024 B. Solid extents show allocated views; the dashed input reserve is capacity held for future inputs. All backing here is HBM. <a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/memory_planner.md">Memory planner ↗</a></figcaption>
     </figure>
     <details class="technical-fold"><summary>Allocation timing and backward scratch reuse</summary><p>The packing view is byte-proportional; the arena overview is schematic. The decision view tests a hypothetical full-state allocation. Backward planning rewinds the cursor before kernels run; bytes become reusable after its readers finish. In the top scratch interval, h2 and gathered grad_h3 are disjoint views; grad_h1 reuses their space after their final reads. grad_h2 remains disjoint. Full state is align128(R × D × 2) + align128(R × 2F × 2) + align128(T × K × D × 2). Scratch covers the six-row backward recompute peak.</p></details>
-    <p>The 28 KiB slot keeps L0–L2. L2’s worst-rank candidate plus remaining-input reserve is 27,136 B, below the 28,672 B cap. L3 would require 35,840 B, so it keeps only x and replays in backward. The 24 KiB preset makes L2 replay too: the worst-rank test fails even though rank 1 alone would fit.</p>
+    <p>At the default 28 KiB preset, the slot keeps L0–L2. L2’s worst-rank candidate plus remaining-input reserve is 27,136 B, below the 28,672 B cap. L3 would require 35,840 B, so it keeps only x and replays in backward. The 24 KiB preset makes L2 replay too: the worst-rank test fails even though rank 1 alone would fit.</p>
     <p>When <code>need_recompute</code> is set, backward republishes x and rebuilds the expert state in scratch. Device predicates control replay within a fixed launch topology. BF16 h2 is temporary even with full-save; backward rebuilds it from h1.</p>
     <p>Backwards run in reverse layer order, restoring each forward’s starting cursor and saved-byte totals. A slot belongs to one live owner, as discussed in <a href="#slots">Section 06</a>. Local calls reuse scratch sequentially; concurrent calls need separate contexts.</p>
     <h3>Backward’s readers explain why each activation must survive</h3>
-    <p>Weight gradients read the forward activation operands; SwiGLU backward reads gate/up values. Input gradients return to token owners, while weight gradients stay with the expert weights.</p>
-    <div class="backward-mini" aria-label="Backward sequence"><span>Owner publishes route gradients</span><b>→</b><span>W2 DGRAD + WGRAD</span><b>→</b><span>SwiGLU backward</span><b>→</b><span>W13 DGRAD + WGRAD</span><b>→</b><span>Owner sums input-gradient routes</span></div>
+    <p data-slide-summary="lifetimes">Backward’s readers determine what must survive: W13/W2 weight gradients consume activation operands, and SwiGLU consumes gate/up values. Input gradients return to token owners; weight gradients stay with their experts.</p>
     <p>Figure 04B returns to the four-token example, with three slots and one layer per slot. Switch precision and retention mode to inspect each value’s consumers, storage, and byte offset.</p>
     <figure class="interactive" id="recompute-figure">
       <div class="figure-top"><div><span class="fig-number">FIG. 04B</span><h3>Backward’s dependencies determine what must be saved or rebuilt</h3></div><button class="expand" aria-label="Expand activation offset and lifetime map">Expand ⤢</button></div>
@@ -287,9 +284,9 @@
       <figcaption>The lifetime view shows storage ownership and last readers in operation order. The address view and expandable table expose byte offsets. Select a tensor row in the table to resolve its address. Offsets follow the source planner’s forward layout for this worked shape; the virtual base is illustrative. MXFP8 pads each expert’s two rows to 128, so its gathered storage covers 256 rows. <a href="https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/_activation_buffer_planner_kernel.py">Device planner ↗</a></figcaption>
     </figure>
     <p>Reusing an address at a later time is legal only after the earlier value’s consumers have finished. The diamonds above mark those readers; the matching backward releases the saved region.</p>
-    <p id="dependency-math-note">The equations use column vectors for one expert route. With <code>h1 = [g; u]</code>, SwiGLU produces <code>h2 = SiLU(g) ⊙ u</code>. W2 backward gives <code>grad_h2 = W2ᵀ grad_h3</code>; the activation derivative uses g and u to form grad_h1, and W13 backward gives <code>grad_x_gathered = W13ᵀ grad_h1</code>. Weight gradients sum outer products over expert rows. The token owner sums its input-gradient routes; its route-score derivative reads h3. These are ideal dependency equations: mixed precision approximates the products and rounds stored values.</p>
+    <p id="dependency-math-note">These are ideal dependency equations for one expert route. Mixed precision rounds operands and stored values.</p>
     <p>BF16 full-save retains x_gathered, h1, and h3; it does not retain an additional source x copy. h2 remains temporary and SwiGLU is replayed from h1 in backward. MXFP8 full-save instead retains x/h2 column bundles, dense h1, and h3; row bundles remain temporary in the ordinary Staged path.</p>
-    <p>The forward also saves its physical slot-ID snapshot. Backward uses that snapshot, not the context’s current selector. This is what lets a later forward select another slot while the earlier backward still finds its own bytes.</p>
+    <p>Backward restores the physical slot ID saved by its forward, so later slot selections cannot redirect it to another owner’s storage.</p>
     <p class="bridge">The planner decides which bytes survive. Inside a kernel, producer/consumer handoffs decide when a tile is safe to read. </p>
   </section>
 
@@ -307,7 +304,7 @@
     <div class="phase-caption" id="kernel-caption" aria-live="polite"></div>
       <figcaption>Matrix geometry shows shape ratios, not every element or the kernel’s physical lane swizzle. These are illustrative valid tile dimensions, not a replacement for production configuration selection. Gray rows are masked logical tail rows, not BF16 HBM padding. Only valid BF16 rows are stored. <a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/bf16_kernel_design.md#cta-roles">CTA roles ↗</a></figcaption>
     </figure>
-    <p>Gather warps signal when a row tile is ready. TMA then stages operands in SMEM, and tensor cores accumulate in FP32 TMEM. Full/empty barriers protect those stages and the epilogue handoff.</p>
+    <p>The readiness counter marks a completed gather tile. Full/empty barriers protect its SMEM stages and the epilogue handoff; the next figure shows how those producers and consumers coexist.</p>
     <p>The W13 epilogue writes BF16 h1 into local HBM. W2 ends with 16-byte stores to the token owner’s combine HBM. A peer barrier orders those stores before reduction.</p>
 
   <div class="kernel-subsection" id="fusion"><h3>Resident warp roles keep W13, SwiGLU, and W2 moving together</h3>
@@ -320,9 +317,9 @@
       <div class="transport" data-controller="fusion"><button class="previous" aria-label="Previous producer-consumer state">←</button><label class="scrub-label">Progress <input class="scrub" type="range" min="0" max="9" value="0"></label><button class="next" aria-label="Next producer-consumer state">Next step →</button><output class="phase-count">1 / 10</output></div>
         <div class="flow-payloads" id="fusion-payloads" aria-live="polite"></div>
     <div class="phase-caption" id="fusion-caption" aria-live="polite"></div><div class="equation compact" id="fusion-memory"></div>
-      <figcaption>These snapshots illustrate dependency ordering, not instruction scheduling, elapsed time, or a claimed speedup. Production chunk size, lead, tile records, and barriers are configuration-dependent. The supported path does not use an activation ring. <a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/mxfp8_kernel_design.md#mega-forward">Mega design ↗</a></figcaption>
+      <figcaption>Snapshots show dependency order. Chunk size, tile records, lead, barriers, and occupancy depend on configuration; the supported path uses separate operand regions rather than an activation ring. <a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/mxfp8_kernel_design.md#mega-forward">Mega design ↗</a></figcaption>
     </figure>
-    <p>Each Mega CTA processes repeated W13/W2 work records with a fixed role layout. Its warp groups share one SM. HBM counters coordinate work across CTAs; SMEM/TMEM barriers protect the local pipeline.</p>
+    <p>Each resident Mega CTA repeats W13/W2 work records with a fixed warp-role layout on one SM. HBM counters coordinate chunks across CTAs; SMEM/TMEM barriers protect the local operands and accumulator.</p>
     <p>The illustrated narrow MXFP8 layout has 16 warps (512 threads) per CTA. The same TMA/MMA and epilogue roles serve W13 and W2. Wider non-interleaved layouts use 20 warps; configuration and shape select the topology.</p>
     <p>Staged can reuse row-operand scratch after its first launch finishes. Mega needs disjoint x-row and h2-row regions because their lifetimes overlap. The backward peak can still dominate the full training budget.</p>
     <p>Mega backward also fuses DGRAD/WGRAD pairs. WGRAD accumulates in FP32 and stores BF16 or FP32 gradients; direct accumulation requires serialized writers.</p>
@@ -336,7 +333,7 @@
     <p>A stage–microbatch lifetime spans one stage’s forward through its terminal backward. A whole-microbatch lifetime spans all local stages for that microbatch. With split backward, saved state remains live until weight backward finishes.</p>
     <figure class="interactive" id="slots-figure">
       <div class="figure-top"><div><span class="fig-number">FIG. 07</span><h3>Count live owners, size their slots, and reuse completed intervals</h3></div><button class="expand" aria-label="Expand the complete liveness schedule">Expand ⤢</button></div>
-      <div class="phase-tabs" id="slots-display" aria-label="Pipeline learning view"><button data-view="liveness" aria-pressed="true">1 · Lifetimes and peak counts</button><button data-view="reuse" aria-pressed="false">2 · Dist-MoE slot reuse</button></div>
+      <div class="phase-tabs" id="slots-display" aria-label="Pipeline learning view"><button data-view="liveness" aria-pressed="true">1 · Count live owners</button><button data-view="reuse" aria-pressed="false">2 · Reuse completed slots</button></div>
       <div class="config-summary" id="slots-config"></div>
       <div class="figure-controls" id="slot-policy-controls" hidden><div class="segmented" id="slot-policy" aria-label="Slot resource granularity"><button data-policy="stage" aria-pressed="true">Stage–microbatch</button><button data-policy="microbatch" aria-pressed="false">Whole microbatch</button></div><span class="micro-label">8 microbatches · local stages 0 and 2 · 2 MoE layers per stage</span></div>
       <div class="schedule-window-note">Read <code>2B0</code> as stage 2, backward, microbatch 0; <code>F</code> denotes forward. Liveness is measured after the selected action completes. Both views use the same 32-action schedule.</div>
@@ -350,7 +347,6 @@
     </figure>
     <p>A stage slot holds that stage’s MoE layers; a whole-microbatch slot holds all local stages’ layers. Its budget is peak live slots × layers per slot × saved bytes per layer.</p>
     <p id="slot-memory-comparison"></p>
-    <p>The example assumes 16 MiB per layer. Memory depends on both peak liveness and slot depth: more live stage slots can still reserve fewer bytes because each holds fewer layers.</p>
     <p>The framework colors the finalized lifetimes once, assigning the lowest slot whose previous owner has finished. Before forward, it supplies that slot’s device ID and layer-depth bound. Dist-MoE uses the assignment; the framework owns the schedule.</p>
     <p>Layers pack state within the selected slot. The forward’s saved slot-ID snapshot keeps its backward tied to the correct addresses during graph replay and later selector changes. After an aborted schedule, reset only once no backward owns that state.</p>
     <p class="bridge">Routing, memory planning, and tile handoffs now form one execution path. Next, measure how much useful work that path delivers.</p>
@@ -387,7 +383,7 @@
         <p class="metric-qualification">No DRAM counters: cache effects and extra traffic are unmeasured. This is not HBM utilization.</p>
       </section>
     </div>
-    <figcaption id="metrics-scope">“Useful” describes the GEMM numerator. Quantization, nonlinearity, communication, and synchronization are necessary execution costs. Extra padding/replay work remains in iteration time; no measured FLOP breakdown of that extra work is available.</figcaption>
+    <figcaption id="metrics-scope" data-slide-summary="results-metrics">Useful throughput divides counted GEMM work by the whole-layer iteration time. NVLink uses hardware counters; effective HBM uses a logical-byte model. Quantization, communication, padding, and replay remain in the timer.</figcaption>
   </figure>
   <details class="technical-fold"><summary>Worked effective-bandwidth calculation</summary><div id="metrics-worked-example"></div></details>
   <details class="technical-fold"><summary>Hardware references, timing, and scope</summary>
@@ -410,7 +406,7 @@
     <div class="phase-caption" id="efficiency-caption" aria-live="polite"></div>
     <figcaption>Balanced routing, F = 3,072. Useful rates describe the complete routed operation; they are not hardware instruction-utilization counters. Compute whiskers use the five timing windows. NVLink markers show rank mean and maximum from the separate counter collection. Theoretical peaks are not benchmarked ceilings; HBM is modeled, not measured.</figcaption>
   </figure>
-  <p id="result-compute-story">For EP32 BF16 training, the complete forward/backward path delivers 1.367 PFLOP/s per GPU, 54.7% of the dense theoretical Tensor Core peak. MXFP8 Staged delivers more useful work—1.922 PFLOP/s—even though its fraction of the larger FP8 peak is lower. A larger arithmetic peak does not increase NVLink bandwidth or remove the layer’s other work. Read raw throughput, iteration time, and the hardware reference together.</p>
+  <p id="result-compute-story">Compare iteration time as well as percentage of peak. A format with a higher theoretical arithmetic peak can show a lower percentage while completing the layer faster.</p>
 
   <figure class="interactive results-figure" id="results-skew-figure">
     <div class="figure-top"><div><span class="fig-number">FIG. 09</span><h3>The hot GPU keeps computing as imbalance lowers the cluster average</h3></div><button class="expand" aria-label="Expand the routing and performance comparison">Expand ⤢</button></div>
@@ -422,7 +418,7 @@
     <div class="phase-caption" id="skew-caption" aria-live="polite"></div>
     <figcaption>Imbalance is maximum received rows divided by rank mean. Total routes stay fixed within a workload. The busiest-rank rate is derived from that rank’s useful GEMM work divided by maximum-rank iteration time; it is a conservative work-rate estimate, not a hardware counter. Locality and batch sizes also change with routing. All displayed cases passed the supplied numerical/graph checks, with zero allocator retry/OOM counters.</figcaption>
   </figure>
-  <p id="result-skew-story">At EP16 with NVFP4, 8× routing skew raises the busiest rank’s assigned work from 12,288 to 98,304 rows. Its derived useful rate rises from 3.09 to 5.13 PFLOP/s while the cluster average falls because work is concentrated. Maximum-rank TX reaches 521 GB/s, 57.9% of the theoretical one-way NVLink rate. These observations show useful progress under the tested skew; they do not mean the kernel can eliminate idle capacity created by the router.</p>
+  <p id="result-skew-story">A cluster average can fall because one GPU determines iteration time while others receive less work. Read the busiest rank’s useful rate alongside the average to see how Dist-MoE processes concentrated rows.</p>
 
   <figure class="interactive results-figure" id="results-width-figure">
     <div class="figure-top"><div><span class="fig-number">FIG. 10</span><h3>Wider experts amortize communication over more GEMM work</h3></div><button class="expand" aria-label="Expand the expert-width experiment">Expand ⤢</button></div>
@@ -434,7 +430,7 @@
     <div class="phase-caption" id="width-caption" aria-live="polite"></div>
     <figcaption>Only F changes; routing is balanced and the logical routed activation payload is fixed. Weights and intermediate HBM traffic do grow with F. Feature strips are proportional logical extents, not physical GPU tiles. The three points are measured widths; connecting lines guide the eye. Window whiskers are observed variation, not confidence intervals. The F = 3,072 width control is its own measurement.</figcaption>
   </figure>
-  <p id="result-width-story">In the EP16 NVFP4 sweep, quadrupling F creates four times the useful GEMM work while iteration time grows only about 1.54×, from 0.493 to 0.761 ms. Useful throughput reaches 4.265 PFLOP/s per GPU. The speedup over the corresponding BF16 width controls grows from 1.71× to 3.23×. This is a concrete benefit of handling different compute-to-communication ratios: more expert work is amortized over the same routed activation payload.</p>
+  <p id="result-width-story">Wider experts perform more GEMM work for the same routed input/output payload. When iteration time grows less than expert width, useful throughput rises: the extra compute is amortized over each routed token.</p>
 
   <p class="bridge">The measurements show how routing and expert width change the work available to each GPU. Use the API below to choose the kernel policy and memory budget for your model.</p>
 </section>
@@ -459,49 +455,8 @@
     <p>Execution requires supported NVIDIA Blackwell GPUs. CUDA graphs, activation checkpointing, and non-strict <code>make_fx</code> are supported. Full <code>torch.compile</code>, strict export, and NVFP4 training are unsupported.</p>
     <h3 id="source-heading">Trace each execution path back to its source</h3>
     <div class="source-grid"><a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/bf16_execution.md"><small>EXECUTION</small><b>BF16, end to end ↗</b><span>Every forward/backward kernel and lifetime</span></a><a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/memory_planner.md"><small>MEMORY</small><b>The activation planner ↗</b><span>Capacity, padding, dynamic recomputation</span></a><a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/mxfp8_kernel_design.md"><small>KERNELS</small><b>MXFP8 kernel design ↗</b><span>Quantization, layouts, producer/consumer roles</span></a><a href="https://github.com/meta-pytorch/dist_moe/blob/main/docs/pipeline_activation_slots.md"><small>LIFETIMES</small><b>Pipeline activation slots ↗</b><span>Static coloring, slot IDs, release obligations</span></a></div>
-    <p class="scope-note">The diagrams show the public execution model. Byte calculations use the stated shapes and logical layouts; benchmarks report the measured workloads. Use <code>plan_memory()</code> and benchmarks for your own configuration.</p>
+    <p class="scope-note" data-slide-summary="reading">Use the execution guides to follow the call chains, and <code>plan_memory()</code> plus benchmarks to evaluate your own configuration.</p>
   </section>
-  <details class="technical-fold guide-key-ideas" id="guide-key-ideas"><summary>Key ideas from the guide</summary><dl>
-    <dt>Dist-MoE</dt><dd data-slide-summary="title">An MoE layer sends each token to selected expert MLPs. Dist-MoE executes those experts across GPUs.</dd>
-    <dt>Mixture-of-Experts</dt><dd data-slide-summary="moe">The router selects experts and provides route scores. Only selected experts run for each token, and their results are combined into one output.</dd>
-    <dt>Fused execution and a shared activation budget in one API</dt><dd data-slide-summary="capabilities">Dist-MoE combines fused routed-expert execution with saved-state packing and budget-driven recompute across layers.</dd>
-    <dt>Shared capacity keeps the hot layers saved</dt><dd data-slide-summary="comparison-policy">MoK partly saves the hot layers under separate per-layer budgets. Dist-MoE uses one shared slot and saves eligible state for all ten layers.</dd>
-    <dt>Cross-layer packing reaches 1.40× speedup over MoK</dt><dd data-slide-summary="comparison-packing">Activation packing avoids capacity-driven recompute and delivers the strongest measured iteration-time advantage.</dd>
-    <dt>The speedup holds as imbalance grows from 1× to 8×</dt><dd data-slide-summary="comparison-scaling">BF16 and MXFP8 compare all four EP settings. The presentation emphasizes EP16 inference and EP64 training.</dd>
-    <dt>Dist-MoE shortens iteration time at every measured expert width</dt><dd data-slide-summary="comparison-width">EP16 inference and EP64 training compare both precisions at all three measured expert widths.</dd>
-    <dt>The distributed hardware path</dt><dd data-slide-summary="system">Dist-MoE joins dispatch, expert computation, and combine through GPU memory handoffs.</dd>
-    <dt>One routing decision selects the expert row and the return slot</dt><dd data-slide-summary="routing">Peer mappings establish addressability; each call publishes IDs and source rows, builds local route pointers, then gathers and scatters through symmetric HBM.</dd>
-    <dt>Caller routing</dt><dd data-slide-summary="assignments">Routing belongs to the caller. Expert IDs and scores create K assignments for each token while reusing its source row.</dd>
-    <dt>Expert order</dt><dd data-slide-summary="expert-rows">Gather places local and remote token rows in expert order. Each expert consumes its own contiguous batch.</dd>
-    <dt>Return addresses and combine</dt><dd data-slide-summary="return-slots">An expert result returns to its token owner and top-k slot. The owner applies route scores and sums the K results.</dd>
-    <dt>The expert MLP</dt><dd data-slide-summary="expert-math">W13 forms gate/up values h1. SwiGLU produces h2, and W2 projects it back to hidden width as h3.</dd>
-    <dt>Qdata and scales</dt><dd data-slide-summary="quantization">Quantized operands travel as qdata and scales. A block’s shared scale changes the rounding of every value in that block.</dd>
-    <dt>The quantization axis</dt><dd data-slide-summary="quantization-axis">Forward GEMMs contract over features, while weight gradients contract over tokens. They need separately quantized row and column activation operands.</dd>
-    <dt>Intermediate precision</dt><dd data-slide-summary="precision">Operand precision, accumulation precision, and stored-activation precision serve different roles. Tensor cores accumulate in FP32 even when operands are BF16 or block-scaled.</dd>
-    <dt>Allocation and VMM</dt><dd data-slide-summary="allocation">Saved activations stay in device HBM. VMM can extend shared scratch with fixed pinned-host backing in the same virtual address range.</dd>
-    <dt>Derive one layer’s saved and scratch bytes</dt><dd data-slide-summary="memory-costs">Allocation costs follow tensor shapes, alignment, and the peak of simultaneously live scratch. Slot capacity and scratch capacity use independent policies.</dd>
-    <dt>Pack layers into one activation slot</dt><dd data-slide-summary="layer-packing">Successive MoE forwards append saved tensor views to one slot. Their backwards restore the saved offsets in reverse layer order; scratch is shared by sequential calls.</dd>
-    <dt>Choose saved state or replay from the budget</dt><dd data-slide-summary="dynamic-recompute">The device planner checks every rank’s cumulative bytes and reserves replay inputs for remaining layers. If full state exceeds that budget, the layer saves only x and rebuilds its intermediates in backward.</dd>
-    <dt>Backward dependencies decide what stays saved and what is rebuilt</dt><dd data-slide-summary="lifetimes">W13 weight gradients read x_gathered, SwiGLU backward reads h1, and W2 weight gradients read h2. The score gradient reads h3; these dependencies explain which values must survive or be rebuilt.</dd>
-    <dt>Byte offsets</dt><dd data-slide-summary="offsets">A tensor view is a byte offset into an existing buffer. Reusing an address is safe after its earlier value’s consumers finish.</dd>
-    <dt>Gather and TMA</dt><dd data-slide-summary="gather-tiles">Gather writes complete source rows into local HBM. Readiness counters then allow TMA to stage the selected A and B slices in shared memory.</dd>
-    <dt>MMA and epilogue</dt><dd data-slide-summary="tensor-cores">MMA consumes differently shaped A and B tiles to update FP32 C. The epilogue converts valid outputs to BF16 and stores them.</dd>
-    <dt>One tile through GPU memory and compute</dt><dd data-slide-summary="gpu-tile">Gather warps publish complete rows in local HBM. The TMA producer stages A/B in SMEM, the MMA consumer accumulates C in TMEM, and epilogue warps convert and store valid outputs.</dd>
-    <dt>Producer and consumer coordination</dt><dd data-slide-summary="warp-groups">A consumer waits for its operand’s readiness signal. Staged uses launch completion between phases, while Mega coordinates their handoffs inside one kernel.</dd>
-    <dt>Chunk readiness</dt><dd data-slide-summary="chunk-readiness">Chunk-local readiness lets downstream work proceed while other chunks remain upstream. Co-live x and h2 operands need separate scratch in Mega.</dd>
-    <dt>Resident warp roles and producer/consumer readiness</dt><dd data-slide-summary="mega-pipeline">Mega pipelines gather/quantization, W13, SwiGLU/quantization, W2, and scatter through chunk-local readiness. The full role graph and chunk-state table show what each consumer is waiting for.</dd>
-    <dt>Compare lifetimes and peak live counts</dt><dd data-slide-summary="pipeline-prefix">A stage–microbatch lifetime ends after that stage’s terminal backward. A whole microbatch stays live until all its local stages finish. Their maximum overlaps are counted before assigning memory slots.</dd>
-    <dt>Map lifetimes to reusable Dist-MoE slots</dt><dd data-slide-summary="slot-reuse">A completed terminal backward releases a slot to a later non-overlapping owner. Releasing one stage is sufficient only under the stage–microbatch policy.</dd>
-    <dt>How benchmark metrics are constructed</dt><dd data-slide-summary="results-metrics">Useful TFLOP/s divides counted GEMM work by measured layer iteration time. NVLink uses hardware counters; effective HBM bandwidth uses a logical-byte model.</dd>
-    <dt>Inference throughput and bandwidth</dt><dd data-slide-summary="results-inference">Useful throughput compares the full routed operation with dense theoretical GPU peaks. Hardware NVLink rates and modeled HBM traffic provide separate context.</dd>
-    <dt>Training throughput and bandwidth</dt><dd data-slide-summary="results-training">Training measures forward and backward together. Dense theoretical peaks frame the useful compute delivered through communication and intermediate-state handling.</dd>
-    <dt>The busiest rank under routing skew</dt><dd data-slide-summary="results-skew">Routing concentrates work. Compare cluster-average throughput with the useful work rate derived for the busiest rank, alongside actual received rows and hardware TX rates.</dd>
-    <dt>More compute per routed activation byte</dt><dd data-slide-summary="results-width">Increasing F increases useful GEMM work while logical routed activation communication stays fixed. The measured width sweep shows how that work is amortized.</dd>
-    <dt>Dist-MoE public API</dt><dd data-slide-summary="public-api">Configure routing and memory, execute the expert call, and inspect the resolved plan.</dd>
-    <dt>Configuration</dt><dd data-slide-summary="configuration">Config defines routing dimensions, activation slots, and compute policy. plan_memory resolves the buffer budget before collective context creation.</dd>
-    <dt>The public operation</dt><dd data-slide-summary="expert-call">The caller supplies x, route IDs and scores, and local expert weights. A reusable context connects the call to communication buffers and the memory plan.</dd>
-    <dt>Documentation and measurement</dt><dd data-slide-summary="reading">The public execution guides define the supported paths and lifetimes. Use the package planner and benchmarks to evaluate a real configuration.</dd>
-  </dl></details>
   <p class="design-credit">Visual approach inspired by <a href="https://deepseek-v3.ezyang.com/studies/03-roofline.html">ezyang’s DeepSeek-V3 studies</a>. Diagrams drawn for this guide.</p>
   <footer><div class="footer-credit"><span>Dist-MoE · speed-of-light distributed expert kernels</span><span class="copyright">© 2026 Meta Platforms, Inc. and affiliates.</span></div><a href="https://github.com/meta-pytorch/dist_moe">Repository ↗</a><a href="#content">Back to top ↑</a></footer>
 </main>

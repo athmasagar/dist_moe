@@ -45,7 +45,7 @@ From the repository root, choose a new output directory:
 ```sh
 python .github/scripts/assemble_pages.py \
   --preview site --output /tmp/dist-moe-pages-preview
-python -m http.server 8765 --bind 127.0.0.1 \
+python -m http.server 8000 --bind 127.0.0.1 \
   --directory /tmp/dist-moe-pages-preview
 ```
 

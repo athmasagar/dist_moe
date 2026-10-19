@@ -25,29 +25,29 @@
   const scenes = [
     { id: 'title', kind: 'cover', chapter: 'content' },
     { id: 'moe', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
-    { id: 'capabilities', figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes'], setup: '#motivation-setup' },
-    { id: 'comparison-policy', figure: 'compare-policy-figure', chapter: 'mok-comparison', parts: ['compare-policy-view'], setup: '#compare-policy-config', title: 'key-idea' },
-    { id: 'comparison-packing', figure: 'compare-packing-figure', chapter: 'mok-comparison', parts: ['compare-packing-legend','compare-packing-view'], setup: '#compare-packing-config', title: 'key-idea' },
-    { id: 'comparison-scaling', figure: 'compare-scaling-figure', chapter: 'mok-comparison', parts: ['compare-scaling-legend','compare-scaling-view'], setup: '#compare-scaling-config', title: 'key-idea' },
-    { id: 'comparison-width', figure: 'compare-width-figure', chapter: 'mok-comparison', parts: ['compare-width-legend','compare-width-view'], setup: '#compare-width-config', title: 'key-idea' },
     { id: 'system', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 8], setup: '.diagram-key' },
-    { id: 'routing', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 6], bounds: [0,0,1120,740], setup: '#token-config', title: 'key-idea' },
+    { id: 'capabilities', figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes'] },
+    { id: 'comparison-policy', figure: 'compare-policy-figure', chapter: 'mok-comparison', parts: ['compare-policy-view'], setup: '#compare-policy-config', title: 'figure-title' },
+    { id: 'comparison-packing', figure: 'compare-packing-figure', chapter: 'mok-comparison', parts: ['compare-packing-legend','compare-packing-view'], setup: '#compare-packing-config', title: 'figure-title' },
+    { id: 'comparison-scaling', figure: 'compare-scaling-figure', chapter: 'mok-comparison', parts: ['compare-scaling-legend','compare-scaling-view'], setup: '#compare-scaling-config', title: 'figure-title' },
+    { id: 'comparison-width', figure: 'compare-width-figure', chapter: 'mok-comparison', parts: ['compare-width-legend','compare-width-view'], setup: '#compare-width-config', title: 'figure-title' },
+    { id: 'routing', figure: 'token-figure', controller: 'tokens', chapter: 'tokens', range: [0, 6], bounds: [0,0,1120,740], setup: '#token-config', title: 'figure-title' },
     { id: 'quantization', figure: 'precision-figure', chapter: 'precision', parts: ['precision-svg', 'quant-detail'] },
     { id: 'quantization-axis', kind: 'orientation', chapter: 'precision' },
     { id: 'precision', figure: 'precision-figure', chapter: 'precision', parts: ['intermediate-table'], title: 'precision-reference', table: true },
     { id: 'memory-costs', figure: 'memory-figure', chapter: 'memory', parts: ['memory-svg'], setup: '#memory-cost-shape', title: 'costs', builds: ['#calculation-tabs [data-calculation="forward"]','#calculation-tabs [data-calculation="device"]'] },
     { id: 'allocation', figure: 'memory-figure', chapter: 'memory', parts: ['memory-policy-summary','consumption-svg', 'memory-stats'], setup: '#memory-shape', title: 'allocation', builds: ['#memory-examples [data-memory-example="saved"]','#memory-examples [data-memory-example="scratch"]','#memory-examples [data-memory-example="fixed"]'] },
-    { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['dependency-equations'], prepare: 'lifetime', title: 'key-idea', setup: '.config-summary' },
-    { id: 'layer-packing', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [0, 8], parts: ['packing-svg'], display: 'packing', title: 'key-idea', setup: '#packing-brief' },
-    { id: 'gpu-tile', figure: 'kernel-figure', controller: 'kernel', chapter: 'kernels', range: [0, 5], title: 'key-idea', setup: '#tile-address' },
-    { id: 'mega-pipeline', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], bounds: [0,0,1600,550], title: 'key-idea', setup: '#fusion-config' },
+    { id: 'lifetimes', figure: 'recompute-figure', chapter: 'recompute', parts: ['dependency-equations'], prepare: 'lifetime', title: 'figure-title', setup: '.config-summary' },
+    { id: 'layer-packing', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [0, 8], parts: ['packing-svg'], display: 'packing', title: 'figure-title', setup: '#packing-brief' },
+    { id: 'gpu-tile', figure: 'kernel-figure', controller: 'kernel', chapter: 'kernels', range: [0, 5], title: 'figure-title', setup: '#tile-address' },
+    { id: 'mega-pipeline', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], bounds: [0,0,1600,550], title: 'figure-title', setup: '#fusion-config' },
     { id: 'pipeline-prefix', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [0, 31], actions: ['0F0','2B0','0F4','0B7'], slotDisplay: 'liveness', parts: ['liveness-svg'], setup: '#slots-config' },
     { id: 'slot-reuse', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [2, 6], actions: ['2F0','2B0','0F3'], slotDisplay: 'reuse', camera: [0, 0, 1146, 406], pane: true, parts: ['slots-svg','slot-selection'] },
-    { id: 'results-metrics', figure: 'results-metrics-figure', chapter: 'results', parts: ['metrics-overview'], setup: '#metrics-setup', title: 'key-idea' },
-    { id: 'results-inference', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], bounds: [0,0,1600,404], preset: '#result-presets [data-preset="inference"]', setup: '#efficiency-config', title: 'key-idea' },
-    { id: 'results-training', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], bounds: [0,0,1600,404], preset: '#result-presets [data-preset="training"]', setup: '#efficiency-config', title: 'key-idea' },
-    { id: 'results-skew', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,0], parts: ['skew-svg','skew-table'], bounds: [0,0,1600,404], setup: '#skew-config', title: 'key-idea' },
-    { id: 'results-width', figure: 'results-width-figure', controller: 'width', chapter: 'results', range: [0,0], parts: ['width-svg','width-table'], bounds: [0,0,1600,404], setup: '#width-config', title: 'key-idea' },
+    { id: 'results-metrics', figure: 'results-metrics-figure', chapter: 'results', parts: ['metrics-overview'], setup: '#metrics-setup', title: 'figure-title' },
+    { id: 'results-inference', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], bounds: [0,0,1600,404], preset: '#result-presets [data-preset="inference"]', setup: '#efficiency-config', title: 'figure-title' },
+    { id: 'results-training', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-svg','efficiency-table'], bounds: [0,0,1600,404], preset: '#result-presets [data-preset="training"]', setup: '#efficiency-config', title: 'figure-title' },
+    { id: 'results-skew', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,0], parts: ['skew-svg','skew-table'], bounds: [0,0,1600,404], setup: '#skew-config', title: 'figure-title' },
+    { id: 'results-width', figure: 'results-width-figure', controller: 'width', chapter: 'results', range: [0,0], parts: ['width-svg','width-table'], bounds: [0,0,1600,404], setup: '#width-config', title: 'figure-title' },
     { id: 'public-api', kind: 'code', chapter: 'start', builds: ['#api-steps [data-api-step="0"]','#api-steps [data-api-step="1"]','#api-steps [data-api-step="2"]'] },
     { id: 'reading', kind: 'resources', chapter: 'start' }
   ];
@@ -88,7 +88,6 @@
         if (svg.id==='recompute-svg') svg.setAttribute('viewBox','0 0 1040 400');
         else if (old) svg.setAttribute('viewBox', old);
         svg.querySelectorAll('.deck-camera-clipped').forEach(n => n.classList.remove('deck-camera-clipped'));
-        svg.classList.remove('deck-map');
         svg.style.removeProperty('--deck-svg-width');svg.style.removeProperty('--deck-svg-height');
         svg.querySelectorAll('[data-sticky-slot]').forEach(n => n.setAttribute('transform', 'translate(0,0)'));
       });
@@ -105,6 +104,7 @@
   }
   function captionNode(scene) {
     if(scene.kind==='code')return source('#api-caption');
+    if(scene.id==='quantization')return figures[scene.figure].querySelector('#quant-detail small');
     if (!scene.figure) return null;
     if(scene.id==='memory-costs')return figures[scene.figure].querySelector('#memory-cost-caption');
     if(scene.id==='allocation')return figures[scene.figure].querySelector('#memory-caption');
@@ -120,9 +120,8 @@
     if (scene.title === 'precision-reference') return figure.querySelector('.inside-heading').textContent;
     if (scene.title === 'allocation') return figure.querySelector('#memory-allocation-heading').textContent;
     if (scene.title === 'costs') return figure.querySelector('#memory-cost-heading').textContent;
-    if (scene.controller === 'slots') return source(`[data-slide-summary="${scene.id}"]`).previousElementSibling.textContent;
-    if (scene.title === 'chunks') return 'Chunk state';
-    if (scene.title === 'key-idea') return source(`[data-slide-summary="${scene.id}"]`).previousElementSibling.textContent;
+    if (scene.controller === 'slots') return source(`#slots-display [data-view="${scene.slotDisplay}"]`).textContent.replace(/^\d+\s*·\s*/, '');
+    if (scene.title === 'figure-title') return figure.querySelector('h3').textContent;
     if (scene.prepare) return document.querySelector(`#retention-display [data-view="${scene.prepare}"]`).textContent;
     if(!current && scene.controller && scene.id!=='system'){const caption=app.getStepCaption(scene.controller,scene.range[0]);if(caption)return caption[0];if(scene.controller==='slots')return figure.querySelector('h3').textContent+' · actions '+(scene.range[0]+1)+'–'+(scene.range[1]+1);}
     if (current && scene.controller && (scene.id !== 'system' || app.controllers.overview.phase > 0)) {
@@ -241,13 +240,13 @@
   }
 
 
-  function checkpoints(scene){
+  function stepSequence(scene){
     return scene.phases || (scene.actions?scene.actions.map(action=>Moe.schedule.indexOf(action)).filter(p=>p>=0):null);
   }
 
   function range(scene) {
     const c = app.controllers[scene.controller];
-    const points=checkpoints(scene);
+    const points=stepSequence(scene);
     if(points?.length)return [points[0],points[points.length-1]];
     return scene.range ? [scene.range[0], scene.range[1] ?? c.count - 1] : [0, 0];
   }
@@ -256,7 +255,7 @@
     if(scene.builds)return scene.builds.map((_,index)=>index);
     const c=app.controllers[scene.controller];
     if(!c)return [0];
-    const sparse=checkpoints(scene);if(sparse)return sparse;
+    const sparse=stepSequence(scene);if(sparse)return sparse;
     const [first,last]=range(scene);
     return Array.from({length:last-first+1},(_,i)=>first+i);
   }
@@ -264,7 +263,7 @@
     const scene = scenes[index], c = app.controllers[scene.controller];
     if(scene.builds&&!slideOnly){const steps=slideSteps(scene),target=steps[steps.indexOf(build)+direction];if(target!=null){setBuild(scene,target);update();return;}}
     if (c && !slideOnly) {
-      const points=checkpoints(scene);
+      const points=stepSequence(scene);
       if(points){const target=direction>0?points.find(p=>p>c.phase):[...points].reverse().find(p=>p<c.phase);if(target!=null){c.set(target);update();return;}}
       else{const [first,last]=range(scene);if(direction>0&&c.phase<last){c.set(c.phase+1);update();return;}if(direction<0&&c.phase>first){c.set(c.phase-1);update();return;}}
     }
@@ -320,8 +319,6 @@
           for(const format of ['bf16','mxfp8','nvfp4'])for(const direction of ['forward','backward'])for(const outlier of [false,true])for(const byte of [0,7,31]){
             app.state.format=format;app.state.direction=direction;app.state.quantByte=byte;$('quant-outlier').checked=outlier;app.renderPrecision();pass();
           }
-        }else if(scene.chapter==='mok-comparison'){
-          window.ComparisonApp.sample(scene.controller,pass);
         }else if(scene.chapter==='results'){
           window.ResultsApp.sample(scene.controller,pass);
         }else if(scene.controller==='packing'){
@@ -329,7 +326,6 @@
         }else if(scene.figure==='recompute-figure'){
           for(const precision of ['bf16','mxfp8'])for(const mode of ['save','recompute']){
             app.state.retentionPrecision=precision;app.state.retention=mode;app.renderRetention();pass();
-            if(scene.prepare==='address')for(const button of $('offset-table').querySelectorAll('[data-offset]')){app.state.offset=button.dataset.offset;app.renderRetention();pass();}
           }
         }else if(scene.controller==='fusion'){
           for(const pipeline of ['staged','mega'])for(const chunk of [0,1,2]){app.state.fusion=pipeline;app.state.fusionChunk=chunk;c.count=app.fusionCount(pipeline);pass();}
@@ -338,7 +334,7 @@
         }else if(scene.controller==='kernel'){
           for(const [m,n,tail,k]of [[128,128,'full',0],[256,256,'tail',3]]){setValue('tile-M',m);setValue('tile-N',n);setValue('tile-tail',tail);setValue('tile-K',k);pass();}
         }else if(scene.controller==='tokens'){
-          for(const token of ['all','A','B','C','D']){app.state.token=token;pass();}
+          for(const token of ['A','B','C','D']){app.state.token=token;pass();}
         }else if(scene.figure==='memory-figure'&&app.renderMemory()){
           const originalShape=Object.fromEntries(['T','D','F','L','N'].map(k=>[k,$('config-'+k).value]));
           for(const shape of [originalShape,{T:8192,D:4096,F:14336,L:64,N:8}]){
@@ -467,8 +463,6 @@
         svg.querySelectorAll('text').forEach(text => { if(!text.closest('[data-sticky-slot]')){const b=text.getBBox();const ownerMargin=svg.id==='slots-svg'&&text.hasAttribute('data-owner-label')&&b.x+b.width*1.25+8>x+w;if(outside(b)||ownerMargin||(svg.id==='slots-svg'&&x>0&&b.x<x+129))text.classList.add('deck-camera-clipped');} });
       }
       if (svg.id === 'slots-svg') svg.querySelector('[data-sticky-slot]')?.setAttribute('transform', `translate(${x},0)`);
-      svg.classList.remove('deck-map');
-      window.Views.positionMath(svg);
     }
     $('deck-fit').hidden = !scene.camera;
     $('deck-fit').textContent = fullView ? 'Focused view · V' : 'Full diagram · V';
@@ -486,7 +480,6 @@
     $('deck-visual').dataset.codeLines=excerpt.length;
     $('deck-code-label').textContent=$('code-tabs').querySelector('[aria-pressed="true"]').textContent+' · '+['configuration','inspect','execution'][build];
     $('deck-api-plan').hidden=build!==1;$('deck-api-plan').replaceChildren();
-    $('deck-visual').querySelector('.deck-code').classList.toggle('api-inspect-slide',build===1);
     if(build===1){const output=cleanClone(source('#api-plan-output')),toolbar=output.querySelector('.api-console-toolbar');toolbar.replaceChildren(toolbar.querySelector('span'));$('deck-api-plan').append(output);}
   }
 
@@ -512,7 +505,7 @@
     let sentences;
     try{sentences=[...new Intl.Segmenter('en',{granularity:'sentence'}).segment(text)].map(s=>s.segment.trim());}catch{sentences=[text];}
     if(scene.controller==='slots')return sentences.filter(s=>/continuation/.test(s)).join(' ');
-    if(scene.id==='lifetimes')return source('#dependency-math-note').textContent.match(/These are ideal dependency equations:.*$/)?.[0]||'';
+    if(scene.id==='lifetimes')return source('#dependency-math-note').textContent;
     if(scene.figure==='precision-figure'){
       const chosen=sentences.filter(s=>app.state.format==='nvfp4'?/NVFP4/.test(s):/finite MXFP8/.test(s)).join(' ');
       const weight=[...f.querySelectorAll('#intermediate-table tbody tr')].find(tr=>tr.firstElementChild.textContent==='W13 / W2 weights');
@@ -546,10 +539,11 @@
       $('deck-setup').textContent = node?.textContent || '';
     }
     const caption=captionNode(scene),summary=source(`[data-slide-summary="${scene.id}"]`);
-    const dynamic=caption&&(scene.controller||scene.builds||scene.figure==='recompute-figure'&&scene.id!=='lifetimes');
+    const dynamic=caption&&scene.id!=='lifetimes'&&scene.id!=='precision';
     const topic=scene.controller==='packing'?caption?.querySelector(scene.id==='layer-packing'?'.packing-step-summary':'.decision-step-summary'):null;
-    let takeaway=topic?cleanClone(topic):dynamic?firstSentenceFragment(caption,scene.controller==='slots'?3:2):summary?cleanClone(summary):null;
+    let takeaway=topic?cleanClone(topic):dynamic?firstSentenceFragment(caption,scene.controller==='slots'||scene.chapter==='mok-comparison'?3:2):summary?cleanClone(summary):null;
     if(scene.id==='layer-packing'&&topic){takeaway=document.createDocumentFragment();takeaway.append(firstSentenceFragment(caption.querySelector('.decision-step-summary'),1),document.createTextNode(' '),firstSentenceFragment(topic,1));}
+    if(scene.kind==='cover')takeaway=null;
     $('deck-summary').replaceChildren(...(takeaway?[...takeaway.childNodes]:[]));
     $('deck-scope').textContent=scopeFor(scene);
     if (scene.kind === 'code') updateCode(scene);
