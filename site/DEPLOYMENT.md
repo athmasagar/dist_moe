@@ -32,6 +32,17 @@ After merging, the production article is at
 If the review branch is later deleted, a subsequent main deployment omits the
 preview and keeps the production site.
 
+## Social link previews
+
+The HTML declares a dedicated 1200 × 630 Dist-MoE PNG using Open Graph and
+Twitter card metadata. Its editable source is `assets/dist-moe-social.svg`.
+The Pages assembler scopes canonical and social URLs to the production root
+or the review subdirectory, so each published page resolves its own image.
+
+LinkedIn can cache an earlier thumbnail. After changing the preview image or
+metadata, submit the shared URL to [LinkedIn Post Inspector](https://www.linkedin.com/post-inspector/)
+to request a fresh scrape. Version the PNG filename when replacing its design.
+
 ## Review artifacts without enabling Pages
 
 The workflow's assembly job also uploads a `github-pages` artifact. GitHub users

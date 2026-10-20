@@ -10,6 +10,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+PUBLIC_SITE_ROOT = "https://meta-pytorch.org/dist_moe/"
+
 
 class LocalAssetParser(HTMLParser):
     """Check that HTML assets work beneath a GitHub Pages project path."""
@@ -46,12 +48,13 @@ class LocalAssetParser(HTMLParser):
             raise ValueError(f"Missing or out-of-site asset: {reference}")
 
 
-def copy_site(source: Path | None, destination: Path) -> bool:
+def copy_site(source: Path | None, destination: Path, public_prefix: str = "") -> bool:
     """Copy and validate an available static site.
 
     Args:
         source: Optional site directory; missing directories are omitted.
         destination: Empty destination directory for the copied site.
+        public_prefix: Deployment subdirectory beneath the public project URL.
 
     Returns:
         Whether a complete site was copied.
@@ -64,6 +67,12 @@ def copy_site(source: Path | None, destination: Path) -> bool:
         raise ValueError(f"Site contains a symlink: {source}")
     LocalAssetParser(source).feed((source / "index.html").read_text())
     shutil.copytree(source, destination, dirs_exist_ok=True)
+    index = destination / "index.html"
+    head, separator, body = index.read_text().partition("</head>")
+    # Crawlers require absolute image URLs. Scope metadata to the published copy
+    # so the review preview and production article each resolve their own assets.
+    head = head.replace(PUBLIC_SITE_ROOT, PUBLIC_SITE_ROOT + public_prefix)
+    index.write_text(head + separator + body)
     return True
 
 
@@ -78,7 +87,9 @@ def assemble(production: Path | None, preview: Path | None, output: Path) -> Non
     output.mkdir(parents=True, exist_ok=False)
     has_production = copy_site(production, output)
     preview_path = Path("previews/visual-explainer")
-    has_preview = copy_site(preview, output / preview_path)
+    has_preview = copy_site(
+        preview, output / preview_path, preview_path.as_posix() + "/"
+    )
     if not has_production and not has_preview:
         raise ValueError("Neither the main site nor the review preview is available")
     if not has_production:
