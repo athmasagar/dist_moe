@@ -157,7 +157,7 @@
 .deck-visual .cmp-column-speedup small{font-size:16px}
 .deck-visual .cmp-condition{font-size:20px;margin-top:8px}
 .deck-visual .cmp-metric-name{width:205px}
-.deck-visual .cmp-metric-table :is(th,td){font-size:23px;padding:12px 6px;line-height:1.15}
+.deck-visual .cmp-metric-table :is(th,td){font-size:23px;padding:10px 6px;line-height:1.15}
 .deck-visual .cmp-metric-table th:first-child{font-size:20px;line-height:1.2}
 .deck-visual .cmp-metric-table thead th{font-size:18px;line-height:1.2}
 .deck-visual .cmp-metric-pair{flex-direction:row;gap:5px;line-height:1}

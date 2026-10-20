@@ -225,7 +225,8 @@ html:fullscreen .deck-drawer{top:0;bottom:0}
 .deck-visual .quant-detail small{display:none}
 
 /* Topics stay fixed while the active operation is a separate label. */
-.deck-step-heading{font-size:24px;line-height:1.25;color:var(--blue);margin:0 0 9px;flex:none}
+.deck-title,.deck-step-heading{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.deck-step-heading{font-size:32px;font-weight:550;line-height:1.2;letter-spacing:-.3px;color:var(--blue);margin:0 0 9px;flex:none}
 .deck-step-heading:empty{display:none}
 .deck-repository{color:var(--blue);font-size:22px;text-decoration:none;margin-left:auto;margin-right:28px}
 .deck-repository[hidden]{display:none}
