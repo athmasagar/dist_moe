@@ -89,4 +89,8 @@ must fit throughout. Its diagram and captions contain no tile-level details.
 
 For the MoK baseline slide, check all four original images, source attribution,
 main/Lightning order, collapsed article state, expansion, and restore behavior.
+Check the wide plot frames against the originals: all twenty bars per chart,
+zero baselines, tick ranges, model order, colors, and the BF16 backward exception.
+The SVG viewport removes only surrounding labels and margins; verify native
+labels and the shared legend fit in both live and printed layouts.
 Also validate the extended supported-modes title in its second build.

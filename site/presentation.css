@@ -245,9 +245,24 @@ html:fullscreen .deck-drawer{top:0;bottom:0}
 .deck-visual svg .memory-brief text{font-size:18px}
 .deck-visual svg .memory-brief .bold{font-size:19px}
 .deck-visual svg .memory-brief .small{font-size:17px}
-.deck-visual .mok-published-grid.deck-part{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:12px 24px;padding:0;flex:1;min-height:0;width:100%;max-width:1060px;align-self:center}
-.deck-visual .mok-published-grid a{display:flex;align-items:center;justify-content:center;overflow:hidden}
-.deck-visual .mok-published-grid img{width:100%;height:100%;object-fit:contain}
+.deck-visual .mok-published-grid.deck-part{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(0,1fr));gap:10px 32px;padding:0;flex:1;min-height:0;width:100%}
+.deck-visual .mok-published-grid a{display:flex;flex-direction:column;align-items:center;gap:5px;overflow:hidden;text-decoration:none;color:var(--ink);min-height:0}
+.deck-visual .mok-published-grid a:nth-child(2){order:3}
+.deck-visual .mok-published-grid a:nth-child(3){order:2}
+.deck-visual .mok-published-grid a:nth-child(4){order:4}
+.deck-visual .mok-chart-heading{display:block;font-size:27px;line-height:1.15;font-weight:600;flex:none}
+/* Reflow the original plot pixels into wide chart frames. Native labels and
+   one shared legend replace the tiny repeated labels in the source images. */
+.deck-visual .mok-chart-view{display:flex;flex:1;min-height:0;width:100%}
+.deck-visual .mok-published-grid img{display:none}
+.deck-visual .mok-deck-plot{display:block;width:100%;height:100%;fill:var(--muted);font-size:22px;font-family:inherit;overflow:hidden}
+.deck-visual .mok-deck-plot .mok-model-label{font-size:20px}
+.deck-visual .mok-deck-plot .mok-axis-unit{font-size:20px}
+.deck-visual .mok-published-legend.deck-part{display:flex;justify-content:center;gap:26px;align-items:center;font-size:21px;line-height:1.3;flex:none}
+.mok-published-legend span{display:inline-flex;gap:9px;align-items:center;white-space:nowrap}
+.mok-published-legend span:before{content:"";width:14px;height:14px;background:var(--series);border:1px solid #ffffff30;flex:none}
 .deck-visual .mok-published-citation.deck-part{font-size:18px!important;line-height:1.35;padding:0;margin:0;flex:none}
 .deck-canvas[data-kind=reported-charts] .deck-summary{display:none}
+.deck-canvas[data-kind=reported-charts] .deck-slide-header{height:40px;margin-bottom:8px}
+.deck-canvas[data-kind=reported-charts] .deck-visual>figure{gap:8px}
 @media(max-width:750px){.deck-edition{max-width:110px}.deck-edition select{font-size:12px}}

@@ -319,7 +319,8 @@ dense BF16 x_gathered/h2 allocations.
 
 The four unchanged PNGs in `assets/mok-reported/` come from the user-supplied
 “MoK Results” folder and are attributed to
-[Cursor’s Mixture-of-Kittens blog](https://cursor.com/blog/mixture-of-kittens).
+[Cursor’s Mixture-of-Kittens blog](https://cursor.com/blog/mixture-of-kittens)
+and [the MoK paper](https://arxiv.org/pdf/2609.36070), §4.1 and Figure 7.
 The blog’s single-MoE-layer benchmarks use GB300 NVL72, EP64, and 2,048 input
 tokens/GPU, and compare NCCL/PyTorch, DeepEP/PyTorch, DeepEP/TransformerEngine,
 and HybridEP/Megatron in BF16/MXFP8 forward/backward.
@@ -328,3 +329,13 @@ MoK leads the four forward shapes in both precisions and all four MXFP8 backward
 shapes. The BF16 backward DeepSeek-V4-Pro plot has DeepEP/PyTorch slightly ahead.
 These reported comparisons motivate MoK as a strong training baseline; they are
 not an exhaustive claim over every OSS implementation or a Dist-MoE measurement.
+
+The decks reuse the original plot pixels in wide SVG frames; the axes, model
+labels, headings, and shared legend are typeset for presentation readability.
+No throughput values are estimated or digitized. Each panel links to its full
+source image, which the article continues to show unchanged.
+
+The paper reports effective expert-FFN throughput from the median of 100
+slowest-rank timings after 500 warmups. Its Table 1 gives exact MXFP8 timings
+for MoK and the fastest baseline, but not all series in the four plots. Those
+timings are not used to reconstruct missing chart values.
