@@ -110,8 +110,8 @@ through Full diagram, and detailed source explanations populate speaker notes.
 
 The setup figure illustrates one token selecting two of four expert MLPs. It
 separates token data from the router’s expert IDs and combine scores. The
-article’s headings and introductory prose supply static slide titles and takeaways;
-stepped slides derive their changing summaries from the shared figure captions. The complete
+presentation metadata supplies topic titles; shared introductory prose and figure
+captions supply takeaways and step descriptions. The complete
 layer-packing figure follows all nine calls in one slide, showing saved state,
 recompute decisions, planner offsets, and backward releases together. The
 28 KiB default saves L2 and retains only L3's replay input. Article and slides
@@ -127,7 +127,9 @@ The authors supplied `report_isolated_v6/report.html`, 63 result summaries,
 153 phase summaries, and cached measurement/routing/allocator records dated
 15 October 2026. The public snapshot contains numerical fields and neutral
 case descriptors. Article plots, tables, prose, and slides share
-`results-data.js`; JSON and CSV downloads are generated from it.
+`results-data.js`; JSON and CSV downloads are generated from it. The standalone
+slide reports use the same case lookup and useful-work/peak calculations, grouped
+by workload: EP8/16 inference, EP32/64 training, and EP16/64 width/imbalance sweeps.
 
 - T = 2,048 per rank; D = 7,168; E = 384; top-k = 6; F = 3,072 by default,
   with width controls 1,536/3,072/6,144. One routed layer, no shared expert,

@@ -138,34 +138,36 @@
 .deck-visual>figure>.comparison-view.diagram-scroll.deck-part{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:48px;padding:0;flex:1;min-height:0;align-items:start;justify-content:normal;overflow:visible}
 .deck-visual>figure>.cmp-results-view.diagram-scroll.deck-part{grid-template-columns:1fr;align-content:start}
 .deck-visual .cmp-results-view>.cmp-ep-report[data-ep="8"],.deck-visual .cmp-results-view>.cmp-ep-report[data-ep="32"]{display:none}
+.deck-visual .comparison-figure[data-deck-ep="16"] .cmp-results-view>.cmp-ep-report[data-ep="64"],.deck-visual .comparison-figure[data-deck-ep="64"] .cmp-results-view>.cmp-ep-report[data-ep="16"]{display:none}
 .deck-visual .cmp-ep-legend.deck-part{display:flex;flex:none;font-size:20px;gap:30px;padding:0;margin:0;line-height:1.2}
 .deck-visual .cmp-key-note{font-size:16px}
 .deck-visual .cmp-ep-heading{font-size:20px;line-height:1.1;margin-bottom:8px}
 .deck-visual .cmp-ep-heading>span{font-size:14px;line-height:1.1}
-.deck-visual .cmp-precision-panels{gap:38px}
-.deck-visual .cmp-precision-panel h4{font-size:20px;line-height:1.1}
-.deck-visual .cmp-precision-panel h4>span{font-size:14px}
-.deck-visual .cmp-time-chart{padding:58px 0 24px 38px}
-.deck-visual .cmp-time-plot{height:78px;--plot-height:78px}
-.deck-visual .cmp-time-tick b{font-size:13px}
+.deck-visual .cmp-precision-panels{grid-template-columns:1fr;gap:24px}
+.deck-visual .cmp-precision-panel h4{font-size:25px;line-height:1.2;margin-bottom:8px}
+.deck-visual .cmp-precision-panel h4>span{font-size:20px}
+.deck-visual .cmp-panel-body{display:grid;grid-template-columns:minmax(0,.46fr) minmax(0,.54fr);gap:44px;align-items:center}
+.deck-visual .cmp-time-chart{padding:50px 0 31px 44px}
+.deck-visual .cmp-time-plot{height:155px;--plot-height:155px}
+.deck-visual .cmp-time-tick b{font-size:18px}
 .deck-visual .cmp-time-columns{gap:25px}
-.deck-visual .cmp-time-column{width:35px}
-.deck-visual .cmp-ms-label{font-size:17px;margin-bottom:5px}
-.deck-visual .cmp-column-speedup b{font-size:16px}
-.deck-visual .cmp-column-speedup small{font-size:12px}
-.deck-visual .cmp-condition{font-size:14px;margin-top:6px}
-.deck-visual .cmp-metric-name{width:156px}
-.deck-visual .cmp-metric-table :is(th,td){font-size:16px;padding:3px 3px;line-height:1}
-.deck-visual .cmp-metric-table th:first-child{font-size:14px;line-height:1.05}
-.deck-visual .cmp-metric-table thead th{font-size:13px;line-height:1.05}
+.deck-visual .cmp-time-column{width:42px}
+.deck-visual .cmp-ms-label{font-size:21px;margin-bottom:5px}
+.deck-visual .cmp-column-speedup b{font-size:22px}
+.deck-visual .cmp-column-speedup small{font-size:16px}
+.deck-visual .cmp-condition{font-size:20px;margin-top:8px}
+.deck-visual .cmp-metric-name{width:205px}
+.deck-visual .cmp-metric-table :is(th,td){font-size:23px;padding:12px 6px;line-height:1.15}
+.deck-visual .cmp-metric-table th:first-child{font-size:20px;line-height:1.2}
+.deck-visual .cmp-metric-table thead th{font-size:18px;line-height:1.2}
 .deck-visual .cmp-metric-pair{flex-direction:row;gap:5px;line-height:1}
-.deck-visual .cmp-metric-pair b{font-size:16px;line-height:1}
+.deck-visual .cmp-metric-pair b{font-size:23px;line-height:1.15}
 .deck-visual .cmp-pair-divider{display:inline;font-size:12px}
-.deck-visual .cmp-packing-view .cmp-time-plot{height:175px;--plot-height:175px}
+.deck-visual .cmp-packing-view .cmp-time-plot{height:150px;--plot-height:150px}
 .deck-visual .cmp-packing-view .cmp-time-chart{padding-top:48px;padding-bottom:35px}
-.deck-visual .cmp-packing-view .cmp-metric-table :is(th,td){padding:9px 4px}
-.deck-visual .cmp-packing-view .cmp-metric-pair b{font-size:21px}
-.deck-visual .cmp-packing-view .cmp-metric-table th:first-child{font-size:17px}
+.deck-visual .cmp-packing-view .cmp-metric-table :is(th,td){padding:6px 4px}
+.deck-visual .cmp-packing-view .cmp-metric-pair b{font-size:23px}
+.deck-visual .cmp-packing-view .cmp-metric-table th:first-child{font-size:20px}
 .deck-visual .cmp-policy-card h4{font-size:27px}
 .deck-visual .cmp-policy-meta{font-size:19px;line-height:1.4;margin:5px 0 8px}
 .deck-visual .cmp-limit-key{font-size:18px}

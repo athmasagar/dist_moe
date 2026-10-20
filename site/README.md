@@ -40,10 +40,10 @@ kernel handoffs, pipeline liveness, hardware performance, and the public API.
 | Metrics, 08–10 | How are rates constructed, and how do hardware, imbalance, and width affect them? |
 | API | How do configuration, plan inspection, and execution connect? |
 
-The default deck has 27 slides and 71 printed steps. The Staged kernel view adds
-two steps. The planning-only API example omits execution. Presentation titles
-come from the same headings as the article; summaries use its prose or live
-figure captions. Previous slide anchors redirect to their current scenes.
+The default deck has 27 slides and 73 printed steps. The Staged kernel view adds
+two steps. The planning-only API example omits execution. Presentation titles name the topic
+independently of article headings; summaries use shared prose, live captions, or
+the measured cases. Previous slide anchors redirect to their current scenes.
 
 | Control | Action |
 | --- | --- |
@@ -60,6 +60,12 @@ dialog, enable background graphics and disable headers/footers. Figures advance
 by user input; dots illustrate the active handoff. Reduced-motion settings suppress
 fades and dot motion. Authors and the Meta copyright are shared by both views.
 
+Slides 7 and 8 have separate EP16 inference and EP64 training steps, with both
+precisions visible and chart/table pairs arranged side by side. Standalone results
+show both measured EPs for each mode; imbalance and width compare EP16 inference
+with EP64 training, including every measured precision/kernel variant. The report
+renderer uses the same cases, rate calculations, and hardware references as the article.
+
 ## Source layout
 
 | Source | Responsibility |
@@ -68,7 +74,7 @@ fades and dot motion. Authors and the Meta copyright are shared by both views.
 | `models.js` | Ordinary BF16/MXFP8 training arithmetic, offsets, interval coloring, and logical plan text |
 | `diagrams.js`, `article-layout.js` | Shared SVG drawings and responsive panel placement |
 | `examples.js`, `app.js` | Complete teaching programs, controls, syntax styling, and live readouts |
-| `presentation.js`, `pdf-export.js` | Scene pacing, shared-content mounting, and print snapshots |
+| `presentation.js`, `pdf-export.js` | Topic titles, scene pacing, shared-content mounting, and print snapshots |
 | `styles.css`, the feature CSS files | Article, results, comparison, presentation, and print styles |
 
 The API has one example selector. BF16 and MXFP8 use one teaching shape to generate

@@ -149,5 +149,64 @@
   function metricsExample(){if(!$('metrics-worked-example')||!meta.metricsExample)return;const e=meta.metricsExample,r=D.cases.find(r=>r.id===e.caseID),bandwidth=e.trainingModelBytes/r.layerMS/1e6;
     $('metrics-worked-example').innerHTML=`<p>EP64, balanced MXFP8 Mega training. The forward model counts ${V.num(e.forwardModelBytes)} logical bytes per GPU. Combined training uses 3× that amount: ${V.num(e.trainingModelBytes)} bytes. Dividing by the ${f(r.layerMS,6)} ms maximum-rank median gives <strong>${f(bandwidth,1)} GB/s effective HBM byte rate</strong>. This is calculated from the model and timer, not measured DRAM traffic.</p>`+table(['Forward byte-model component','Logical bytes'],Object.entries(e.forwardByteBuckets).map(([key,value])=>[({inputs:'Input rows',routed_activations:'Routed activations',routed_weights:'Local routed weights + scales',routing_scores:'Routing scores',shared_work:'Shared-expert work'})[key],V.num(value)]))+`<p>For comparison, the separate rank-0 NVLink TX counter reports ${f(e.rank0TXMiBs,1)} MiB/s = ${f(e.rank0TXMiBs*2**20/1e9,1)} GB/s. The figures report rank means and maxima, so their values can differ from this rank-0 example.</p>`;
   }
-  metricsExample();window.ResultsApp={data:D,row,work,rate,percent,busy,range,sample,scope,reset};
+  /** The slide reports use the article's cases, useful-work accounting, and peaks. */
+  function presentationEPs(report){return report==='inference'?[8,16]:report==='training'?[32,64]:[16,64];}
+  function presentationSetup(report){
+    const mode=report==='inference'?'Inference · forward':report==='training'?'Training · forward + backward':'Inference EP16 · training EP64';
+    return `${mode} · GB300 · T = ${V.num(meta.shape.T)}/GPU · D = ${V.num(meta.shape.D)} · E = ${V.num(meta.shape.E)} · top-${meta.shape.K} · zero shared experts`;
+  }
+  function presentationScope(report){
+    return 'Useful rates include whole-layer time. Dense peaks are theoretical; NVLink TX is measured; HBM is modeled. '+(report==='training'?'EP32 and EP64 used different allocations.':'TX theory: 900 GB/s per direction; HBM theory: 8 TB/s.');
+  }
+  function presentationSummary(report){
+    if(report==='inference'||report==='training'){
+      return presentationEPs(report).map(ep=>{const cases=balanced(ep),fast=cases.reduce((a,b)=>a.layerMS<b.layerMS?a:b);return `EP${ep}: ${name(fast)} delivers a ${f(cases[0].layerMS/fast.layerMS,2)}× speedup over BF16.`;}).join(' ');
+    }
+    if(report==='skew')return 'At 8× imbalance, compare the cluster-average and busiest-GPU useful rates: concentrated work keeps the hot GPU busy while other GPUs receive fewer rows. All shown cases have zero allocator retries and OOMs.';
+    return 'Increasing F adds GEMM work while routed input/output bytes stay fixed. Compare iteration-time growth with useful throughput, for both inference and training.';
+  }
+  function presentationClass(r){return r.precision==='bf16'?'bf16':r.precision==='nvfp4'?'nvfp4':r.pipeline==='staged'?'mxfp8-staged':'mxfp8-mega';}
+  function presentationScale(cases){
+    const max=Math.max(...cases.map(r=>r.layerMS)),raw=max/3,magnitude=10**Math.floor(Math.log10(raw)),unit=raw/magnitude;
+    const step=(unit<=1?1:unit<=2?2:unit<=2.5?2.5:unit<=5?5:10)*magnitude;
+    return {max:Math.ceil(max/step)*step,step};
+  }
+  /** Zero-based iteration-time columns retain each measured precision and pipeline. */
+  function presentationChart(ep,report){
+    const category=report==='width'?'width':'single_layer',settings=report==='skew'?skews:report==='width'?widths:[1],vs=variants(ep);
+    const groups=settings.map(setting=>vs.map(v=>row(ep,v,category,report==='width'?setting:3072,report==='skew'?setting:1)));
+    const scale=presentationScale(groups.flat()),ticks=Array.from({length:Math.round(scale.max/scale.step)+1},(_,i)=>i*scale.step);
+    const multiple=settings.length>1;
+    const legend=multiple?`<div class="rpt-legend">${groups[0].map(r=>`<span><i class="${presentationClass(r)}"></i>${name(r)}</span>`).join('')}</div>`:'';
+    const bars=groups.map((cases,j)=>`<div class="rpt-column-group" style="--series:${cases.length}">${cases.map(r=>{
+      const ratio=cases[0].layerMS/r.layerMS;
+      return `<div class="rpt-column-track"><div class="rpt-column ${presentationClass(r)}" data-case="${V.esc(r.id)}" data-ms="${r.layerMS}" style="height:${r.layerMS/scale.max*100}%"><span class="rpt-ms">${f(r.layerMS,2)}</span>${!multiple&&r.precision!=='bf16'?`<span class="rpt-speedup">${f(ratio,2)}× speedup</span>`:''}</div>${!multiple?`<span class="rpt-variant">${name(r).replace(' ','<br>')}</span>`:''}</div>`;
+    }).join('')}${multiple?`<span class="rpt-condition">${report==='width'?`F = ${V.num(settings[j])}`:`${settings[j]}× imbalance`}</span>`:''}</div>`).join('');
+    return `<div class="rpt-chart ${multiple?'rpt-multiple':'rpt-balanced'}"><div class="rpt-chart-heading">Iteration time · ms ↓${multiple?'':' · speedup over BF16'}</div>${legend}<div class="rpt-chart-area"><div class="rpt-plot" data-y-max="${scale.max}">${ticks.map(value=>`<span class="rpt-tick" style="bottom:${value/scale.max*100}%"><b>${f(value,value<1?2:1)}</b></span>`).join('')}<div class="rpt-column-groups" style="--groups:${groups.length}">${bars}</div></div></div></div>`;
+  }
+  /** Raw tables show the timed operation and the relevant work/traffic rates. */
+  function presentationTable(ep,report){
+    const balancedReport=report==='inference'||report==='training';
+    const headers=balancedReport?['Precision / kernel','Iteration<br>ms','Useful<br>PFLOP/s / GPU','Dense peak<br>% of theory','NVLink TX<br>mean / max GB/s','HBM model<br>TB/s']:
+      report==='skew'?['Precision / kernel','1×<br>ms','4×<br>ms','8×<br>ms','Speedup<br>over BF16','Useful PFLOP/s<br>average / busiest','Max TX<br>GB/s']:
+      ['Precision / kernel','F = 1,536<br>ms','F = 3,072<br>ms','F = 6,144<br>ms','Speedup<br>over BF16','Useful<br>PFLOP/s / GPU','Dense<br>peak %','NVLink TX<br>mean GB/s','HBM model<br>TB/s'];
+    const cell=(r,key,value,display=f(value))=>`<span data-case="${V.esc(r.id)}" data-metric="${key}" data-value="${value}">${display}</span>`;
+    const rows=variants(ep).map(v=>{
+      const r=row(ep,v,report==='width'?'width':'single_layer',report==='width'?6144:3072,report==='skew'?8:1),label=`<span class="rpt-series-label"><i class="${presentationClass(r)}"></i>${name(r)}</span>`;
+      if(balancedReport)return [label,cell(r,'iterationMS',r.layerMS),cell(r,'usefulPF',rate(r)/1000),cell(r,'densePercent',percent(r),f(percent(r),1)),`${cell(r,'meanTX',r.nvlinkTXGBps,f(r.nvlinkTXGBps,0))} / ${cell(r,'maxTX',r.nvlinkMaxTXGBps,f(r.nvlinkMaxTXGBps,0))}`,cell(r,'modeledHBM',r.analyticalHBMGBps/1000,f(r.analyticalHBMGBps/1000,2))];
+      const conditions=(report==='skew'?skews:widths).map(setting=>row(ep,v,report==='width'?'width':'single_layer',report==='width'?setting:3072,report==='skew'?setting:1));
+      const baseline=row(ep,'bf16:standard',r.category,r.F,r.imbalance),speed=cell(r,'bf16Speedup',baseline.layerMS/r.layerMS,f(baseline.layerMS/r.layerMS,2)+'×');
+      const timeCells=conditions.map(d=>cell(d,'iterationMS',d.layerMS));
+      if(report==='skew')return [label,...timeCells,speed,`${cell(r,'usefulPF',rate(r)/1000,f(rate(r)/1000,2))} / ${cell(r,'busiestPF',busy(r)/1000,f(busy(r)/1000,2))}`,cell(r,'maxTX',r.nvlinkMaxTXGBps,f(r.nvlinkMaxTXGBps,0))];
+      return [label,...timeCells,speed,cell(r,'usefulPF',rate(r)/1000,f(rate(r)/1000,2)),cell(r,'densePercent',percent(r),f(percent(r),1)),cell(r,'meanTX',r.nvlinkTXGBps,f(r.nvlinkTXGBps,0)),cell(r,'modeledHBM',r.analyticalHBMGBps/1000,f(r.analyticalHBMGBps/1000,2))];
+    });
+    return `<div class="rpt-table">${balancedReport?'':`<p class="rpt-metric-context">Iteration times at all three ${report==='width'?'widths':'imbalances'}; other metrics at ${report==='width'?'F = 6,144':'8× imbalance'}</p>`}${table(headers,rows)}</div>`;
+  }
+  function renderPresentation(report){
+    const controller=report==='inference'||report==='training'?'efficiency':report,figure=$('results-'+(controller==='efficiency'?'efficiency':controller)+'-figure'),id=controller+'-deck-view';
+    let node=$(id);if(!node){node=document.createElement('div');node.id=id;node.className='standalone-deck-view';figure.append(node);}
+    node.dataset.report=report;
+    node.innerHTML=presentationEPs(report).map(ep=>`<section class="rpt-workload" data-ep="${ep}" data-mode="${ep<32?'inference':'training'}"><h3>EP${ep} · ${ep<32?'Inference · forward':'Training · forward + backward'}<span>${report==='width'?'Balanced routing · three measured expert widths':report==='skew'?'One layer · imbalance 1× / 4× / 8×':'Balanced routing · F = 3,072'}</span></h3><div class="rpt-workload-body">${presentationChart(ep,report)}${presentationTable(ep,report)}</div></section>`).join('');
+  }
+  metricsExample();window.ResultsApp={data:D,row,work,rate,percent,busy,range,sample,scope,reset,renderPresentation,presentationSetup,presentationScope,presentationSummary};
 })();

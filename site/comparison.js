@@ -39,7 +39,7 @@
     const axis=ticks.map(value=>`<span class="cmp-time-tick" style="bottom:${value/scale.max*100}%"><b>${Number(value.toPrecision(8)).toLocaleString('en-US',{maximumFractionDigits:3})}</b></span>`).join('');
     const columns=settings.map(setting=>{const p=pair(ep,fmt,category,setting),ratio=speedup(p),high=Math.max(p.dist.iterationMS,p.mok.iterationMS)/scale.max*100;
       return `<div class="cmp-time-grouped" data-case="${V.esc(p.dist.id)}" data-iteration-ratio="${ratio}"><span class="cmp-column-speedup" style="bottom:calc(${high}% + 28px)"><b>${f(ratio,2)}×</b><small>speedup</small></span><div class="cmp-time-columns">${['dist','mok'].map(provider=>`<div class="cmp-time-column ${provider}" data-provider="${provider}" data-ms="${p[provider].iterationMS}" style="height:${p[provider].iterationMS/scale.max*100}%"><span class="cmp-ms-label">${f(p[provider].iterationMS,2)}</span></div>`).join('')}</div><span class="cmp-condition">${settingName(category,setting)}</span></div>`;}).join('');
-    return `<section class="cmp-precision-panel" data-precision="${fmt}"><h4><b class="cmp-precision-title"><span class="cmp-slide-ep">EP${ep} · ${mode(ep)} · </span>${precision(fmt)}</b><span>Iteration time · ms</span></h4><div class="cmp-time-chart"><div class="cmp-time-plot" data-y-max="${scale.max}"><div class="cmp-time-axis">${axis}</div><div class="cmp-column-cases" style="--case-count:${settings.length}">${columns}</div></div></div>${metricTable(ep,fmt,category,settings)}</section>`;
+    return `<section class="cmp-precision-panel" data-precision="${fmt}"><h4><b class="cmp-precision-title"><span class="cmp-slide-ep">EP${ep} · ${mode(ep)} · </span>${precision(fmt)}</b><span>Iteration time · ms</span></h4><div class="cmp-panel-body"><div class="cmp-time-chart"><div class="cmp-time-plot" data-y-max="${scale.max}"><div class="cmp-time-axis">${axis}</div><div class="cmp-column-cases" style="--case-count:${settings.length}">${columns}</div></div></div>${metricTable(ep,fmt,category,settings)}</div></section>`;
   }
   /** The article contains every measured EP; slides show EP16 inference/EP64 training. */
   function comparisonView(eps,category,settings){return eps.map(ep=>{const scale=timeScale(ep,category,settings);return `<section class="cmp-ep-report" data-ep="${ep}"><h4 class="cmp-ep-heading">EP${ep} · ${mode(ep)}<span>${category==='packing'?'Ten forward + backward layer calls':ep<32?'One forward layer call':'One forward + backward layer call'}</span></h4><div class="cmp-precision-panels">${['bf16','mxfp8'].map(fmt=>plot(ep,fmt,category,settings,scale)).join('')}</div></section>`;}).join('');}
@@ -89,6 +89,22 @@
   function renderWidth(){A.renderHTML('compare-width-legend',legend());A.renderHTML('compare-width-view',comparisonView([16,64],'width',[1536,3072,6144]));
     A.renderHTML('compare-width-table',timeTables([16,64],'width',[1536,3072,6144],'Width F'));A.phaseCaption('compare-width-caption',widthCaption());
   }
+  /** Two presentation steps keep inference and training readable at full size. */
+  function presentationSteps(name,category,setting){
+    const figure=$(name+'-figure'),steps=document.createElement('div'),caption=document.createElement('div');
+    steps.id=name+'-steps';steps.hidden=true;caption.id=name+'-step-caption';caption.className='phase-caption comparison-step-caption';caption.hidden=true;
+    steps.innerHTML=[16,64].map(ep=>`<button data-ep="${ep}" aria-pressed="${ep===16}">${mode(ep)} · EP${ep}</button>`).join('');
+    figure.append(steps,caption);
+    steps.addEventListener('click',event=>{
+      const button=event.target.closest('[data-ep]');if(!button)return;const ep=Number(button.dataset.ep);figure.dataset.deckEp=ep;
+      steps.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));
+      const bf=pair(ep,'bf16',category,setting),fp=pair(ep,'mxfp8',category,setting);
+      A.phaseCaption(caption.id,[`${mode(ep)} · EP${ep}`,`${category==='width'?`At F = ${V.num(setting)}`:`At ${setting}× imbalance`}, BF16 and MXFP8 deliver ${f(speedup(bf),2)}× and ${f(speedup(fp),2)}× speedup over MoK. Both precisions compare the same routed workload.`]);
+    });
+    steps.querySelector('button').click();
+  }
+  presentationSteps('compare-scaling','single_layer',8);
+  presentationSteps('compare-width','width',6144);
   renderPolicy();
   renderPacking();renderScaling();renderWidth();
   function scope(name){return name==='compare-policy'?'Widths illustrate normalized layer demand. Byte budgets depend on precision and padding; recorded Dist-MoE capacity flags are zero.':'Matched shapes; one BF16 shared expert. TFLOP/s counts useful work; HBM is modeled; NVLink TX/RX is measured separately.';}

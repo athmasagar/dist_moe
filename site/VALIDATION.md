@@ -56,6 +56,6 @@ packing fixtures, including forward/backward offsets and LIFO rewinds. The
 logical API previews have been checked against the public planner and its
 exact diagnostic text. UI and presentation checks cover desktop, laptop,
 tablet, and phone sizes, with rendered inspection of changed figures and PDF pages.
-The default Mega/BF16 deck contains 27 scenes and 71 steps; selected Staged or
+The default Mega/BF16 deck contains 27 scenes and 73 steps; selected Staged or
 planning-only modes change the step count. These counts are checked from the
 actual scene sequence rather than from retired slide descriptions.
