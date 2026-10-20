@@ -76,3 +76,8 @@ that forward restores Staged/Mega controls. The backward scene follows main
 slide 18 and Lightning slide 10. Validate all nine steps, row/column operands,
 shared MMA/TMA/epilogue roles, separate W2/W13 launch lifetimes, and stable framing.
 Verify role IDs and launch order against the kernel classes and runtime source.
+
+Compare forward and backward framing as well as each view’s step-to-step
+framing. Both directions use the same responsive layout and renderer helpers
+for scheduled work, operands, and hardware. Validate the selected stream,
+operation, and forward title when switching Staged/Mega.

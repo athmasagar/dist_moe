@@ -137,3 +137,7 @@ records on shared compute roles. Backward uses two launches, W2 then W13, each
 interleaving DGRAD/WGRAD tile ranges on its shared TMA, MMA, and epilogue roles.
 DGRAD uses row-gradient operands; WGRAD uses column-gradient and saved or
 regenerated column-activation operands.
+
+The forward/backward kernel views share pipeline cards, a scheduled-work strip,
+operand recipes, and hardware bands. The presentation titles are MXFP8 Mega
+Forward and MXFP8 Mega Backward; selecting Staged updates the forward title.

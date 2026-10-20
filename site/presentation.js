@@ -41,7 +41,7 @@
     { id: 'lifetimes', title: 'Forward and Backward Dependencies', figure: 'recompute-figure', chapter: 'recompute', parts: ['dependency-equations'], prepare: 'lifetime', setup: '.config-summary' },
     { id: 'layer-packing', title: 'Activation Packing and Dynamic Recompute', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [0, 8], parts: ['packing-svg'], display: 'packing', setup: '#packing-brief' },
     { id: 'gpu-tile', title: 'GPU Tile Movement and Compute', figure: 'kernel-figure', controller: 'kernel', chapter: 'kernels', range: [0, 5], setup: '#tile-address' },
-    { id: 'mega-pipeline', title: 'Persistent Warp Roles and Kernel Pipelines', figure: 'fusion-figure', controller: 'fusion', fusionDirection:'forward', chapter: 'kernels', range: [0, null], bounds: [0,0,1600,550], setup: '#fusion-config' },
+    { id: 'mega-pipeline', title: 'MXFP8 Mega Forward', figure: 'fusion-figure', controller: 'fusion', fusionDirection:'forward', chapter: 'kernels', range: [0, null], bounds: [0,0,1600,550], setup: '#fusion-config' },
     { id: 'mega-backward', title: 'MXFP8 Mega Backward', figure: 'fusion-figure', controller: 'fusion', fusionDirection:'backward', chapter: 'kernels', range: [0,8], bounds: [0,0,1600,550], setup: '#fusion-config' },
     { id: 'pipeline-prefix', title: 'Pipeline Liveness and Slot Size', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [0, 31], actions: ['0F0','2B0','0F4','0B7'], slotDisplay: 'liveness', parts: ['liveness-svg'], setup: '#slots-config' },
     { id: 'slot-reuse', title: 'Activation Slot Assignment and Reuse', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [2, 6], actions: ['2F0','2B0','0F3'], slotDisplay: 'reuse', camera: [0, 0, 1146, 406], pane: true, parts: ['slots-svg','slot-selection'] },
@@ -132,7 +132,7 @@
     if(scene.id==='allocation')return figures[scene.figure].querySelector('#memory-caption');
     return figures[scene.figure].querySelector('.phase-caption');
   }
-  function titleFor(scene,current=false) { return scene.kind==='cover' ? original.title.textContent : current&&scene.buildTitles ? scene.buildTitles[build] : scene.title; }
+  function titleFor(scene,current=false) { if(current&&scene.fusionDirection==='forward')return app.state.fusion==='staged'?'MXFP8 Staged Forward':'MXFP8 Mega Forward';return scene.kind==='cover' ? original.title.textContent : current&&scene.buildTitles ? scene.buildTitles[build] : scene.title; }
   function createShell() {
     shell = document.createElement('div');
     shell.id = 'presentation';
@@ -576,6 +576,7 @@
     const scene = scenes[index], figure = figures[scene.figure];
     if(scene.kind==='code'&&scene.builds)build=app.state.apiStep;
     $('deck-title').textContent = titleFor(scene,true);
+    if(scene.fusionDirection==='forward')$('deck-slide-select').options[index].textContent=String(index+1).padStart(2,'0')+' · '+titleFor(scene,true);
     $('deck-repository').hidden=scene.kind!=='code';
     $('deck-repository').href=original.repository.href;
     $('deck-repository').textContent=original.repository.href;

@@ -296,3 +296,8 @@ The operand labels describe row-gradient/DGRAD-weight views and column-gradient/
 column-activation WGRAD views, rather than treating their storage orientation as
 an ordinary row-batch multiplication equation. All MMAs accumulate in FP32;
 DGRAD stores are BF16 and WGRAD destinations may be BF16 or FP32.
+
+The aligned forward/backward views share scheduling, operand, and hardware
+renderers. Forward records illustrate configured chunk lead and readiness;
+backward records show the selected weight kernel’s per-expert DGRAD/WGRAD
+ranges. Schematic strips do not imply equal tile counts or measured durations.
