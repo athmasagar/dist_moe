@@ -94,3 +94,8 @@ zero baselines, tick ranges, model order, colors, and the BF16 backward exceptio
 The SVG viewport removes only surrounding labels and margins; verify native
 labels and the shared legend fit in both live and printed layouts.
 Also validate the extended supported-modes title in its second build.
+
+For the expert-width result slide, validate the four enlarged plots and two
+combined raw tables. Preserve all 21 width cases and their useful throughput,
+theoretical peak percentages, and modeled HBM rates. Check table glyphs and
+width labels against their workload row bounds at each supported viewport.

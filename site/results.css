@@ -127,23 +127,30 @@ svg.result-visual{font-size:20px}
 .rpt-balanced .rpt-chart-area{padding-top:30px}
 .rpt-balanced .rpt-ms{font-size:24px;font-weight:600}
 .rpt-table tbody td:nth-child(2){font-weight:600}
-.rpt-width-workload>.rpt-legend{margin:0 0 10px;font-size:17px;gap:8px 22px}
-.rpt-width-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:30px;flex:1;min-height:0}
+/* Inference has four kernel variants; training has three. */
+.deck-visual>figure>.standalone-deck-view[data-report="width"].deck-part{grid-template-rows:minmax(0,1.06fr) minmax(0,.94fr);gap:32px}
+.rpt-width-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.15fr);grid-template-rows:minmax(0,1fr);gap:28px;flex:1;min-height:0;align-items:stretch}
 .rpt-width-metric{display:flex;flex-direction:column;min-width:0;min-height:0;gap:7px}
 .rpt-width-metric .rpt-chart{flex:1;min-height:0}
-.rpt-width-metric .rpt-chart-heading{font-size:21px}
-.rpt-width-metric .rpt-chart-area{padding:12px 2px 27px 38px}
-.rpt-width-metric .rpt-column-groups{gap:18px;padding:0 3px}
+.rpt-width-metric .rpt-chart-heading{font-size:23px}
+.rpt-width-metric .rpt-chart-area{padding:15px 2px 38px 43px}
+.rpt-width-metric .rpt-column-groups{gap:16px;padding:0 2px}
 .rpt-width-metric .rpt-column-group{gap:5px}
-.rpt-width-metric .rpt-column{width:19px}
-.rpt-width-metric .rpt-condition{font-size:16px;margin-top:7px}
-.rpt-width-metric .rpt-tick>b{font-size:16px;margin-right:7px}
-.rpt-width-metric .rpt-table table{font-size:17px;line-height:1.1}
-.rpt-width-metric .rpt-table :is(th,td){font-size:17px;padding:1px 5px;line-height:1.1}
-.rpt-width-metric .rpt-table th:first-child{width:28%;font-size:17px}
-.rpt-width-metric .rpt-table tbody th{font-weight:500}
-.rpt-width-metric .rpt-table td{font-weight:400}
+.rpt-width-metric .rpt-column{width:min(36px,86%)}
+.rpt-width-metric .rpt-condition{font-size:21px;margin-top:9px}
+.rpt-width-metric .rpt-tick>b{font-size:20px;margin-right:8px}
+.rpt-width-table{align-self:center}
+.rpt-width-table table{font-size:20px;line-height:1.15}
+.rpt-width-table :is(th,td){font-size:20px;padding:3px 8px;line-height:1.15}
+.rpt-width-table th:first-child{width:25%;font-size:20px}
+.rpt-width-table tbody th{font-weight:500}
+.rpt-width-table td{font-weight:400}
+.rpt-width-table .rpt-series-label{line-height:1.1}
+.rpt-width-table .rpt-series-label i{width:18px;height:14px}
+.rpt-width-compute{display:block;white-space:nowrap;color:var(--ink)}
+.rpt-width-hbm{display:block;font-size:19px;line-height:1.2;color:var(--muted);margin-top:2px}
 .standalone-deck-view[data-report="skew"] .rpt-table :is(th,td):nth-child(6){width:auto}
 
-.rpt-width-key{font-size:15px;line-height:1.2;margin:0 0 7px;color:var(--muted);max-width:none}
+.rpt-width-key{font-size:20px;line-height:1.2;margin:0 0 9px;color:var(--ink);max-width:none}
+.rpt-width-key>span{display:block;font-size:18px;color:var(--muted);margin-top:4px}
 .rpt-cell-divider{color:var(--faint)}

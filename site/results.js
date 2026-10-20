@@ -220,17 +220,21 @@
     const baseline=row(r.ep,r.precision+':'+r.pipeline);
     return (r.layerMS/Math.max(...r.receiveRows))/(baseline.layerMS/Math.max(...baseline.receiveRows));
   }
-  function widthMetricTable(ep,metric){
+  /** Keep compute, theoretical peak share, and modeled HBM together per width. */
+  function widthSummaryTable(ep){
     const span=(r,key,value,digits)=>`<span data-case="${V.esc(r.id)}" data-metric="${key}" data-value="${value}">${f(value,digits)}</span>`;
-    const rows=variants(ep).map(v=>{const cases=widths.map(F=>row(ep,v,'width',F));return [name(cases[0]),...cases.map(r=>metric==='usefulPF'?`${span(r,'usefulPF',rate(r)/1000,2)} <span class="rpt-cell-divider">/</span> ${span(r,'densePercent',percent(r),1)}%`:span(r,'modeledHBM',r.analyticalHBMGBps/1000,2))];});
-    return `<div class="rpt-table rpt-width-table">${metric==='usefulPF'?'<p class="rpt-width-key">Useful PFLOP/s per GPU / dense theoretical peak %</p>':'<p class="rpt-width-key">Modeled logical byte rate · TB/s (not DRAM counters)</p>'}${table(['F →',...widths.map(F=>V.num(F))],rows)}</div>`;
+    const rows=variants(ep).map(v=>{
+      const cases=widths.map(F=>row(ep,v,'width',F)),label=`<span class="rpt-series-label"><i class="${presentationClass(cases[0])}"></i><span>${name(cases[0]).replace(' ','<br>')}</span></span>`;
+      return [label,...cases.map(r=>`<span class="rpt-width-compute">${span(r,'usefulPF',rate(r)/1000,2)} <span class="rpt-cell-divider">/</span> ${span(r,'densePercent',percent(r),1)}%</span><span class="rpt-width-hbm">${span(r,'modeledHBM',r.analyticalHBMGBps/1000,2)} TB/s</span>`)];
+    });
+    return `<div class="rpt-table rpt-width-table"><p class="rpt-width-key">PFLOP/s per GPU / dense theoretical peak %<span>Second line: HBM model · TB/s</span></p>${table(['F →',...widths.map(F=>V.num(F))],rows)}</div>`;
   }
   function renderPresentation(report){
     const controller=report==='inference'||report==='training'?'efficiency':report,figure=$('results-'+(controller==='efficiency'?'efficiency':controller)+'-figure'),id=controller+'-deck-view';
     let node=$(id);if(!node){node=document.createElement('div');node.id=id;node.className='standalone-deck-view';figure.append(node);}
     node.dataset.report=report;
     if(report==='width'){
-      node.innerHTML=presentationEPs(report).map(ep=>`<section class="rpt-workload rpt-width-workload" data-ep="${ep}" data-mode="${ep<32?'inference':'training'}"><h3>EP${ep} · ${ep<32?'Inference · forward':'Training · forward + backward'}<span>${(()=>{const best=variants(ep).map(v=>row(ep,v,'width',6144)).reduce((a,b)=>rate(a)>rate(b)?a:b),narrow=row(ep,best.precision+':'+best.pipeline,'width',1536);return `${name(best)}: 4× work takes ${f(best.layerMS/narrow.layerMS,2)}× time`;})()}</span></h3><div class="rpt-legend">${balanced(ep).map(r=>`<span><i class="${presentationClass(r)}"></i>${name(r)}</span>`).join('')}</div><div class="rpt-width-grid">${['usefulPF','modeledHBM'].map(metric=>`<div class="rpt-width-metric" data-metric-panel="${metric}">${presentationChart(ep,report,metric)}${widthMetricTable(ep,metric)}</div>`).join('')}</div></section>`).join('');
+      node.innerHTML=presentationEPs(report).map(ep=>`<section class="rpt-workload rpt-width-workload" data-ep="${ep}" data-mode="${ep<32?'inference':'training'}"><h3>EP${ep} · ${ep<32?'Inference · forward':'Training · forward + backward'}<span>${(()=>{const best=variants(ep).map(v=>row(ep,v,'width',6144)).reduce((a,b)=>rate(a)>rate(b)?a:b),narrow=row(ep,best.precision+':'+best.pipeline,'width',1536);return `${name(best)}: 4× work takes ${f(best.layerMS/narrow.layerMS,2)}× time`;})()}</span></h3><div class="rpt-width-grid">${['usefulPF','modeledHBM'].map(metric=>`<div class="rpt-width-metric" data-metric-panel="${metric}">${presentationChart(ep,report,metric)}</div>`).join('')}${widthSummaryTable(ep)}</div></section>`).join('');
       return;
     }
     node.innerHTML=presentationEPs(report).map(ep=>`<section class="rpt-workload" data-ep="${ep}" data-mode="${ep<32?'inference':'training'}"><h3>EP${ep} · ${ep<32?'Inference · forward':'Training · forward + backward'}<span>${report==='skew'?`Hot GPU rows: ${V.num(meta.shape.T*meta.shape.K)} → ${V.num(meta.shape.T*meta.shape.K*8)} · same total routes`:'Balanced routing · F = 3,072'}</span></h3><div class="rpt-workload-body">${presentationChart(ep,report)}${presentationTable(ep,report)}</div></section>`).join('');
