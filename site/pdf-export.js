@@ -9,7 +9,7 @@
     memoryPrecision: 'memory-precision', calculation: 'calculation-tabs',
     retentionPrecision: 'recompute-precision', retention: 'recompute-select',
     retentionDisplay: 'retention-display', format: 'format-select',
-    direction: 'precision-direction', fusion: 'fusion-select', slotPolicy: 'slot-policy',
+    direction: 'precision-direction', fusionDirection: 'fusion-direction', fusion: 'fusion-select', slotPolicy: 'slot-policy',
     slotsView: 'slots-display', packingDisplay: 'packing-display', code: 'code-tabs'
   };
 

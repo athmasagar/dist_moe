@@ -196,6 +196,7 @@ html:fullscreen .deck-drawer{top:0;bottom:0}
 .deck-visual .diagram-scroll svg.fusion-visual{font-size:17px}
 .deck-visual .fusion-visual .bold{font-size:17px}
 .deck-visual .fusion-visual :is(.small,.small.bold,.mono){font-size:15px}
+.deck-drawer #fusion-direction{display:none}
 /* API slides reveal the article's configuration, plan output, and execution. */
 .deck-drawer .api-layout,.deck-drawer .api-full-program,.deck-drawer .api-examples .code-description,.deck-drawer .api-examples .code-footer,.deck-drawer .api-examples .code-tools{display:none!important}
 .deck-drawer .api-examples{background:transparent;border:0;margin:0}

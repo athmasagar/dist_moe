@@ -274,3 +274,25 @@ parts, and `Moe.packing` snapshots as the detailed figures. Brief renderers chan
 labels and composition only. The working-set comparison uses the same received-row
 bound for saved-state, forward scratch, and backward scratch. Returning to the
 article restores the detailed renderers.
+
+## Mega backward and shared warp roles
+
+Figure 06 and the new backward scene use the public asynchronous MXFP8 path:
+
+- `dist_moe/_blockscaled.py` calls `dist_blockscaled_grouped_gemm_dgrad_wgrad_dispatch`
+  for W2 before `dist_blockscaled_grouped_gemm_dgrad_wgrad_swiglu_bwd_combine`
+  for W13. These are separate launch and CTA lifetimes.
+- `dist_moe/kernels/mega_blockscaled_grouped_gemm_kernel.py` and its base class
+  assign epilogue warps 0–3, MMA warp 4, TMA warp 5, and producer warps 6–15.
+- `dist_moe/kernels/gemm_warp_roles.py` selects DGRAD or WGRAD pipelines using
+  each work record’s `problem_idx` on the same MMA consumer.
+- `MegaProblemVisitor` in `dist_moe/kernels/tile_scheduler.py` lays out each
+  expert’s DGRAD tile range followed by its WGRAD range. The schematic does not
+  imply strict alternation of individual tiles or measured execution durations.
+- The chunked forward kernel sends W13 and W2 work through the same TMA/MMA
+  and epilogue roles. Its illustrated narrow layout differs from backward’s split.
+
+The operand labels describe row-gradient/DGRAD-weight views and column-gradient/
+column-activation WGRAD views, rather than treating their storage orientation as
+an ordinary row-batch multiplication equation. All MMAs accumulate in FP32;
+DGRAD stores are BF16 and WGRAD destinations may be BF16 or FP32.

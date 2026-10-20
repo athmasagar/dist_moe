@@ -21,6 +21,7 @@ window.ArticleLayout = (() => {
     content(entry,fabric,html);const note=svg.querySelector('.routing-note text');if(note){if(!entry.contents.has(note))entry.contents.set(note,note.innerHTML);wrap(entry,note,16,1470,525);}svg.setAttribute('viewBox','0 0 560 1540');
   }
   function fusion(svg,entry,mobile){
+    if(svg.dataset.direction==='backward'){fusionBackward(svg,entry,mobile);return;}
     const flow=svg.querySelector('.fusion-flow'),chunks=svg.querySelector('.fusion-chunks'),hardware=svg.querySelector('.fusion-hardware');
     if(!mobile){move(entry,hardware,-800,560);svg.setAttribute('viewBox','0 0 1040 1120');return;}
     const positions=[[20,45],[320,45],[20,200],[320,200],[20,355],[320,355],[20,510],[320,510]];
@@ -39,6 +40,44 @@ window.ArticleLayout = (() => {
     labels.filter(node=>entry.attrs.get(node)?.get('y')==='373').forEach((node,i)=>content(entry,node,['Gather','W13','SwiGLU','W2','Scatter'][i]));
     rects.forEach((rect,i)=>{attribute(entry,rect,'x',105+(i%5)*96);attribute(entry,rect,'y',745+Math.floor(i/5)*48);attribute(entry,rect,'width',90);attribute(entry,rect,'height',40);});
     move(entry,hardware,-1030,960);svg.setAttribute('viewBox','0 0 600 1520');
+  }
+  function fusionBackward(svg,entry,mobile){
+    const flow=svg.querySelector('.fusion-flow'),queues=svg.querySelector('.fusion-backward-queues'),hardware=svg.querySelector('.fusion-hardware');
+    if(!mobile){move(entry,hardware,-800,560);svg.setAttribute('viewBox','0 0 1040 1120');return;}
+    const positions=[[20,45],[320,45],[20,200],[320,200],[20,355],[320,355],[20,510],[320,510]];
+    [...flow.querySelectorAll('.flow-card')].forEach((group,i)=>{
+      const rect=group.querySelector('rect'),x=Number(rect.getAttribute('x')),y=Number(rect.getAttribute('y'));
+      move(entry,group,positions[i][0]-x,positions[i][1]-y);attribute(entry,rect,'width',260);attribute(entry,rect,'height',78);
+      [...group.querySelectorAll('text')].forEach((node,j)=>attribute(entry,node,'y',y+(j?57:28)));
+    });
+    [...flow.querySelectorAll(':scope > rect')].forEach((rect,i)=>{attribute(entry,rect,'width',584);attribute(entry,rect,'y',i?338:8);attribute(entry,rect,'height',330);});
+    for(const node of flow.querySelectorAll(':scope > text')){
+      if(Number(node.getAttribute('x'))>1000)attribute(entry,node,'display','none');
+      else if(Number(node.getAttribute('y'))===195)textLines(entry,node,20,348,['KERNEL 2 · SwiGLU + W13 DGRAD / WGRAD']);
+    }
+    const geometry=['M280,80 L320,80','M450,123 L450,158 L150,158 L150,200','M280,235 L320,235','M450,278 L450,313 L150,313 L150,355','M280,390 L320,390','M450,433 L450,468 L150,468 L150,510','M280,545 L320,545'];
+    [...flow.querySelectorAll(':scope > path')].forEach((path,i)=>attribute(entry,path,'d',geometry[i]));
+    svg.querySelectorAll('.edge-payload-label').forEach(group=>{
+      const ox=Number(group.dataset.edgeX),oy=Number(group.dataset.edgeY);
+      const index=oy===182?3:oy===80?(ox<300?0:ox<600?1:2):(ox<300?4:ox<600?5:6);
+      const points=[[300,80],[450,158],[300,235],[450,313],[300,390],[450,468],[300,545]],point=points[index],x=[0,2,4,6].includes(index)?20:320,y=[125,125,280,280,435,435,595][index],rect=group.querySelector('rect');
+      attribute(entry,group,'data-edge-x',point[0]);attribute(entry,group,'data-edge-y',point[1]);
+      attribute(entry,rect,'x',x);attribute(entry,rect,'y',y);attribute(entry,rect,'height',70);
+      const labels=[...group.querySelectorAll('text')];labels.forEach((node,j)=>{attribute(entry,node,'x',x+8);attribute(entry,node,'y',y+26+j*27);});
+      attribute(entry,rect,'width',Math.max(...labels.map(node=>node.getComputedTextLength()))+16);
+    });
+    textLines(entry,queues.querySelector('.bwd-queue-title'),20,705,['SHARED MMA WARP 4 · EXPERT PAIRS']);
+    for(const node of queues.querySelectorAll('[data-bwd-queue-heading]'))attribute(entry,node,'y',Number(node.dataset.bwdQueueHeading)?955:740);
+    [...queues.querySelectorAll('[data-bwd-record]')].forEach(group=>{
+      const rect=group.querySelector('rect'),x=Number(rect.getAttribute('x')),y=Number(rect.getAttribute('y')),launch=Number(group.dataset.launch),expert=Number(group.dataset.expert),column=group.dataset.kind==='WGRAD'?320:20;
+      move(entry,group,column-x,(launch?975:760)+expert*58-y);attribute(entry,rect,'width',260);attribute(entry,rect,'height',46);
+      attribute(entry,group.querySelector('text'),'x',x+130);attribute(entry,group.querySelector('text'),'y',y+30);
+    });
+    for(const node of queues.querySelectorAll('[data-bwd-operands]')){
+      const second=Number(node.dataset.bwdOperands);textLines(entry,node,20,second?1103:888,second?['DGRAD: row grad_h1 + W13 DGRAD view','WGRAD: column grad_h1 + column x']:['DGRAD: row grad_h3 + W2 DGRAD view','WGRAD: column grad_h3 + column h2'],28);
+    }
+    textLines(entry,queues.querySelector('[data-bwd-queue-note]'),20,1175,['Variable-length tile ranges, paired per expert.','Each shared MMA warp consumes the scheduled records.'],28);
+    move(entry,hardware,-1030,1230);svg.setAttribute('viewBox','0 0 600 1810');
   }
   function efficiency(svg,entry){svg.querySelectorAll('.efficiency-transport').forEach(group=>move(entry,group,-810,455));for(const group of svg.querySelectorAll('.efficiency-compute,.efficiency-transport'))for(const text of group.querySelectorAll('text')){if(Number(text.getAttribute('y'))===384)wrap(entry,text,group.classList.contains('efficiency-transport')?850:20,384,745);}svg.setAttribute('viewBox','0 0 800 890');}
   function skew(svg,entry){svg.querySelectorAll('.article-wide-title').forEach(node=>attribute(entry,node,'display','none'));svg.querySelectorAll('.skew-distribution').forEach((node,i)=>move(entry,node,-i*342,i*360));move(entry,svg.querySelector('.skew-throughput'),-1104,1130);svg.setAttribute('viewBox','0 0 460 1540');}

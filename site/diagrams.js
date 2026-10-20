@@ -350,7 +350,7 @@ window.Views = (() => {
     return {svg:finish(s),q};
   }
   function orientation(){let a='',b='';for(let row=0;row<8;row++)for(let col=0;col<8;col++){a+=r(20+col*22,20+row*22,20,20,col<4?'blue-fill':'green-fill');b+=r(20+col*22,20+row*22,20,20,row<4?'purple-fill':'amber-fill');}a+=t(210,47,'← 32 columns','small')+t(210,80,'per logical row','small')+t(20,226,'8 × 8 display bins for a 64 × 64 operand','tiny muted');b+=t(210,47,'32 rows ↓','small')+t(210,80,'per logical column','small')+t(20,226,'Each bin represents 8 × 8 logical values.','tiny muted');return {a,b};}
-  function fusion(p,pipeline,focus=0){start('fusion');const mega=pipeline==='mega',step=c=>({g:c,w13:c+1,sw:c+(mega?2:4),w2:c+(mega?3:5),scatter:c+(mega?4:6)}),st=step(focus);let s='<g class="fusion-flow">';
+  function fusion(p,pipeline,focus=0,direction='forward'){if(direction==='backward')return fusionBackward(p);start('fusion');const mega=pipeline==='mega',step=c=>({g:c,w13:c+1,sw:c+(mega?2:4),w2:c+(mega?3:5),scatter:c+(mega?4:6)}),st=step(focus);let s='<g class="fusion-flow">';
     if(mega)s+=r(8,8,1024,303,'green-fill','stroke-dasharray="5 4" stroke-opacity=".55"');else s+=r(8,8,1024,124,'blue-fill','stroke-dasharray="5 4" stroke-opacity=".55"')+r(8,173,1024,139,'orange-fill','stroke-dasharray="5 4" stroke-opacity=".55"');
     s+=t(20,28,mega?'ONE KERNEL GRID · SHARED WARP ROLES':'LAUNCH 1 · dispatch + W13','small bold');s+=t(1018,28,`FOLLOW CHUNK ${focus}`,'small amber-text','end');if(!mega)s+=t(1018,195,'LAUNCH 2 · SwiGLU + W2 + combine','small bold','end');
     const nodes=[{x:20,y:45,n:'Gather / quant roles',sub:'publishes x qdata/scales',at:st.g,col:'blue'},{x:278,y:45,n:'x row bundle',sub:p>st.g?'ready for W13':'waiting for publication',at:st.w13,col:'green'},{x:536,y:45,n:'TMA / MMA: W13',sub:'SMEM → FP32 TMEM',at:st.w13,col:'orange'},{x:794,y:45,n:'Epilogue: W13',sub:p>st.w13?'h1 BF16 + ready signal':'wait for W13',at:st.sw,col:'green'},{x:20,y:213,n:'SwiGLU / quant roles',sub:'reads h1; publishes h2',at:st.sw,col:'purple'},{x:278,y:213,n:'h2 row bundle',sub:p>st.sw?'qdata + scales ready':'wait for quantization',at:st.w2,col:'green'},{x:536,y:213,n:'TMA / MMA: W2',sub:'SMEM → FP32 TMEM',at:st.w2,col:'orange'},{x:794,y:213,n:'W2 scatter',sub:'BF16 → combine HBM',at:st.scatter,col:'green'}];
@@ -368,13 +368,66 @@ window.Views = (() => {
       s+=t(1080,76,'One SM hosts this complete role set.','small')+t(1080,105,'Narrow MXFP8 · 16 warps × 32 = 512 threads','small muted');
       const roles=[['Warps 0–3 · gather / quant','Peer rows → x qdata/scales','blue'],['Warps 4/5/6 · TMA-A / MMA / TMA-B','Warp 7: no mainloop role','orange'],['Warps 8–11 · epilogue','W13 h1 stores; W2 peer scatter','green'],['Warps 12–15 · SwiGLU / quant','h1 → h2 qdata/scales','purple']];
       roles.forEach(([label,detail,color],i)=>s+=r(1080,129+i*81,482,70,`${color}-fill`)+t(1094,154+i*81,label,'small bold')+t(1094,182+i*81,detail,'small'));
-      s+=t(1080,472,'The same TMA/MMA and epilogue roles','small bold')+t(1080,497,'serve both W13 and W2 work records.','small bold')+t(1080,525,'Waiting warps stay resident; ready warps issue.','small muted');
+      s+=t(1080,463,'W13 / W2 interleave on the same compute group','small bold');
+      ['W13','W2','W13','W2'].forEach((name,i)=>s+=r(1080+i*119,475,106,26,'orange-fill')+t(1133+i*119,493,name,'small','middle'));
+      s+=t(1080,523,'Same TMA/MMA + epilogue roles · order varies','small muted');
     }else{
       s+=t(1080,83,'Fixed roles coexist within each CTA.','small')+card(1080,119,482,110,'Launch 1 CTA','gather/quant + TMA + MMA + epilogue','blue-fill')+t(1094,209,'SM schedulers issue eligible warps.','small');
       s+=wire('M1321,229 L1321,293','purple',true,false)+t(1350,262,'launch completion','small purple-text');
       s+=card(1080,293,482,110,'Launch 2 CTA','SwiGLU/quant + TMA + MMA + scatter','orange-fill')+t(1094,383,'A new CTA lifetime starts for launch 2.','small');
       s+=t(1080,460,'Staged uses its own configured warp split.','small muted')+t(1080,500,'Scratch can be reused after launch 1 finishes.','small');
     }
+    s+='</g>';return finish(s);
+  }
+  /** DGRAD and WGRAD select different operands on the same persistent warp roles. */
+  function fusionBackward(p) {
+    start('fusion');const step=Moe.fusionBackward.steps[p],w2=step.launch===0,roleSet=Moe.fusionBackward.roles;let s='<g class="fusion-flow">';
+    s+=r(8,8,1024,124,'blue-fill','stroke-dasharray="5 4" stroke-opacity=".55"')+r(8,173,1024,139,'purple-fill','stroke-dasharray="5 4" stroke-opacity=".55"');
+    s+=t(20,28,'KERNEL 1 · W2 DGRAD + WGRAD','small bold')+t(1018,28,'ONE SHARED COMPUTE ROLE SET','small amber-text','end');
+    s+=t(20,195,'KERNEL 2 · SwiGLU backward + W13 DGRAD / WGRAD','small bold');
+    const nodes=[
+      [20,45,'Gather / quant roles','peer grad_h3 → row/col',p===0,'blue'],
+      [278,45,'grad_h3 bundles','E4M3 qdata + E8M0 scales',p===0,'blue'],
+      [536,45,'Shared TMA / MMA','W2 DGRAD / WGRAD',p===1||p===2,'orange'],
+      [794,45,'Shared epilogue','grad_h2 · grad_w2',p===3,'green'],
+      [20,213,'SwiGLU bwd / quant','h1 + grad_h2 → grad_h1',p===4,'purple'],
+      [278,213,'grad_h1 bundles','E4M3 qdata + E8M0 scales',p===4,'purple'],
+      [536,213,'Shared TMA / MMA','W13 DGRAD / WGRAD',p===5||p===6,'orange'],
+      [794,213,'Shared epilogue','peer grad_x · grad_w13',p===7||p===8,'green']
+    ];
+    nodes.forEach(([x,y,title,sub,active,color])=>s+='<g class="flow-card">'+card(x,y,226,67,title,sub,active?`${color}-fill`:'box')+'</g>');
+    const operands=step.kind==='wgrad'?w2?['grad_h3 + h2','column qdata/scales']:['grad_h1 + x','column qdata/scales']:w2?['grad_h3 + W2','row qdata/scales']:['grad_h1 + W13','row qdata/scales'];
+    s+=wire('M246,80 L278,80','blue',p===0,true,true,'grad_h3 row/column qdata · E4M3 + E8M0',{x:211,y:119,lines:['grad_h3 row/col','E4M3 + E8M0'],point:[262,80]});
+    s+=wire('M504,80 L536,80','orange',p===1||p===2,true,true,operands.join(' · '),{x:451,y:119,lines:operands,point:[520,80]});
+    s+=wire('M762,80 L794,80','green',p===3,true,true,'W2 DGRAD / WGRAD accumulators · FP32',{x:702,y:119,lines:['DGRAD / WGRAD C','FP32 TMEM'],point:[778,80]});
+    s+=wire('M908,114 L908,166 C908,172 132,166 132,211','purple',p===4,true,true,'grad_h2 · BF16 · W2 launch completes before W13',{x:69,y:119,lines:['grad_h2 · BF16','→ SwiGLU backward'],point:[207,182]});
+    s+=wire('M246,246 L278,246','purple',p===4,true,true,'grad_h1 row/column qdata · E4M3 + E8M0',{x:211,y:284,lines:['grad_h1 row/col','E4M3 + E8M0'],point:[262,246]});
+    s+=wire('M504,246 L536,246','orange',p===5||p===6,true,true,operands.join(' · '),{x:451,y:284,lines:operands,point:[520,246]});
+    s+=wire('M762,246 L794,246','green',p===7,true,true,'W13 DGRAD / WGRAD accumulators · FP32',{x:702,y:284,lines:['DGRAD / WGRAD C','FP32 TMEM'],point:[778,246]});
+    s+='</g><g class="fusion-chunks fusion-backward-queues">';
+    s+=t(20,353,`SHARED MMA WARP ${roleSet.mma} · PER-EXPERT DGRAD / WGRAD TILE RANGES`,'small bold bwd-queue-title');
+    for(const [launch,y,weight] of [[0,374,'W2'],[1,452,'W13']]){
+      s+=t(20,y+26,weight,'bold','start','data-bwd-queue-heading="'+launch+'"');
+      let x=140;for(const [expert,kind,width] of [[0,'DGRAD',190],[0,'WGRAD',225],[1,'DGRAD',190],[1,'WGRAD',225]]){
+        const active=step.launch===launch&&expert===0&&step.kind===(kind==='DGRAD'?'dgrad':'wgrad'),color=kind==='DGRAD'?'blue':'purple';
+        s+=`<g data-bwd-record="${launch}-${expert}-${kind}" data-launch="${launch}" data-expert="${expert}" data-kind="${kind}" data-active="${active}">`+r(x,y,width,36,active?`${color}-fill`:'box')+t(x+width/2,y+25,`E${expert} ${kind} tiles`,'small','middle')+'</g>';x+=width+8;
+      }
+      s+=t(140,y+62,launch===0?'DGRAD: row grad_h3 + W2 DGRAD view    WGRAD: column grad_h3 + column h2':'DGRAD: row grad_h1 + W13 DGRAD view    WGRAD: column grad_h1 + column x','small muted','start','data-bwd-operands="'+launch+'"');
+    }
+    s+=t(20,530,'Ranges vary in tile count. The scheduler mixes per-expert pairs; this is not strict tile-by-tile alternation.','small muted','start','data-bwd-queue-note="true"');
+    s+='</g><g class="fusion-hardware">';
+    const warps=roleSet.epilogue.length+2+roleSet.producers.length;
+    s+=r(1060,8,522,534,'panel')+t(1080,42,'HARDWARE · ONE RESIDENT CTA','bold');
+    s+=t(1080,77,`${warps} resident warps · ${warps*32} threads`,'small')+t(1080,104,'DGRAD and WGRAD share these exact roles','small bold');
+    const roles=[
+      [`Epilogue · warps ${roleSet.epilogue[0]}–${roleSet.epilogue.at(-1)}`,'DGRAD stores / WGRAD stores','green','epilogue'],
+      [`MMA · warp ${roleSet.mma}`,'DGRAD + WGRAD on the same warp','orange','mma'],
+      [`TMA · warp ${roleSet.tma}`,'Both operand pairs + scales → SMEM','orange','tma'],
+      [`Producers · warps ${roleSet.producers[0]}–${roleSet.producers.at(-1)}`,'Gather or SwiGLU backward; row + col','purple','producers']
+    ];
+    roles.forEach(([label,detail,color,role],i)=>s+=`<g data-bwd-role="${role}">`+r(1080,124+i*78,482,66,`${color}-fill`)+t(1094,149+i*78,label,'small bold')+t(1094,176+i*78,detail,'small')+'</g>');
+    s+=t(1080,464,'FP32 TMEM → BF16 DGRAD stores','small')+t(1080,491,'WGRAD stores: BF16 or FP32','small');
+    s+=t(1080,518,p===8?'Peer dispatch barrier → top-k grad_x sum':'W13 starts a new CTA lifetime after W2','small '+(p===8?'green-text':'muted'));
     s+='</g>';return finish(s);
   }
   const slotColors=['blue','green','orange','purple','pink','cyan'];

@@ -41,7 +41,8 @@
     { id: 'lifetimes', title: 'Forward and Backward Dependencies', figure: 'recompute-figure', chapter: 'recompute', parts: ['dependency-equations'], prepare: 'lifetime', setup: '.config-summary' },
     { id: 'layer-packing', title: 'Activation Packing and Dynamic Recompute', figure: 'packing-figure', controller: 'packing', chapter: 'recompute', range: [0, 8], parts: ['packing-svg'], display: 'packing', setup: '#packing-brief' },
     { id: 'gpu-tile', title: 'GPU Tile Movement and Compute', figure: 'kernel-figure', controller: 'kernel', chapter: 'kernels', range: [0, 5], setup: '#tile-address' },
-    { id: 'mega-pipeline', title: 'Persistent Warp Roles and Kernel Pipelines', figure: 'fusion-figure', controller: 'fusion', chapter: 'kernels', range: [0, null], bounds: [0,0,1600,550], setup: '#fusion-config' },
+    { id: 'mega-pipeline', title: 'Persistent Warp Roles and Kernel Pipelines', figure: 'fusion-figure', controller: 'fusion', fusionDirection:'forward', chapter: 'kernels', range: [0, null], bounds: [0,0,1600,550], setup: '#fusion-config' },
+    { id: 'mega-backward', title: 'MXFP8 Mega Backward', figure: 'fusion-figure', controller: 'fusion', fusionDirection:'backward', chapter: 'kernels', range: [0,8], bounds: [0,0,1600,550], setup: '#fusion-config' },
     { id: 'pipeline-prefix', title: 'Pipeline Liveness and Slot Size', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [0, 31], actions: ['0F0','2B0','0F4','0B7'], slotDisplay: 'liveness', parts: ['liveness-svg'], setup: '#slots-config' },
     { id: 'slot-reuse', title: 'Activation Slot Assignment and Reuse', figure: 'slots-figure', controller: 'slots', chapter: 'slots', range: [2, 6], actions: ['2F0','2B0','0F3'], slotDisplay: 'reuse', camera: [0, 0, 1146, 406], pane: true, parts: ['slots-svg','slot-selection'] },
     { id: 'results-metrics', title: 'Performance Metrics and Theoretical Peaks', figure: 'results-metrics-figure', chapter: 'results', parts: ['metrics-overview'], setup: '#metrics-setup' },
@@ -54,9 +55,9 @@
   ];
 
   // Imported slides reference main scenes; short-talk memory views share their models.
-  const lightningOrder=['moe','capabilities','comparison-policy','comparison-packing','comparison-scaling','comparison-width','public-api','system','mega-pipeline','results-metrics','results-inference','results-training','results-skew','results-width','reading'];
+  const lightningOrder=['moe','capabilities','comparison-policy','comparison-packing','comparison-scaling','comparison-width','public-api','system','mega-pipeline','mega-backward','results-metrics','results-inference','results-training','results-skew','results-width','reading'];
   const lightningScenes=[{id:'lightning-title',kind:'artwork-cover',chapter:'content',title:'Dist-MoE · PyTorch Conference NA 2026',alt:'Dist-MoE: Fused Comm-Compute Kernels and Activation Packing for Speed-of-Light MoEs. Shikai Li and Sanket Purandare, Meta. PyTorch Conference North America 2026.',asset:'assets/lightning-title.svg'},...lightningOrder.map(id=>mainScenes.find(scene=>scene.id===id))];
-  lightningScenes.splice(10,0,
+  lightningScenes.splice(11,0,
     {id:'lightning-memory',title:'Activation, Scratch, and VMM',figure:'memory-figure',chapter:'memory',parts:['consumption-svg'],compact:'tiers',bounds:[0,0,1040,510],memoryExample:{slotFactor:.35,deviceFactor:1.5,totalFactor:2},preset:'#memory-precision [data-precision="bf16"]',subtitle:'Saved-state capacity selects replay; scratch capacity bounds execution',summary:'The activation-slot factor controls optional saved bytes across layers. Scratch factors independently reserve capacity for per-call routing imbalance.'},
     {...mainScenes.find(scene=>scene.id==='memory-costs'),id:'lightning-working-set',title:'Forward and Backward Memory',compact:'working-set',bounds:[0,0,1040,525],preset:'#memory-precision [data-precision="bf16"]',setup:null},
     {...mainScenes.find(scene=>scene.id==='layer-packing'),id:'lightning-packing',compact:'packing',bounds:[0,0,1040,565],setup:null}
@@ -345,7 +346,7 @@
             app.state.retentionPrecision=precision;app.state.retention=mode;app.renderRetention();pass();
           }
         }else if(scene.controller==='fusion'){
-          for(const pipeline of ['staged','mega'])for(const chunk of [0,1,2]){app.state.fusion=pipeline;app.state.fusionChunk=chunk;c.count=app.fusionCount(pipeline);pass();}
+          for(const pipeline of scene.fusionDirection==='backward'?['mega']:['staged','mega'])for(const chunk of [0,1,2]){app.state.fusion=pipeline;app.state.fusionChunk=chunk;c.count=app.fusionCount(pipeline);pass();}
         }else if(scene.controller==='slots'&&scene.slotDisplay==='reuse'){
           for(const policy of ['stage','microbatch']){app.state.slotPolicy=policy;pass();}
         }else if(scene.controller==='kernel'){
@@ -401,6 +402,7 @@
       parts.filter(Boolean).forEach(id => part(figure, id));
       const controls = [...figure.children].filter(node => {
         if(scene.compact)return false;
+        if(scene.fusionDirection==='backward')return false;
         if (scene.report) return false;
         if (!node.matches('.figure-controls,.phase-tabs,.config-fold,.slot-budget-panel,.calculation-details')) return false;
         if (['packing-display','slots-display','retention-display','slot-plan-details'].includes(node.id)) return false;
@@ -412,6 +414,9 @@
         return true;
       });
       controls.forEach(n => move(n, $('deck-controls-content')));
+      if(scene.fusionDirection){
+        source('#fusion-direction [data-direction="'+scene.fusionDirection+'"]').click();
+      }
       figure.querySelectorAll('svg[id]').forEach(svg => { if (!savedCamera.has(svg)) savedCamera.set(svg, svg.getAttribute('viewBox')); });
       if(scene.compact){
         const id=scene.compact==='tiers'?'consumption-svg':scene.compact==='working-set'?'memory-svg':'packing-svg';
@@ -562,7 +567,7 @@
     }
     if(scene.controller==='kernel')return sentences.filter(s=>/Matrix geometry|Gray rows/.test(s)).join(' ');
     if(scene.figure==='memory-figure')return sentences.find(s=>/These logical bytes/.test(s))||'';
-    if(scene.controller==='fusion')return 'Fixed warp roles coexist within each resident CTA. The diagram shows dependencies; instruction issue order and exact occupancy depend on the configured kernel and GPU.';
+    if(scene.controller==='fusion')return scene.fusionDirection==='backward'?'W2 then W13: separate kernel lifetimes. Each kernel interleaves per-expert DGRAD/WGRAD ranges on shared roles; records are representative, not an instruction trace.':app.state.fusion==='staged'?'Staged forward uses separate W13 and SwiGLU/W2 launches, each with its own CTA lifetimes. Producers and consumers pipeline work within each launch.':'W13/W2 work records share one TMA/MMA warp group and epilogue roles. Record order and exact occupancy depend on configuration.';
     return sentences.find(s=>/illustrative|not measured/.test(s))||'';
   }
 

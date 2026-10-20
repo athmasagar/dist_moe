@@ -157,5 +157,20 @@ window.Moe = (() => {
   function fp8Value(code) {const sign=code&128?-1:1,u=code&127,e=u>>3,m=u&7;if(e===15&&m===7)return NaN;return sign*(e===0?m*2**-9:(1+m/8)*2**(e-7));}
   function fp8Byte(value) {const sign=value<0||Object.is(value,-0)?128:0,v=Math.abs(value);let best=0,error=Infinity;for(let b=0;b<=126;b++){const e=Math.abs(fp8Value(b)-v);if(e<error||(e===error&&b%2===0)){best=b;error=e;}}return best|sign;}
   function quantBlock(outlier=false) {const seed=[-13.25,-7.5,-3.5625,-1.3125,-.234375,0,.005859375,.0009765625,2.75,3.625,6.75,9.5,11.25,13.5,15.75,17.25];const x=[...seed,...seed.map(v=>v*.75)];if(outlier)x[31]=512;const amax=Math.max(...x.map(Math.abs)),exponent=Math.ceil(Math.log2(amax/448)),scale=2**exponent,scaleByte=exponent+127;const bytes=x.map(v=>fp8Byte(v/scale)),q=bytes.map(fp8Value),decoded=q.map(v=>v*scale);return {x,amax,scale,scaleByte,bytes,q,decoded};}
-  return {align,sum,packing,row,col,capacity,savedParts,scratchParts,forwardScratchParts,memoryBounds,slotFromFactor,factorForSlot,memory,memoryReport,tokenData,routingRows,layout,schedule,lifetimes,intervals,fp8Value,fp8Byte,quantBlock};
+  // Teaching snapshots of two launches, not a trace of individual MMA instructions.
+  const fusionBackward={
+    roles:{epilogue:[0,1,2,3],mma:4,tma:5,producers:[6,7,8,9,10,11,12,13,14,15]},
+    steps:[
+      {kind:'gather',launch:0,title:'Gather and quantize grad_h3',summary:'Producer warps gather BF16 route gradients from peer combine HBM and publish separate row/column MXFP8 qdata plus E8M0 scales.'},
+      {kind:'dgrad',launch:0,title:'W2: DGRAD on the shared MMA warp',summary:'A DGRAD record selects row grad_h3 and W2’s DGRAD weight view. Warp 4 accumulates grad_h2 tiles in FP32 TMEM.'},
+      {kind:'wgrad',launch:0,title:'W2: WGRAD on that same MMA warp',summary:'A WGRAD record selects column grad_h3 and saved or regenerated column h2. The same TMA, MMA, and epilogue roles serve both kinds of record.'},
+      {kind:'store',launch:0,title:'Finish the W2 DGRAD/WGRAD kernel',summary:'The epilogue writes BF16 grad_h2 and local BF16 or FP32 grad_w2. This fused launch completes before the W13 launch begins.'},
+      {kind:'quant',launch:1,title:'SwiGLU backward publishes grad_h1',summary:'The next kernel reads BF16 h1 and grad_h2, evaluates the derivative in FP32 registers, then publishes row/column grad_h1 qdata and scales.'},
+      {kind:'dgrad',launch:1,title:'W13: DGRAD on the shared MMA warp',summary:'A DGRAD record selects row grad_h1 and W13’s DGRAD weight view. This kernel’s warp 4 accumulates route input-gradient tiles in FP32 TMEM.'},
+      {kind:'wgrad',launch:1,title:'W13: WGRAD on that same MMA warp',summary:'A WGRAD record selects column grad_h1 and saved or regenerated column x. The same warp 4 accumulates local expert-weight gradients.'},
+      {kind:'store',launch:1,title:'Scatter route gradients and store grad_w13',summary:'The shared epilogue writes BF16 route input gradients into peer dispatch HBM and stores local BF16 or FP32 grad_w13.'},
+      {kind:'reduce',launch:1,title:'Barrier and reduce to grad_x',summary:'The dispatch barrier orders peer stores before top-k reduction returns BF16 grad_x to each token owner.'}
+    ]
+  };
+  return {align,sum,packing,row,col,capacity,savedParts,scratchParts,forwardScratchParts,memoryBounds,slotFromFactor,factorForSlot,memory,memoryReport,tokenData,routingRows,layout,schedule,lifetimes,intervals,fp8Value,fp8Byte,quantBlock,fusionBackward};
 })();
