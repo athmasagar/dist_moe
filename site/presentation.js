@@ -27,7 +27,7 @@
     { id: 'title', kind: 'cover', chapter: 'content' },
     { id: 'moe', title: 'MoE Overview', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
     { id: 'system', title: 'Distributed MoE: End-to-End Execution', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 8], setup: '.diagram-key' },
-    { id: 'capabilities', title: 'Related Work: Open Source MoE Kernels', capabilitySteps: true, builds: ['capabilities','supported-modes'], figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes', 'supported-modes'] },
+    { id: 'capabilities', title: 'MoE Capabilities and Supported Modes', buildTitles: ['Open Source MoE Capability Comparison','Dist-MoE Supported Modes'], capabilitySteps: true, builds: ['capabilities','supported-modes'], figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes', 'supported-modes'] },
     { id: 'comparison-policy', title: 'MoK vs Dist-MoE: Imbalanced Multi-Layer Workload', figure: 'compare-policy-figure', chapter: 'mok-comparison', parts: ['compare-policy-view'], setup: '#compare-policy-config' },
     { id: 'comparison-packing', title: 'MoK vs Dist-MoE: Multi-Layer Training Performance', figure: 'compare-packing-figure', chapter: 'mok-comparison', parts: ['compare-packing-legend','compare-packing-view'], setup: '#compare-packing-config' },
     { id: 'comparison-scaling', comparisonSteps: true, builds: ['#compare-scaling-steps [data-ep="16"]','#compare-scaling-steps [data-ep="64"]'], title: 'MoK vs Dist-MoE: Routing Imbalance', figure: 'compare-scaling-figure', chapter: 'mok-comparison', parts: ['compare-scaling-legend','compare-scaling-view'], setup: '#compare-scaling-config' },
@@ -47,8 +47,8 @@
     { id: 'results-metrics', title: 'Performance Metrics and Theoretical Peaks', figure: 'results-metrics-figure', chapter: 'results', parts: ['metrics-overview'], setup: '#metrics-setup' },
     { id: 'results-inference', title: 'Standalone Inference Performance', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-deck-view'], report: 'inference', preset: '#result-presets [data-preset="inference"]', setup: '#efficiency-config' },
     { id: 'results-training', title: 'Standalone Training Performance', figure: 'results-efficiency-figure', controller: 'efficiency', chapter: 'results', range: [0,0], parts: ['efficiency-deck-view'], report: 'training', preset: '#result-presets [data-preset="training"]', setup: '#efficiency-config' },
-    { id: 'results-skew', title: 'Standalone Performance Under Routing Imbalance', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,0], parts: ['skew-deck-view'], report: 'skew', setup: '#skew-config' },
-    { id: 'results-width', title: 'Standalone Performance vs Expert Width', figure: 'results-width-figure', controller: 'width', chapter: 'results', range: [0,0], parts: ['width-deck-view'], report: 'width', setup: '#width-config' },
+    { id: 'results-skew', title: 'Routing Imbalance: Work Growth and Execution Cost', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,0], parts: ['skew-deck-view'], report: 'skew', setup: '#skew-config' },
+    { id: 'results-width', title: 'Expert Width: Useful Compute and Memory Traffic', figure: 'results-width-figure', controller: 'width', chapter: 'results', range: [0,0], parts: ['width-deck-view'], report: 'width', setup: '#width-config' },
     { id: 'public-api', title: 'Public API', kind: 'code', chapter: 'start', builds: ['#api-steps [data-api-step="0"]','#api-steps [data-api-step="1"]','#api-steps [data-api-step="2"]'] },
     { id: 'reading', title: 'Resources', kind: 'resources', chapter: 'start' }
   ];
@@ -113,7 +113,7 @@
     if(scene.id==='allocation')return figures[scene.figure].querySelector('#memory-caption');
     return figures[scene.figure].querySelector('.phase-caption');
   }
-  function titleFor(scene) { return scene.kind==='cover' ? original.title.textContent : scene.title; }
+  function titleFor(scene,current=false) { return scene.kind==='cover' ? original.title.textContent : current&&scene.buildTitles ? scene.buildTitles[build] : scene.title; }
   function createShell() {
     shell = document.createElement('div');
     shell.id = 'presentation';
@@ -261,7 +261,7 @@
       const figure=figures[scene.figure],supported=build===1;
       for(const id of ['capability-table','capability-notes'])figure.querySelector('#'+id).classList.toggle('deck-part',!supported);
       original.support.classList.toggle('deck-part',supported);
-      app.phaseCaption('capability-slide-caption',[supported?'Dist-MoE Supported Modes':'OSS Capability Comparison',source(supported?'#supported-modes-summary':'#motivation-setup').textContent]);
+      app.phaseCaption('capability-slide-caption',[supported?'Training and Inference by Precision':'CUDA Graphs and Activation Packing',source(supported?'#supported-modes-summary':'#motivation-setup').textContent]);
       return;
     }
     source(scene.builds[build]).click();
@@ -526,11 +526,11 @@
     if (!active) return;
     const scene = scenes[index], figure = figures[scene.figure];
     if(scene.kind==='code'&&scene.builds)build=app.state.apiStep;
-    $('deck-title').textContent = titleFor(scene);
+    $('deck-title').textContent = titleFor(scene,true);
     $('deck-repository').hidden=scene.kind!=='code';
     $('deck-repository').href=original.repository.href;
     $('deck-repository').textContent=original.repository.href;
-    $('deck-section').textContent = figure?.querySelector('.fig-number')?.textContent || source('#' + scene.chapter)?.dataset.title || '';
+    $('deck-section').textContent = scene.capabilitySteps ? (build===1?'DIST-MOE MODES':'OSS CAPABILITIES') : figure?.querySelector('.fig-number')?.textContent || source('#' + scene.chapter)?.dataset.title || '';
     $('deck-page').textContent = `${index + 1} / ${scenes.length}`;
     $('deck-reference').href = '#' + scene.chapter;
     const c = app.controllers[scene.controller];
@@ -553,8 +553,8 @@
     let takeaway=topic?cleanClone(topic):dynamic?firstSentenceFragment(caption,scene.controller==='slots'||scene.chapter==='mok-comparison'?3:2):summary?cleanClone(summary):null;
     if(scene.id==='layer-packing'&&topic){takeaway=document.createDocumentFragment();takeaway.append(firstSentenceFragment(caption.querySelector('.decision-step-summary'),1),document.createTextNode(' '),firstSentenceFragment(topic,1));}
     if(scene.report){takeaway=document.createDocumentFragment();takeaway.append(document.createTextNode(window.ResultsApp.presentationSummary(scene.report)));}
-    if(scene.kind==='cover'||scene.kind==='resources')takeaway=null;
-    $('deck-step-heading').textContent=steps.length>1 ? caption?.querySelector('strong')?.textContent.replace(/\.$/,'')||'' : '';
+    if(scene.kind==='cover'||scene.kind==='resources'||scene.report)takeaway=null;
+    $('deck-step-heading').textContent=scene.report ? window.ResultsApp.presentationSubtitle(scene.report) : steps.length>1 ? caption?.querySelector('strong')?.textContent.replace(/\.$/,'')||'' : '';
     $('deck-summary').replaceChildren(...(takeaway?[...takeaway.childNodes]:[]));
     $('deck-scope').textContent=scopeFor(scene);
     if (scene.kind === 'code') updateCode(scene);

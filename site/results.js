@@ -128,7 +128,7 @@
   }
   /** Render raw width controls, keeping the repeated F3072 control separate. */
   function renderWidth(phase){variantSelect('width-variant','resultWidthVariant',S.resultWidthEP);$('width-EP').value=S.resultWidthEP;const rows=widths.map(F=>row(S.resultWidthEP,S.resultWidthVariant,'width',F));$('width-config').textContent=`${name(rows[0])} · ${rows[0].mode} · EP${rows[0].ep} · balanced routing · D = 7,168 · same logical activation payload`;
-    A.renderSVG('width-svg',widthSVG(rows));A.renderHTML('width-table',table(['Expert width<br>F','Iteration<br>ms','Useful<br>PFLOP/s / GPU','Dense theory<br>%','Speedup / BF16<br>same width','Forward FLOPs /<br>logical payload byte','Mean TX<br>GB/s'],rows.map(r=>[V.num(r.F),msCell(r),f(rate(r)/1000),f(percent(r),1),`${f(row(r.ep,'bf16:standard','width',r.F).layerMS/r.layerMS,2)}×`,V.num(Math.round(r.forwardFlopsPerLogicalPayloadByteRank0)),f(r.nvlinkTXGBps,1)])));A.phaseCaption('width-caption',widthCaption(2));
+    A.renderSVG('width-svg',widthSVG(rows));A.renderHTML('width-table',table(['Expert width<br>F','Iteration<br>ms','Useful<br>PFLOP/s / GPU','Dense theory<br>%','Speedup / BF16<br>same width','Forward FLOPs /<br>logical payload byte','Mean TX<br>GB/s','HBM model<br>TB/s'],rows.map(r=>[V.num(r.F),msCell(r),f(rate(r)/1000),f(percent(r),1),`${f(row(r.ep,'bf16:standard','width',r.F).layerMS/r.layerMS,2)}×`,V.num(Math.round(r.forwardFlopsPerLogicalPayloadByteRank0)),f(r.nvlinkTXGBps,1),f(r.analyticalHBMGBps/1000,3)])));A.phaseCaption('width-caption',widthCaption(2));
   }
   A.controllers.efficiency=new A.Controller('efficiency',1,renderEfficiency);
   A.controllers.skew=new A.Controller('skew',1,renderSkew);
@@ -156,57 +156,78 @@
     return `${mode} · GB300 · T = ${V.num(meta.shape.T)}/GPU · D = ${V.num(meta.shape.D)} · E = ${V.num(meta.shape.E)} · top-${meta.shape.K} · zero shared experts`;
   }
   function presentationScope(report){
+    if(report==='skew')return 'Whole-layer time divided by busiest-GPU received rows, normalized to balanced routing. Cluster-average throughput still falls under imbalance.';
+    if(report==='width')return 'Dense-peak % uses each format’s theoretical peak. HBM is a logical-byte model, not DRAM counters; EP64 training is roughly flat.';
     return 'Useful rates include whole-layer time. Dense peaks are theoretical; NVLink TX is measured; HBM is modeled. '+(report==='training'?'EP32 and EP64 used different allocations.':'TX theory: 900 GB/s per direction; HBM theory: 8 TB/s.');
   }
   function presentationSummary(report){
     if(report==='inference'||report==='training'){
-      return presentationEPs(report).map(ep=>{const cases=balanced(ep),fast=cases.reduce((a,b)=>a.layerMS<b.layerMS?a:b);return `EP${ep}: ${name(fast)} delivers a ${f(cases[0].layerMS/fast.layerMS,2)}× speedup over BF16.`;}).join(' ');
+      return presentationEPs(report).map(ep=>{const best=balanced(ep).reduce((a,b)=>rate(a)>rate(b)?a:b);return `EP${ep}: ${name(best)} achieves ${f(rate(best)/1000,2)} useful PFLOP/s per GPU (${f(percent(best),1)}% of its dense theoretical peak).`;}).join(' ');
     }
-    if(report==='skew')return 'At 8× imbalance, compare the cluster-average and busiest-GPU useful rates: concentrated work keeps the hot GPU busy while other GPUs receive fewer rows. All shown cases have zero allocator retries and OOMs.';
-    return 'Increasing F adds GEMM work while routed input/output bytes stay fixed. Compare iteration-time growth with useful throughput, for both inference and training.';
+    if(report==='skew')return 'The chart normalizes whole-layer time per busiest-GPU received row to balanced routing. A value below 1 means time grew less than the hot rank’s assigned work. This tests local execution efficiency; it does not establish a competitive advantage over another implementation.';
+    return 'Useful PFLOP/s and dense-peak percentage rise across all shown width sweeps. Modeled HBM rises in EP16 inference; EP64 training stays around 0.74–0.90 TB/s and is not monotonic. Logical-byte rates are not measured DRAM throughput.';
+  }
+  function presentationSubtitle(report){
+    if(report==='inference'){
+      const best=presentationEPs(report).flatMap(balanced).reduce((a,b)=>rate(a)>rate(b)?a:b);
+      return `${f(rate(best)/1000,2)} useful PFLOP/s per GPU · ${name(best)} · EP${best.ep}`;
+    }
+    if(report==='training')return presentationEPs(report).map(ep=>{const best=balanced(ep).reduce((a,b)=>rate(a)>rate(b)?a:b);return `${f(rate(best)/1000,2)} PFLOP/s at EP${ep}`;}).join(' · ')+' · MXFP8 Staged';
+    if(report==='skew')return 'Time grows less than assigned work in these routing tests';
+    return 'Four times expert work takes less than four times iteration time';
   }
   function presentationClass(r){return r.precision==='bf16'?'bf16':r.precision==='nvfp4'?'nvfp4':r.pipeline==='staged'?'mxfp8-staged':'mxfp8-mega';}
-  function presentationScale(cases){
-    const max=Math.max(...cases.map(r=>r.layerMS)),raw=max/3,magnitude=10**Math.floor(Math.log10(raw)),unit=raw/magnitude;
+  function presentationScale(cases,getValue=r=>r.layerMS){
+    const max=Math.max(...cases.map(getValue)),raw=max/3,magnitude=10**Math.floor(Math.log10(raw)),unit=raw/magnitude;
     const step=(unit<=1?1:unit<=2?2:unit<=2.5?2.5:unit<=5?5:10)*magnitude;
     return {max:Math.ceil(max/step)*step,step};
   }
-  /** Zero-based iteration-time columns retain each measured precision and pipeline. */
-  function presentationChart(ep,report){
+  /** Column height always represents the explicitly labeled metric. */
+  function presentationChart(ep,report,metric=report==='skew'?'rowCostRatio':'usefulPF'){
     const category=report==='width'?'width':'single_layer',settings=report==='skew'?skews:report==='width'?widths:[1],vs=variants(ep);
     const groups=settings.map(setting=>vs.map(v=>row(ep,v,category,report==='width'?setting:3072,report==='skew'?setting:1)));
-    const scale=presentationScale(groups.flat()),ticks=Array.from({length:Math.round(scale.max/scale.step)+1},(_,i)=>i*scale.step);
+    const getValue=r=>metric==='rowCostRatio'?rowCostRatio(r):metric==='usefulPF'?rate(r)/1000:metric==='busiestPF'?busy(r)/1000:metric==='densePercent'?percent(r):r.analyticalHBMGBps/1000;
+    const population=report==='width'?groups.flat():report==='inference'||report==='training'?presentationEPs(report).flatMap(balanced):groups.flat();
+    const scale=presentationScale(population,getValue),ticks=Array.from({length:Math.round(scale.max/scale.step)+1},(_,i)=>i*scale.step);
     const multiple=settings.length>1;
-    const legend=multiple?`<div class="rpt-legend">${groups[0].map(r=>`<span><i class="${presentationClass(r)}"></i>${name(r)}</span>`).join('')}</div>`:'';
+    const legend=multiple&&report!=='width'?`<div class="rpt-legend">${groups[0].map(r=>`<span><i class="${presentationClass(r)}"></i>${name(r)}</span>`).join('')}</div>`:'';
     const bars=groups.map((cases,j)=>`<div class="rpt-column-group" style="--series:${cases.length}">${cases.map(r=>{
-      const ratio=cases[0].layerMS/r.layerMS;
-      return `<div class="rpt-column-track"><div class="rpt-column ${presentationClass(r)}" data-case="${V.esc(r.id)}" data-ms="${r.layerMS}" style="height:${r.layerMS/scale.max*100}%"><span class="rpt-ms">${f(r.layerMS,2)}</span>${!multiple&&r.precision!=='bf16'?`<span class="rpt-speedup">${f(ratio,2)}× speedup</span>`:''}</div>${!multiple?`<span class="rpt-variant">${name(r).replace(' ','<br>')}</span>`:''}</div>`;
+      return `<div class="rpt-column-track"><div class="rpt-column ${presentationClass(r)}" data-case="${V.esc(r.id)}" data-metric="${metric}" data-value="${getValue(r)}" data-ms="${r.layerMS}" style="height:${getValue(r)/scale.max*100}%">${report==='width'?'':`<span class="rpt-ms">${f(getValue(r),2)}</span>`}</div>${!multiple?`<span class="rpt-variant">${name(r).replace(' ','<br>')}</span>`:''}</div>`;
     }).join('')}${multiple?`<span class="rpt-condition">${report==='width'?`F = ${V.num(settings[j])}`:`${settings[j]}× imbalance`}</span>`:''}</div>`).join('');
-    return `<div class="rpt-chart ${multiple?'rpt-multiple':'rpt-balanced'}"><div class="rpt-chart-heading">Iteration time · ms ↓${multiple?'':' · speedup over BF16'}</div>${legend}<div class="rpt-chart-area"><div class="rpt-plot" data-y-max="${scale.max}">${ticks.map(value=>`<span class="rpt-tick" style="bottom:${value/scale.max*100}%"><b>${f(value,value<1?2:1)}</b></span>`).join('')}<div class="rpt-column-groups" style="--groups:${groups.length}">${bars}</div></div></div></div>`;
+    const heading=metric==='rowCostRatio'?'Time per hot-rank row / balanced ↓':metric==='usefulPF'?'Useful PFLOP/s / GPU ↑':metric==='busiestPF'?'Busiest GPU · derived PFLOP/s ↑':metric==='densePercent'?'Dense theoretical peak · % ↑':'Modeled HBM byte rate · TB/s';
+    return `<div class="rpt-chart ${multiple?'rpt-multiple':'rpt-balanced'}"><div class="rpt-chart-heading">${heading}</div>${legend}<div class="rpt-chart-area"><div class="rpt-plot" data-y-max="${scale.max}">${ticks.map(value=>`<span class="rpt-tick ${metric==='rowCostRatio'&&value===1?'rpt-cost-reference':''}" style="bottom:${value/scale.max*100}%"><b>${f(value,value<1?2:1)}</b></span>`).join('')}<div class="rpt-column-groups" style="--groups:${groups.length}">${bars}</div></div></div></div>`;
   }
   /** Raw tables show the timed operation and the relevant work/traffic rates. */
   function presentationTable(ep,report){
     const balancedReport=report==='inference'||report==='training';
-    const headers=balancedReport?['Precision / kernel','Iteration<br>ms','Useful<br>PFLOP/s / GPU','Dense peak<br>% of theory','NVLink TX<br>mean / max GB/s','HBM model<br>TB/s']:
-      report==='skew'?['Precision / kernel','1×<br>ms','4×<br>ms','8×<br>ms','Speedup<br>over BF16','Useful PFLOP/s<br>average / busiest','Max TX<br>GB/s']:
-      ['Precision / kernel','F = 1,536<br>ms','F = 3,072<br>ms','F = 6,144<br>ms','Speedup<br>over BF16','Useful<br>PFLOP/s / GPU','Dense<br>peak %','NVLink TX<br>mean GB/s','HBM model<br>TB/s'];
+    const headers=balancedReport?['Precision / kernel','Useful<br>PFLOP/s / GPU','Dense peak<br>% of theory','Iteration<br>ms','NVLink TX<br>mean / max GB/s','HBM model<br>TB/s']:
+      ['Precision / kernel','Balanced<br>ms','8× work<br>ms','Time growth<br>versus balanced','Cost / row<br>versus balanced','8× busiest<br>PFLOP/s, derived','8× average<br>PFLOP/s / GPU'];
     const cell=(r,key,value,display=f(value))=>`<span data-case="${V.esc(r.id)}" data-metric="${key}" data-value="${value}">${display}</span>`;
     const rows=variants(ep).map(v=>{
-      const r=row(ep,v,report==='width'?'width':'single_layer',report==='width'?6144:3072,report==='skew'?8:1),label=`<span class="rpt-series-label"><i class="${presentationClass(r)}"></i>${name(r)}</span>`;
-      if(balancedReport)return [label,cell(r,'iterationMS',r.layerMS),cell(r,'usefulPF',rate(r)/1000),cell(r,'densePercent',percent(r),f(percent(r),1)),`${cell(r,'meanTX',r.nvlinkTXGBps,f(r.nvlinkTXGBps,0))} / ${cell(r,'maxTX',r.nvlinkMaxTXGBps,f(r.nvlinkMaxTXGBps,0))}`,cell(r,'modeledHBM',r.analyticalHBMGBps/1000,f(r.analyticalHBMGBps/1000,2))];
-      const conditions=(report==='skew'?skews:widths).map(setting=>row(ep,v,report==='width'?'width':'single_layer',report==='width'?setting:3072,report==='skew'?setting:1));
-      const baseline=row(ep,'bf16:standard',r.category,r.F,r.imbalance),speed=cell(r,'bf16Speedup',baseline.layerMS/r.layerMS,f(baseline.layerMS/r.layerMS,2)+'×');
-      const timeCells=conditions.map(d=>cell(d,'iterationMS',d.layerMS));
-      if(report==='skew')return [label,...timeCells,speed,`${cell(r,'usefulPF',rate(r)/1000,f(rate(r)/1000,2))} / ${cell(r,'busiestPF',busy(r)/1000,f(busy(r)/1000,2))}`,cell(r,'maxTX',r.nvlinkMaxTXGBps,f(r.nvlinkMaxTXGBps,0))];
-      return [label,...timeCells,speed,cell(r,'usefulPF',rate(r)/1000,f(rate(r)/1000,2)),cell(r,'densePercent',percent(r),f(percent(r),1)),cell(r,'meanTX',r.nvlinkTXGBps,f(r.nvlinkTXGBps,0)),cell(r,'modeledHBM',r.analyticalHBMGBps/1000,f(r.analyticalHBMGBps/1000,2))];
+      const baseline=row(ep,v),r=balancedReport?baseline:row(ep,v,'single_layer',3072,8),label=`<span class="rpt-series-label"><i class="${presentationClass(r)}"></i>${name(r)}</span>`;
+      if(balancedReport)return [label,cell(r,'usefulPF',rate(r)/1000),cell(r,'densePercent',percent(r),f(percent(r),1)),cell(r,'iterationMS',r.layerMS),`${cell(r,'meanTX',r.nvlinkTXGBps,f(r.nvlinkTXGBps,0))} / ${cell(r,'maxTX',r.nvlinkMaxTXGBps,f(r.nvlinkMaxTXGBps,0))}`,cell(r,'modeledHBM',r.analyticalHBMGBps/1000,f(r.analyticalHBMGBps/1000,2))];
+      return [label,cell(baseline,'iterationMS',baseline.layerMS),cell(r,'iterationMS',r.layerMS),cell(r,'timeGrowth',r.layerMS/baseline.layerMS,f(r.layerMS/baseline.layerMS,2)+'×'),cell(r,'rowCostRatio',rowCostRatio(r),f(rowCostRatio(r),2)),cell(r,'busiestPF',busy(r)/1000,f(busy(r)/1000,2)),cell(r,'usefulPF',rate(r)/1000,f(rate(r)/1000,2))];
     });
-    return `<div class="rpt-table">${balancedReport?'':`<p class="rpt-metric-context">Iteration times at all three ${report==='width'?'widths':'imbalances'}; other metrics at ${report==='width'?'F = 6,144':'8× imbalance'}</p>`}${table(headers,rows)}</div>`;
+    return `<div class="rpt-table">${balancedReport?'':'<p class="rpt-metric-context">Reference: 8× received rows would take 8× time at unchanged cost per row.</p>'}${table(headers,rows)}</div>`;
+  }
+  function rowCostRatio(r){
+    const baseline=row(r.ep,r.precision+':'+r.pipeline);
+    return (r.layerMS/Math.max(...r.receiveRows))/(baseline.layerMS/Math.max(...baseline.receiveRows));
+  }
+  function widthMetricTable(ep,metric){
+    const span=(r,key,value,digits)=>`<span data-case="${V.esc(r.id)}" data-metric="${key}" data-value="${value}">${f(value,digits)}</span>`;
+    const rows=variants(ep).map(v=>{const cases=widths.map(F=>row(ep,v,'width',F));return [name(cases[0]),...cases.map(r=>metric==='usefulPF'?`${span(r,'usefulPF',rate(r)/1000,2)} <span class="rpt-cell-divider">/</span> ${span(r,'densePercent',percent(r),1)}%`:span(r,'modeledHBM',r.analyticalHBMGBps/1000,2))];});
+    return `<div class="rpt-table rpt-width-table">${metric==='usefulPF'?'<p class="rpt-width-key">Useful PFLOP/s per GPU / dense theoretical peak %</p>':'<p class="rpt-width-key">Modeled logical byte rate · TB/s (not DRAM counters)</p>'}${table(['F →',...widths.map(F=>V.num(F))],rows)}</div>`;
   }
   function renderPresentation(report){
     const controller=report==='inference'||report==='training'?'efficiency':report,figure=$('results-'+(controller==='efficiency'?'efficiency':controller)+'-figure'),id=controller+'-deck-view';
     let node=$(id);if(!node){node=document.createElement('div');node.id=id;node.className='standalone-deck-view';figure.append(node);}
     node.dataset.report=report;
-    node.innerHTML=presentationEPs(report).map(ep=>`<section class="rpt-workload" data-ep="${ep}" data-mode="${ep<32?'inference':'training'}"><h3>EP${ep} · ${ep<32?'Inference · forward':'Training · forward + backward'}<span>${report==='width'?'Balanced routing · three measured expert widths':report==='skew'?'One layer · imbalance 1× / 4× / 8×':'Balanced routing · F = 3,072'}</span></h3><div class="rpt-workload-body">${presentationChart(ep,report)}${presentationTable(ep,report)}</div></section>`).join('');
+    if(report==='width'){
+      node.innerHTML=presentationEPs(report).map(ep=>`<section class="rpt-workload rpt-width-workload" data-ep="${ep}" data-mode="${ep<32?'inference':'training'}"><h3>EP${ep} · ${ep<32?'Inference · forward':'Training · forward + backward'}<span>${(()=>{const best=variants(ep).map(v=>row(ep,v,'width',6144)).reduce((a,b)=>rate(a)>rate(b)?a:b),narrow=row(ep,best.precision+':'+best.pipeline,'width',1536);return `${name(best)}: 4× work takes ${f(best.layerMS/narrow.layerMS,2)}× time`;})()}</span></h3><div class="rpt-legend">${balanced(ep).map(r=>`<span><i class="${presentationClass(r)}"></i>${name(r)}</span>`).join('')}</div><div class="rpt-width-grid">${['usefulPF','modeledHBM'].map(metric=>`<div class="rpt-width-metric" data-metric-panel="${metric}">${presentationChart(ep,report,metric)}${widthMetricTable(ep,metric)}</div>`).join('')}</div></section>`).join('');
+      return;
+    }
+    node.innerHTML=presentationEPs(report).map(ep=>`<section class="rpt-workload" data-ep="${ep}" data-mode="${ep<32?'inference':'training'}"><h3>EP${ep} · ${ep<32?'Inference · forward':'Training · forward + backward'}<span>${report==='skew'?`Hot GPU rows: ${V.num(meta.shape.T*meta.shape.K)} → ${V.num(meta.shape.T*meta.shape.K*8)} · same total routes`:'Balanced routing · F = 3,072'}</span></h3><div class="rpt-workload-body">${presentationChart(ep,report)}${presentationTable(ep,report)}</div></section>`).join('');
   }
-  metricsExample();window.ResultsApp={data:D,row,work,rate,percent,busy,range,sample,scope,reset,renderPresentation,presentationSetup,presentationScope,presentationSummary};
+  metricsExample();window.ResultsApp={data:D,row,work,rate,percent,busy,range,sample,scope,reset,renderPresentation,presentationSetup,presentationScope,presentationSummary,presentationSubtitle};
 })();

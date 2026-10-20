@@ -252,3 +252,11 @@ and a GiB rounding tie, are checked against the repository's actual planner
 classes, plan_memory() logic, and MemoryPlan.explain() method without importing
 CUDA. The raw text preserves the API's rounding and byte counts. Physical
 VMM section fields remain unresolved because the shown call omits device.
+
+The standalone slide columns encode useful PFLOP/s for balanced cases and
+normalized whole-layer cost per busiest-GPU received row for imbalance. The latter
+is `(t / max_received_rows) / (balanced_t / balanced_max_received_rows)` for the
+same EP, format, and pipeline. It characterizes scaling within this implementation;
+the earlier matched MoK experiments provide comparative evidence. Width reports
+show every F control for useful compute, dense theoretical percentage, and modeled
+HBM, including the flat/non-monotonic EP64 training values.

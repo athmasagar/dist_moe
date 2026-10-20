@@ -69,6 +69,10 @@ precisions visible and chart/table pairs arranged side by side. Standalone resul
 show both measured EPs for each mode; imbalance and width compare EP16 inference
 with EP64 training, including every measured precision/kernel variant. The report
 renderer uses the same cases, rate calculations, and hardware references as the article.
+Balanced result columns show useful PFLOP/s per GPU. Routing imbalance compares
+whole-layer cost per busiest-GPU received row with the balanced reference. Width
+reports pair useful PFLOP/s with dense-peak percentage and show modeled HBM rates
+for every measured width; training HBM is not assumed to increase monotonically.
 
 ## Source layout
 

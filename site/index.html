@@ -8,10 +8,10 @@
   <meta name="copyright" content="Meta Platforms, Inc. and affiliates.">
   <title>Dist-MoE · Speed-of-light distributed expert kernels</title>
   <script>if(new URLSearchParams(location.search).get('view')==='print'){document.documentElement.classList.add('deck-print-mode');document.querySelector('meta[name="viewport"]').content='width=1440';}</script>
-  <link rel="stylesheet" href="assets/katex/katex.css"><link rel="stylesheet" href="styles.css?v=article-headings-v10-20261019"><link rel="stylesheet" href="results.css?v=article-headings-v10-20261019"><link rel="stylesheet" href="comparison.css?v=article-headings-v10-20261019">
-<link rel="stylesheet" href="presentation.css?v=article-headings-v10-20261019"><link rel="stylesheet" href="pdf-export.css?v=article-headings-v10-20261019">
+  <link rel="stylesheet" href="assets/katex/katex.css"><link rel="stylesheet" href="styles.css?v=throughput-v11-20261019"><link rel="stylesheet" href="results.css?v=throughput-v11-20261019"><link rel="stylesheet" href="comparison.css?v=throughput-v11-20261019">
+<link rel="stylesheet" href="presentation.css?v=throughput-v11-20261019"><link rel="stylesheet" href="pdf-export.css?v=throughput-v11-20261019">
   <script src="assets/katex/katex.js" defer></script>
-  <script src="models.js?v=article-headings-v10-20261019" defer></script><script src="diagrams.js?v=article-headings-v10-20261019" defer></script><script src="examples.js?v=article-headings-v10-20261019" defer></script><script src="article-layout.js?v=article-headings-v10-20261019" defer></script><script src="app.js?v=article-headings-v10-20261019" defer></script><script src="results-data.js?v=article-headings-v10-20261019" defer></script><script src="results.js?v=article-headings-v10-20261019" defer></script><script src="comparison-data.js?v=article-headings-v10-20261019" defer></script><script src="comparison.js?v=article-headings-v10-20261019" defer></script><script src="presentation.js?v=article-headings-v10-20261019" defer></script><script src="pdf-export.js?v=article-headings-v10-20261019" defer></script>
+  <script src="models.js?v=throughput-v11-20261019" defer></script><script src="diagrams.js?v=throughput-v11-20261019" defer></script><script src="examples.js?v=throughput-v11-20261019" defer></script><script src="article-layout.js?v=throughput-v11-20261019" defer></script><script src="app.js?v=throughput-v11-20261019" defer></script><script src="results-data.js?v=throughput-v11-20261019" defer></script><script src="results.js?v=throughput-v11-20261019" defer></script><script src="comparison-data.js?v=throughput-v11-20261019" defer></script><script src="comparison.js?v=throughput-v11-20261019" defer></script><script src="presentation.js?v=throughput-v11-20261019" defer></script><script src="pdf-export.js?v=throughput-v11-20261019" defer></script>
 </head>
 <body>
 <a class="skip" href="#content">Skip to the article</a>
@@ -427,7 +427,7 @@
     <div class="phase-caption" id="skew-caption" aria-live="polite"></div>
     <figcaption>Imbalance is maximum received rows divided by rank mean. Total routes stay fixed within a workload. The busiest-rank rate is derived from that rank’s useful GEMM work divided by maximum-rank iteration time; it is a conservative work-rate estimate, not a hardware counter. Locality and batch sizes also change with routing. All displayed cases passed the supplied numerical/graph checks, with zero allocator retry/OOM counters.</figcaption>
   </figure>
-  <p id="result-skew-story">A cluster average can fall because one GPU determines iteration time while others receive less work. Read the busiest rank’s useful rate alongside the average to see how Dist-MoE processes concentrated rows.</p>
+  <p id="result-skew-story">Extra rows on the loaded GPU are expected. Normalize whole-layer iteration time by its received rows to test execution efficiency. In EP16 NVFP4, 8× the rows take 4.82× the time, reducing time per loaded-rank row by about 40%; this is a local efficiency observation, not a comparison against another kernel.</p>
 
   <figure class="interactive results-figure" id="results-width-figure">
     <div class="figure-top"><div><span class="fig-number">FIG. 10</span><h3>Expert Width and Communication Amortization</h3><p class="figure-subtitle" id="results-width-figure-subtitle">More GEMM work shares the same routed input/output payload; weights and intermediate HBM traffic still grow.</p></div><button class="expand" aria-label="Expand the expert-width experiment">Expand ⤢</button></div>
@@ -439,7 +439,7 @@
     <div class="phase-caption" id="width-caption" aria-live="polite"></div>
     <figcaption>Only F changes; routing is balanced and the logical routed activation payload is fixed. Weights and intermediate HBM traffic do grow with F. Feature strips are proportional logical extents, not physical GPU tiles. The three points are measured widths; connecting lines guide the eye. Window whiskers are observed variation, not confidence intervals. The F = 3,072 width control is its own measurement.</figcaption>
   </figure>
-  <p id="result-width-story">Wider experts perform more GEMM work for the same routed input/output payload. When iteration time grows less than expert width, useful throughput rises: the extra compute is amortized over each routed token.</p>
+  <p id="result-width-story">Useful PFLOP/s and dense-peak percentage increase across every shown width sweep. Modeled HBM rises in EP16 inference; EP64 training is roughly flat and dips at the widest setting. The byte rate divides a logical traffic model by iteration time, so larger tensors do not guarantee a larger rate; it does not measure physical DRAM throughput.</p>
 
   <p class="bridge">The measurements show how routing and expert width change the work available to each GPU. Use the API below to choose the kernel policy and memory budget for your model.</p>
 </section>

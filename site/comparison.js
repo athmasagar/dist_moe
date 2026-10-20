@@ -99,7 +99,8 @@
       const button=event.target.closest('[data-ep]');if(!button)return;const ep=Number(button.dataset.ep);figure.dataset.deckEp=ep;
       steps.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b===button)));
       const bf=pair(ep,'bf16',category,setting),fp=pair(ep,'mxfp8',category,setting);
-      A.phaseCaption(caption.id,[`${mode(ep)} · EP${ep}`,`${category==='width'?`At F = ${V.num(setting)}`:`At ${setting}× imbalance`}, BF16 and MXFP8 deliver ${f(speedup(bf),2)}× and ${f(speedup(fp),2)}× speedup over MoK. Both precisions compare the same routed workload.`]);
+      const settings=category==='width'?[1536,3072,6144]:[1,4,8],best=Math.max(...['bf16','mxfp8'].flatMap(fmt=>settings.map(s=>speedup(pair(ep,fmt,category,s)))));
+      A.phaseCaption(caption.id,[`${mode(ep)} · EP${ep} · up to ${f(best,2)}× speedup over MoK`,`${category==='width'?`At F = ${V.num(setting)}`:`At ${setting}× imbalance`}, BF16 and MXFP8 deliver ${f(speedup(bf),2)}× and ${f(speedup(fp),2)}× speedup over MoK. Both precisions compare the same routed workload.`]);
     });
     steps.querySelector('button').click();
   }
