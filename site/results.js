@@ -173,8 +173,14 @@
       return `${f(rate(best)/1000,2)} useful PFLOP/s per GPU · ${name(best)} · EP${best.ep}`;
     }
     if(report==='training')return presentationEPs(report).map(ep=>{const best=balanced(ep).reduce((a,b)=>rate(a)>rate(b)?a:b);return `${f(rate(best)/1000,2)} PFLOP/s at EP${ep}`;}).join(' · ')+' · MXFP8 Staged';
-    if(report==='skew')return 'Time grows less than assigned work in these routing tests';
-    return 'Four times expert work takes less than four times iteration time';
+    if(report==='skew'){
+      const baseline=row(16,'nvfp4:mega'),hot=row(16,'nvfp4:mega','single_layer',3072,8);
+      const rows=Math.max(...hot.receiveRows)/Math.max(...baseline.receiveRows),time=hot.layerMS/baseline.layerMS,saving=100*(1-rowCostRatio(hot));
+      return `Sub-linear time scaling (EP16 NVFP4): ${f(rows,0)}× rows → ${f(time,2)}× time; ≈${f(saving,0)}% lower cost/row`;
+    }
+    const narrow=row(16,'nvfp4:mega','width',1536),wide=row(16,'nvfp4:mega','width',6144);
+    return `Sub-linear time scaling with F (EP16 NVFP4): ${f(wide.F/narrow.F,0)}× GEMM FLOPs → ${f(wide.layerMS/narrow.layerMS,2)}× time; ${f(rate(wide)/rate(narrow),2)}× useful PFLOP/s`;
+
   }
   function presentationClass(r){return r.precision==='bf16'?'bf16':r.precision==='nvfp4'?'nvfp4':r.pipeline==='staged'?'mxfp8-staged':'mxfp8-mega';}
   function presentationScale(cases,getValue=r=>r.layerMS){
