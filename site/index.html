@@ -8,10 +8,10 @@
   <meta name="copyright" content="Meta Platforms, Inc. and affiliates.">
   <title>Dist-MoE · Speed-of-light distributed expert kernels</title>
   <script>if(new URLSearchParams(location.search).get('view')==='print'){document.documentElement.classList.add('deck-print-mode');document.querySelector('meta[name="viewport"]').content='width=1440';}</script>
-  <link rel="stylesheet" href="assets/katex/katex.css"><link rel="stylesheet" href="styles.css?v=overview-ops-v17-20261020"><link rel="stylesheet" href="results.css?v=throughput-v11-20261019"><link rel="stylesheet" href="comparison.css?v=throughput-v11-20261019">
-<link rel="stylesheet" href="presentation.css?v=mega-backward-v15-20261020"><link rel="stylesheet" href="pdf-export.css?v=throughput-v11-20261019">
+  <link rel="stylesheet" href="assets/katex/katex.css"><link rel="stylesheet" href="styles.css?v=mok-published-v18-20261020"><link rel="stylesheet" href="results.css?v=throughput-v11-20261019"><link rel="stylesheet" href="comparison.css?v=throughput-v11-20261019">
+<link rel="stylesheet" href="presentation.css?v=mok-published-v18-20261020"><link rel="stylesheet" href="pdf-export.css?v=throughput-v11-20261019">
   <script src="assets/katex/katex.js" defer></script>
-  <script src="models.js?v=overview-ops-v17-20261020" defer></script><script src="diagrams.js?v=overview-ops-v17-20261020" defer></script><script src="examples.js?v=throughput-v11-20261019" defer></script><script src="article-layout.js?v=fusion-consistency-v16-20261020" defer></script><script src="app.js?v=overview-ops-v17-20261020" defer></script><script src="results-data.js?v=throughput-v11-20261019" defer></script><script src="results.js?v=scaling-subtitles-v12-20261020" defer></script><script src="comparison-data.js?v=throughput-v11-20261019" defer></script><script src="comparison.js?v=throughput-v11-20261019" defer></script><script src="presentation.js?v=overview-ops-v17-20261020" defer></script><script src="pdf-export.js?v=mega-backward-v15-20261020" defer></script>
+  <script src="models.js?v=overview-ops-v17-20261020" defer></script><script src="diagrams.js?v=overview-ops-v17-20261020" defer></script><script src="examples.js?v=throughput-v11-20261019" defer></script><script src="article-layout.js?v=fusion-consistency-v16-20261020" defer></script><script src="app.js?v=overview-ops-v17-20261020" defer></script><script src="results-data.js?v=throughput-v11-20261019" defer></script><script src="results.js?v=scaling-subtitles-v12-20261020" defer></script><script src="comparison-data.js?v=throughput-v11-20261019" defer></script><script src="comparison.js?v=throughput-v11-20261019" defer></script><script src="presentation.js?v=mok-published-v18-20261020" defer></script><script src="pdf-export.js?v=mega-backward-v15-20261020" defer></script>
 </head>
 <body>
 <a class="skip" href="#content">Skip to the article</a>
@@ -85,6 +85,22 @@
     <div id="mok-comparison" class="measured-comparison" data-title="Dist-MoE versus MoK">
       <h2>MoK vs Dist-MoE: Measured Performance</h2>
     <p class="section-subtitle">Dist-MoE reaches 1.40× speedup over MoK in the imbalanced ten-layer packing workload.</p>
+      <details class="mok-published-details" id="mok-published-results">
+        <summary>Why MoK is our baseline: Cursor’s published results</summary>
+        <p data-slide-summary="mok-published">MoK leads BF16/MXFP8 forward and MXFP8 backward across all four published model shapes, making it a strong OSS training baseline. BF16 backward has one exception: DeepEP + PyTorch is slightly ahead on DeepSeek-V4-Pro.</p>
+        <figure class="interactive mok-published-figure" id="mok-published-figure">
+          <div class="figure-top"><div><span class="fig-number">BASELINE SELECTION · REPORTED RESULTS</span><h3>MoK: SoTA OSS baseline</h3><p class="figure-subtitle">Strong published NVL72 training results motivate our baseline choice.</p></div></div>
+          <div class="config-summary" id="mok-published-setup">Cursor-reported MoE-layer benchmarks · GB300 NVL72 · EP64 · 2,048 tokens/GPU · orange: MoK</div>
+          <div class="mok-published-grid" id="mok-published-charts">
+            <a href="assets/mok-reported/moe-bf16-forward.png" target="_blank" rel="noopener" aria-label="Open Cursor’s BF16 forward results at full resolution"><img src="assets/mok-reported/moe-bf16-forward.png" width="1536" height="1194" alt="Cursor-reported BF16 forward MoE throughput on GB300 NVL72, comparing MoK with NCCL/PyTorch, DeepEP/PyTorch, DeepEP/TransformerEngine, and HybridEP/Megatron"></a>
+            <a href="assets/mok-reported/moe-bf16-backward.png" target="_blank" rel="noopener" aria-label="Open Cursor’s BF16 backward results at full resolution"><img src="assets/mok-reported/moe-bf16-backward.png" width="1536" height="1194" alt="Cursor-reported BF16 backward MoE throughput; MoK leads three shapes, while DeepEP/PyTorch is slightly ahead for DeepSeek-V4-Pro"></a>
+            <a href="assets/mok-reported/moe-mxfp8-forward.png" target="_blank" rel="noopener" aria-label="Open Cursor’s MXFP8 forward results at full resolution"><img src="assets/mok-reported/moe-mxfp8-forward.png" width="1536" height="1238" alt="Cursor-reported MXFP8 forward MoE throughput, reporting up to 2.37 times the fastest tested public baseline"></a>
+            <a href="assets/mok-reported/moe-mxfp8-backward.png" target="_blank" rel="noopener" aria-label="Open Cursor’s MXFP8 backward results at full resolution"><img src="assets/mok-reported/moe-mxfp8-backward.png" width="1536" height="1194" alt="Cursor-reported MXFP8 backward MoE throughput, with MoK ahead across the four tested model shapes"></a>
+          </div>
+          <p class="mok-published-citation" id="mok-published-citation">Results picked from Cursor’s <a href="https://cursor.com/blog/mixture-of-kittens" target="_blank" rel="noopener">Mixture-of-Kittens blog · cursor.com/blog/mixture-of-kittens ↗</a>.</p>
+          <figcaption>These are Cursor’s reported single-layer results against four tested training-capable OSS stacks. They motivate the baseline choice; the matched Dist-MoE comparisons below use our own measurements.</figcaption>
+        </figure>
+      </details>
       <p id="comparison-intro"></p>
       <p class="cmp-method">GB300 · CUDA 13.0 · 2,048 input tokens per GPU · D = 7,168 · 384 experts · top-6 + one BF16 shared expert. Both implementations use CUDA graphs.</p>
       <p class="cmp-method"><strong>Iteration time</strong> covers forward in inference and forward + backward in training. The packing workload runs ten layer forwards followed by their backwards. <strong>Speedup over MoK = MoK iteration time ÷ Dist-MoE iteration time.</strong> A 1.22× speedup means MoK takes 1.22 times as long.</p>

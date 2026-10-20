@@ -58,13 +58,13 @@ packing fixtures, including forward/backward offsets and LIFO rewinds. The
 logical API previews have been checked against the public planner and its
 exact diagnostic text. UI and presentation checks cover desktop, laptop,
 tablet, and phone sizes, with rendered inspection of changed figures and PDF pages.
-The default Mega/BF16 deck contains 28 scenes and 82 steps; selected Staged or
+The default Mega/BF16 deck contains 29 scenes and 83 steps; selected Staged or
 planning-only modes change the step count. These counts are checked from the
 actual scene sequence rather than from retired slide descriptions.
 
-The Lightning edition references 16 main scenes in the requested order, preceded
-by the supplied 16:9 SVG. Three compact memory scenes follow backward slide 11,
-giving 20 slides and 56 default steps. Validate tensor strip proportions against
+The Lightning edition references 17 main scenes in the requested order, preceded
+by the supplied 16:9 SVG. Three compact memory scenes follow backward slide 12,
+giving 21 slides and 57 default steps. Validate tensor strip proportions against
 the model, soft versus hard capacity labels, and every saved/recomputed/released packing snapshot. Check
 that returning to the article restores its detailed diagrams. Validate the
 shared scene identities and compare imported step captions/camera windows with
@@ -73,7 +73,7 @@ original title artwork without added headers or footers.
 
 Check Figure 06’s Forward/Backward selector across article widths and verify
 that forward restores Staged/Mega controls. The backward scene follows main
-slide 18 and Lightning slide 10. Validate all nine steps, row/column operands,
+slide 19 and Lightning slide 11. Validate all nine steps, row/column operands,
 shared MMA/TMA/epilogue roles, separate W2/W13 launch lifetimes, and stable framing.
 Verify role IDs and launch order against the kernel classes and runtime source.
 
@@ -86,3 +86,7 @@ Validate the overview’s eight-step forward/backward sequence against the publi
 MXFP8 execution guide, including conditional replay before gradient publication.
 Check its article, phone, and landscape deck projections; labels and framing
 must fit throughout. Its diagram and captions contain no tile-level details.
+
+For the MoK baseline slide, check all four original images, source attribution,
+main/Lightning order, collapsed article state, expansion, and restore behavior.
+Also validate the extended supported-modes title in its second build.

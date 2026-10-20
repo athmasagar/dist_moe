@@ -314,3 +314,17 @@ The three compute labels omit the common `dist_blockscaled_grouped_gemm_`
 prefix. Gathered x and h2 are logical row/column MXFP8 bundles, h1 is BF16,
 and h3 is scattered into peer combine HBM. The boxes do not imply separate
 dense BF16 x_gathered/h2 allocations.
+
+## MoK’s reported baseline results
+
+The four unchanged PNGs in `assets/mok-reported/` come from the user-supplied
+“MoK Results” folder and are attributed to
+[Cursor’s Mixture-of-Kittens blog](https://cursor.com/blog/mixture-of-kittens).
+The blog’s single-MoE-layer benchmarks use GB300 NVL72, EP64, and 2,048 input
+tokens/GPU, and compare NCCL/PyTorch, DeepEP/PyTorch, DeepEP/TransformerEngine,
+and HybridEP/Megatron in BF16/MXFP8 forward/backward.
+
+MoK leads the four forward shapes in both precisions and all four MXFP8 backward
+shapes. The BF16 backward DeepSeek-V4-Pro plot has DeepEP/PyTorch slightly ahead.
+These reported comparisons motivate MoK as a strong training baseline; they are
+not an exhaustive claim over every OSS implementation or a Dist-MoE measurement.

@@ -41,7 +41,7 @@ kernel handoffs, pipeline liveness, hardware performance, and the public API.
 | Metrics, 08–10 | How are rates constructed, and how do hardware, imbalance, and width affect them? |
 | API | How do configuration, plan inspection, and execution connect? |
 
-The default deck has 28 slides and 82 printed steps. The Staged kernel view adds
+The default deck has 29 slides and 83 printed steps. The Staged kernel view adds
 two steps. The planning-only API example omits execution. Presentation titles name the topic
 independently of article headings; summaries use shared prose, live captions, or
 the measured cases. Previous slide anchors redirect to their current scenes.
@@ -79,18 +79,18 @@ for every measured width; training HBM is not assumed to increase monotonically.
 Open the [Lightning deck](http://127.0.0.1:8000/?view=slides&deck=lightning), or choose
 Lightning in the presentation selector. The conference title uses the supplied
 SVG unchanged. Imported slides reference the main scene objects in this order:
-2, 4, 5, 6, 7, 8, 27, 3, 18, 19, 22, 23, 24, 25, 26, 28.
+2, 4, 5, 6, 7, 8, 9, 28, 3, 19, 20, 23, 24, 25, 26, 27, 29.
 
-Lightning slide 11 shares the Mega backward view from main slide 19.
+Lightning slide 12 shares the Mega backward view from main slide 20.
 After that backward slide, three short-talk memory slides explain physical backing
 and capacity policies, forward/backward working sets, and all nine packing/recompute
 steps. They use compact drawings of the existing byte model and planner snapshots,
 without the detailed equations or offset tables.
 
-Lightning has 20 slides and 56 default steps. Every imported slide retains the
+Lightning has 21 slides and 57 default steps. Every imported slide retains the
 main deck's controls, content, and step sequence. Export PDF keeps `deck=lightning`
-and includes every selected step. The original full deck has 28 slides and
-82 default steps. The article header links to both versions.
+and includes every selected step. The original full deck has 29 slides and
+83 default steps. The article header links to both versions.
 
 ## Source layout
 
@@ -145,3 +145,8 @@ Forward and MXFP8 Mega Backward; selecting Staged updates the forward title.
 The overview follows ordinary MXFP8 Mega training in eight op-level forward
 and backward steps. It shows peer buffers, the fused expert operations,
 logical intermediates, conditional replay, and owner-side reductions.
+
+MoK’s published results appear as one shared slide before the saved-state
+comparison (main slide 5, Lightning slide 4). The article disclosure is closed
+by default. Four unchanged source images carry a visible Cursor blog citation;
+the stated performance scope includes the BF16 backward exception.

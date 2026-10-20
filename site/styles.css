@@ -199,6 +199,14 @@ dialog .schedule-scroll svg{min-width:2060px}
 body.dialog-open{overflow:hidden}
 .no-script{padding:15px;background:var(--amber-soft);margin:20px}
 .hero-figure{margin-top:30px}
+.mok-published-details{margin:22px 0;padding:14px 18px;border:1px solid var(--line);border-radius:6px;background:var(--card)}
+.mok-published-details>summary{cursor:pointer;font-size:17px;font-weight:550;color:var(--blue)}
+.mok-published-details[open]>summary{margin-bottom:18px}
+.mok-published-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding:12px 20px}
+.mok-published-grid a{display:block;min-width:0;min-height:0}
+.mok-published-grid img{display:block;width:100%;height:100%;object-fit:contain}
+.mok-published-citation{padding:0 20px;font-size:13px!important;line-height:1.5;max-width:none!important}
+@media(max-width:650px){.mok-published-grid{grid-template-columns:1fr;padding:12px}.mok-published-citation{padding:0 12px}}
 .diagram-scroll svg.overview-visual{min-width:0;font-size:16px}
 #overview-figure .diagram-scroll:before{display:none}
 .overview-visual .small{font-size:14px}

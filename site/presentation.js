@@ -27,7 +27,8 @@
     { id: 'title', kind: 'cover', chapter: 'content' },
     { id: 'moe', title: 'MoE Overview', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
     { id: 'system', title: 'Dist-MoE: High-level End-to-End Execution', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 7], bounds:[0,0,1704,600], setup: '#overview-config' },
-    { id: 'capabilities', title: 'MoE Capabilities and Supported Modes', buildTitles: ['Open Source MoE Capability Comparison','Dist-MoE Supported Modes'], capabilitySteps: true, builds: ['capabilities','supported-modes'], figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes', 'supported-modes'] },
+    { id: 'capabilities', title: 'MoE Capabilities and Supported Modes', buildTitles: ['Open Source MoE Capability Comparison','Dist-MoE Supported Modes: Dropless, Fully Cudagraphable'], capabilitySteps: true, builds: ['capabilities','supported-modes'], figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes', 'supported-modes'] },
+    { id:'mok-published', title:'MoK: SoTA OSS baseline', kind:'reported-charts', figure:'mok-published-figure', chapter:'mok-comparison', parts:['mok-published-charts','mok-published-citation'], setup:'#mok-published-setup', subtitle:'Strong published NVL72 training results motivate our baseline choice' },
     { id: 'comparison-policy', title: 'MoK vs Dist-MoE: Imbalanced Multi-Layer Workload', figure: 'compare-policy-figure', chapter: 'mok-comparison', parts: ['compare-policy-view'], setup: '#compare-policy-config' },
     { id: 'comparison-packing', title: 'MoK vs Dist-MoE: Multi-Layer Training Performance', figure: 'compare-packing-figure', chapter: 'mok-comparison', parts: ['compare-packing-legend','compare-packing-view'], setup: '#compare-packing-config' },
     { id: 'comparison-scaling', comparisonSteps: true, builds: ['#compare-scaling-steps [data-ep="16"]','#compare-scaling-steps [data-ep="64"]'], title: 'MoK vs Dist-MoE: Routing Imbalance', figure: 'compare-scaling-figure', chapter: 'mok-comparison', parts: ['compare-scaling-legend','compare-scaling-view'], setup: '#compare-scaling-config' },
@@ -55,9 +56,9 @@
   ];
 
   // Imported slides reference main scenes; short-talk memory views share their models.
-  const lightningOrder=['moe','capabilities','comparison-policy','comparison-packing','comparison-scaling','comparison-width','public-api','system','mega-pipeline','mega-backward','results-metrics','results-inference','results-training','results-skew','results-width','reading'];
+  const lightningOrder=['moe','capabilities','mok-published','comparison-policy','comparison-packing','comparison-scaling','comparison-width','public-api','system','mega-pipeline','mega-backward','results-metrics','results-inference','results-training','results-skew','results-width','reading'];
   const lightningScenes=[{id:'lightning-title',kind:'artwork-cover',chapter:'content',title:'Dist-MoE · PyTorch Conference NA 2026',alt:'Dist-MoE: Fused Comm-Compute Kernels and Activation Packing for Speed-of-Light MoEs. Shikai Li and Sanket Purandare, Meta. PyTorch Conference North America 2026.',asset:'assets/lightning-title.svg'},...lightningOrder.map(id=>mainScenes.find(scene=>scene.id===id))];
-  lightningScenes.splice(11,0,
+  lightningScenes.splice(lightningScenes.findIndex(scene=>scene.id==='mega-backward')+1,0,
     {id:'lightning-memory',title:'Activation, Scratch, and VMM',figure:'memory-figure',chapter:'memory',parts:['consumption-svg'],compact:'tiers',bounds:[0,0,1040,510],memoryExample:{slotFactor:.35,deviceFactor:1.5,totalFactor:2},preset:'#memory-precision [data-precision="bf16"]',subtitle:'Saved-state capacity selects replay; scratch capacity bounds execution',summary:'The activation-slot factor controls optional saved bytes across layers. Scratch factors independently reserve capacity for per-call routing imbalance.'},
     {...mainScenes.find(scene=>scene.id==='memory-costs'),id:'lightning-working-set',title:'Forward and Backward Memory',compact:'working-set',bounds:[0,0,1040,525],preset:'#memory-precision [data-precision="bf16"]',setup:null},
     {...mainScenes.find(scene=>scene.id==='layer-packing'),id:'lightning-packing',compact:'packing',bounds:[0,0,1040,565],setup:null}
@@ -310,7 +311,7 @@
     // Reserving those heights keeps SVG scale/position unchanged during playback.
     const figure=figures[scene.figure],c=app.controllers[scene.controller];
     const bands=['deck-title','deck-step-heading','deck-setup','deck-summary','deck-scope'].map($);
-    const extras=figure?[...figure.children].filter(n=>n.classList.contains('deck-part')&&!n.matches('.diagram-scroll,.table-scroll,.standalone-deck-view')):[];
+    const extras=figure?[...figure.children].filter(n=>n.classList.contains('deck-part')&&!n.matches('.diagram-scroll,.table-scroll,.standalone-deck-view,.mok-published-grid')):[];
     const nodes=[...bands,...extras],heights=new Map();nodes.forEach(clearReservation);
     const roots=[figure,$('deck-controls-content')].filter(Boolean);
     const inputs=[...new Set(roots.flatMap(n=>[...n.querySelectorAll('input,select')]))].map(n=>({n,value:n.value,checked:n.checked}));
@@ -552,6 +553,7 @@
     if(scene.compact==='working-set')return 'BF16 example · bar widths follow the shared byte model. Scratch is sized per call, not multiplied by the layer count.';
     if(scene.compact==='packing')return 'BF16 · one inspected GPU · both EP ranks agree on each save/replay decision · no host scratch in this example.';
     if(scene.id==='system')return 'MXFP8 Mega training · tensor boxes show op values, not separate allocations. The three fused compute labels omit the common dist_blockscaled_grouped_gemm_ prefix.';
+    if(scene.id==='mok-published')return 'MoK leads forward and MXFP8 backward; DeepEP + PyTorch is slightly ahead in BF16 backward for DeepSeek-V4-Pro. These are Cursor-reported results.';
     if(scene.report)return window.ResultsApp.presentationScope(scene.report);
     if(scene.id==='results-metrics')return 'Extra padding/replay FLOPs are not separately instrumented. All routed-operation costs remain in measured iteration time; effective HBM bandwidth is a model.';
     if(scene.chapter==='results')return window.ResultsApp.scope(scene.controller,app.controllers[scene.controller].phase);
