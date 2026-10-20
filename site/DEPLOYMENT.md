@@ -16,6 +16,7 @@ under `site/` and the Pages workflow under `.github/workflows/pages.yml`.
 
    - Article: <https://meta-pytorch.github.io/dist_moe/previews/visual-explainer/>
    - Deck: <https://meta-pytorch.github.io/dist_moe/previews/visual-explainer/?view=slides>
+   - Lightning: <https://meta-pytorch.github.io/dist_moe/previews/visual-explainer/?view=slides&deck=lightning>
 
 GitHub Pages provides one deployment per repository, rather than automatic
 public PR-preview URLs. This workflow puts the review branch in its own

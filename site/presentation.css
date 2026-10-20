@@ -233,3 +233,12 @@ html:fullscreen .deck-drawer{top:0;bottom:0}
 .deck-resource-links a{font-size:36px;line-height:1.35;font-weight:500;color:var(--blue);text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:7px}
 .deck-canvas[data-kind=resources] :is(.deck-slide-footer,.deck-summary,.deck-scope,.deck-setup,.deck-step-heading){display:none}
 .deck-canvas[data-kind=resources] .deck-slide-header>span{display:none}
+
+/* A deck edition changes scene selection, not the shared slide renderer. */
+.deck-edition{flex:none;max-width:175px}
+.deck-edition select{width:100%;font-size:13px;min-height:34px}
+.deck-canvas[data-kind=artwork-cover]{padding:0;border:0}
+.deck-canvas[data-kind=artwork-cover]>.deck-slide-header,.deck-canvas[data-kind=artwork-cover]>.deck-title,.deck-canvas[data-kind=artwork-cover]>.deck-step-heading,.deck-canvas[data-kind=artwork-cover]>.deck-setup,.deck-canvas[data-kind=artwork-cover]>.deck-summary,.deck-canvas[data-kind=artwork-cover]>.deck-scope,.deck-canvas[data-kind=artwork-cover]>.deck-slide-footer{display:none}
+.deck-canvas[data-kind=artwork-cover]>.deck-visual{width:100%;height:100%;margin:0;padding:0;gap:0}
+.deck-title-artwork{display:block;width:100%;height:100%;object-fit:contain;object-position:center}
+@media(max-width:750px){.deck-edition{max-width:110px}.deck-edition select{font-size:12px}}

@@ -8,7 +8,7 @@
 
   const source = selector => article.querySelector(selector) || document.querySelector(selector);
   const original = {
-    title: source('h1'), tagline: source('.deck'), intro: source('.intro'),
+    title: source('h1'), tagline: source('.deck'), intro: source('.intro'), documentTitle: document.title,
     author: source('.author-byline'), brand: document.querySelector('.wordmark'),
     repository: source('footer a[href*="github.com"]'),
     copyright: source('.copyright'), outline: source('.reading-map'),
@@ -23,7 +23,7 @@
 
   // Topic titles and pacing belong to the presentation. Figures, explanations,
   // numerical values, and example programs use the shared article source.
-  const scenes = [
+  const mainScenes = [
     { id: 'title', kind: 'cover', chapter: 'content' },
     { id: 'moe', title: 'MoE Overview', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
     { id: 'system', title: 'Distributed MoE: End-to-End Execution', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 8], setup: '.diagram-key' },
@@ -52,6 +52,13 @@
     { id: 'public-api', title: 'Public API', kind: 'code', chapter: 'start', builds: ['#api-steps [data-api-step="0"]','#api-steps [data-api-step="1"]','#api-steps [data-api-step="2"]'] },
     { id: 'reading', title: 'Resources', kind: 'resources', chapter: 'start' }
   ];
+
+  // Lightning references the main scenes directly; only its title artwork differs.
+  const lightningOrder=['moe','capabilities','comparison-policy','comparison-packing','comparison-scaling','comparison-width','public-api','system','mega-pipeline','results-metrics','results-inference','results-training','results-skew','results-width','reading'];
+  const lightningScenes=[{id:'lightning-title',kind:'artwork-cover',chapter:'content',title:'Dist-MoE · PyTorch Conference NA 2026',alt:'Dist-MoE: Fused Comm-Compute Kernels and Activation Packing for Speed-of-Light MoEs. Shikai Li and Sanket Purandare, Meta. PyTorch Conference North America 2026.',asset:'assets/lightning-title.svg'},...lightningOrder.map(id=>mainScenes.find(scene=>scene.id===id))];
+  const decks={main:{id:'main',name:'Full Presentation',scenes:mainScenes},lightning:{id:'lightning',name:'Lightning',scenes:lightningScenes}};
+  const deck=decks[new URLSearchParams(location.search).get('deck')]||decks.main;
+  const scenes=deck.scenes;
 
   const sceneAliases = {'comparison-inference':'comparison-scaling','comparison-training':'comparison-scaling','comparison-graphs':'comparison-scaling',configuration:'public-api','expert-call':'public-api',assignments:'routing','expert-rows':'routing','return-slots':'routing','results-memory':'layer-packing','expert-math':'moe','dynamic-recompute':'layer-packing',offsets:'layer-packing','gather-tiles':'gpu-tile','tensor-cores':'gpu-tile','warp-groups':'mega-pipeline','chunk-readiness':'mega-pipeline'};
   /** Preserve links to examples that now share one complete slide. */
@@ -120,6 +127,7 @@
     shell.innerHTML = `
       <header class="deck-toolbar" aria-label="Presentation controls">
         <button id="deck-article" title="Return to the article">Article</button>
+        <label class="deck-edition"><span class="sr-only">Presentation</span><select id="deck-edition" aria-label="Choose a presentation"><option value="main">Full Presentation</option><option value="lightning">Lightning</option></select></label>
         <label class="deck-picker"><span class="sr-only">Slide</span><select id="deck-slide-select" aria-label="Choose a slide"></select></label>
         <div class="deck-tools">
           <button id="deck-export" title="Export every presentation step as a PDF page">Export PDF</button>
@@ -158,6 +166,12 @@
     brand.removeAttribute('href');
     $('deck-brand').append(brand);
     $('deck-copyright').textContent = original.copyright.textContent;
+    $('deck-edition').value=deck.id;
+    $('deck-edition').addEventListener('change',event=>{
+      const url=new URL(location.href);url.searchParams.set('view','slides');
+      if(event.target.value==='main')url.searchParams.delete('deck');else url.searchParams.set('deck',event.target.value);
+      url.searchParams.delete('settings');url.searchParams.delete('print');url.hash='';location.assign(url.href);
+    });
     $('deck-slide-select').innerHTML = scenes.map((s, i) => `<option value="${i}">${String(i + 1).padStart(2, '0')} · ${Views.esc(titleFor(s))}</option>`).join('');
     $('deck-slide-select').addEventListener('change', e => show(Number(e.target.value)));
     $('deck-article').addEventListener('click', exit);
@@ -399,6 +413,9 @@
         original.mlp.classList.add('deck-part');app.renderExpertMath();
       }
 
+    } else if (scene.kind === 'artwork-cover') {
+      const image=document.createElement('img');image.className='deck-title-artwork';image.src=scene.asset;image.alt=scene.alt||scene.title;image.width=1920;image.height=1080;
+      $('deck-visual').append(image);
     } else if (scene.kind === 'cover') {
       const box = document.createElement('div'); box.className = 'deck-cover';
       [original.title, original.tagline, original.intro].forEach(node => box.append(cleanClone(node)));
@@ -553,7 +570,7 @@
     let takeaway=topic?cleanClone(topic):dynamic?firstSentenceFragment(caption,scene.controller==='slots'||scene.chapter==='mok-comparison'?3:2):summary?cleanClone(summary):null;
     if(scene.id==='layer-packing'&&topic){takeaway=document.createDocumentFragment();takeaway.append(firstSentenceFragment(caption.querySelector('.decision-step-summary'),1),document.createTextNode(' '),firstSentenceFragment(topic,1));}
     if(scene.report){takeaway=document.createDocumentFragment();takeaway.append(document.createTextNode(window.ResultsApp.presentationSummary(scene.report)));}
-    if(scene.kind==='cover'||scene.kind==='resources'||scene.report)takeaway=null;
+    if(scene.kind==='cover'||scene.kind==='artwork-cover'||scene.kind==='resources'||scene.report)takeaway=null;
     $('deck-step-heading').textContent=scene.report ? window.ResultsApp.presentationSubtitle(scene.report) : steps.length>1 ? caption?.querySelector('strong')?.textContent.replace(/\.$/,'')||'' : '';
     $('deck-summary').replaceChildren(...(takeaway?[...takeaway.childNodes]:[]));
     $('deck-scope').textContent=scopeFor(scene);
@@ -622,6 +639,7 @@
     if (active) return;
     savedFocus = document.activeElement;
     active = true;
+    document.title=deck.id==='lightning'?'Lightning · Dist-MoE':original.documentTitle;
     Object.values(app.controllers).forEach(c => c.stop());
     document.querySelectorAll('svg[id]').forEach(app.finishTransition);
     article.classList.add('deck-source'); article.inert = true; article.setAttribute('aria-hidden', 'true');
@@ -636,6 +654,7 @@
     if (!active) return;
     const chapter = scenes[index].chapter;
     restore(); active = false;
+    document.title=original.documentTitle;
     if(document.fullscreenElement)document.exitFullscreen?.().catch(()=>{});else if(document.webkitFullscreenElement)document.webkitExitFullscreen?.();
     if(speakerWindow&&!speakerWindow.closed)speakerWindow.close();speakerWindow=null;
     shell.remove(); shell = null; canvas = null;
@@ -644,7 +663,8 @@
     setURL(false);
     requestAnimationFrame(() => { $('' + chapter)?.scrollIntoView({ behavior: 'instant', block: 'start' }); (savedFocus || $('present-link')).focus(); });
   }
-  $('present-link').addEventListener('click', e => { e.preventDefault(); enter(true); });
+  $('present-link').addEventListener('click', e => { if(deck.id==='main'){e.preventDefault();enter(true);} });
+  $('lightning-link').addEventListener('click',e=>{if(deck.id==='lightning'){e.preventDefault();enter(true);} });
   document.addEventListener('keydown', e => {
     if (active && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') { e.preventDefault(); exportPDF(); return; }
     if (!active || e.altKey || e.metaKey || e.ctrlKey) return;
@@ -669,6 +689,6 @@
       else { const i = sceneIndex(location.hash.replace('#slide-','')); if (i >= 0) show(i, false, false); }
     } else if (active) exit();
   });
-  window.Presentation = { enter, exit, show, step, resize, printFrames, scenes, get active() { return active; }, get index() { return index; } };
+  window.Presentation = { enter, exit, show, step, resize, printFrames, scenes, mainScenes, deck, get active() { return active; }, get index() { return index; } };
   if (printMode || new URLSearchParams(location.search).get('view') === 'slides') enter();
 })();

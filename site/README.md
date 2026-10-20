@@ -74,6 +74,18 @@ whole-layer cost per busiest-GPU received row with the balanced reference. Width
 reports pair useful PFLOP/s with dense-peak percentage and show modeled HBM rates
 for every measured width; training HBM is not assumed to increase monotonically.
 
+## Lightning
+
+Open the [Lightning deck](http://127.0.0.1:8000/?view=slides&deck=lightning), or choose
+Lightning in the presentation selector. The conference title uses the supplied
+SVG unchanged. Its remaining slides reference the main scene objects in this order:
+2, 4, 5, 6, 7, 8, 26, 3, 18, 21, 22, 23, 24, 25, 27.
+
+Lightning has 16 slides and 36 default steps. Every imported slide retains the
+main deck's controls, content, and step sequence. Export PDF keeps `deck=lightning`
+and includes every selected step. The original full deck stays at 27 slides and
+74 default steps. The article header links to both versions.
+
 ## Source layout
 
 | Source | Responsibility |

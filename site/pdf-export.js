@@ -151,7 +151,7 @@
       toolbar.querySelector('button').addEventListener('click', () => window.print());
       document.body.append(toolbar, pages);
       await Promise.all([...pages.querySelectorAll('img')].map(image => image.decode()));
-      document.title = 'Dist-MoE - all presentation steps';
+      document.title = Presentation.deck.id==='lightning'?'Lightning - Dist-MoE - all presentation steps':'Dist-MoE - all presentation steps';
       status.remove(); pages.dataset.ready = 'true';
       if (params.get('print') === '1') setTimeout(() => window.print(), 0);
       return frames.length;

@@ -61,3 +61,9 @@ tablet, and phone sizes, with rendered inspection of changed figures and PDF pag
 The default Mega/BF16 deck contains 27 scenes and 74 steps; selected Staged or
 planning-only modes change the step count. These counts are checked from the
 actual scene sequence rather than from retired slide descriptions.
+
+The Lightning edition references 15 main scenes in the requested order, preceded
+by the supplied 16:9 SVG. Its 16 slides contain 36 default steps. Validate the
+shared scene identities and compare imported step captions/camera windows with
+the full deck. PDF export must retain the edition parameter and render the
+original title artwork without added headers or footers.

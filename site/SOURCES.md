@@ -260,3 +260,11 @@ same EP, format, and pipeline. It characterizes scaling within this implementati
 the earlier matched MoK experiments provide comparative evidence. Width reports
 show every F control for useful compute, dense theoretical percentage, and modeled
 HBM, including the flat/non-monotonic EP64 training values.
+
+## Lightning presentation
+
+The Lightning edition selects references to the main presentation’s scene objects
+in the requested order and uses the user-supplied conference SVG as its complete
+title slide. `assets/lightning-title.svg` is bundled byte-for-byte from the supplied
+file. It is self-contained and contains no external resource references. All
+imported diagrams, models, measurements, and controls remain shared.
