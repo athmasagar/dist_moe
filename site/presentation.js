@@ -27,7 +27,7 @@
     { id: 'title', kind: 'cover', chapter: 'content' },
     { id: 'moe', title: 'MoE Overview', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
     { id: 'system', title: 'Distributed MoE: End-to-End Execution', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 8], setup: '.diagram-key' },
-    { id: 'capabilities', title: 'Related Work: Open Source MoE Systems', figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes'] },
+    { id: 'capabilities', title: 'Related Work: Open Source MoE Kernels', capabilitySteps: true, builds: ['capabilities','supported-modes'], figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes', 'supported-modes'] },
     { id: 'comparison-policy', title: 'MoK vs Dist-MoE: Imbalanced Multi-Layer Workload', figure: 'compare-policy-figure', chapter: 'mok-comparison', parts: ['compare-policy-view'], setup: '#compare-policy-config' },
     { id: 'comparison-packing', title: 'MoK vs Dist-MoE: Multi-Layer Training Performance', figure: 'compare-packing-figure', chapter: 'mok-comparison', parts: ['compare-packing-legend','compare-packing-view'], setup: '#compare-packing-config' },
     { id: 'comparison-scaling', comparisonSteps: true, builds: ['#compare-scaling-steps [data-ep="16"]','#compare-scaling-steps [data-ep="64"]'], title: 'MoK vs Dist-MoE: Routing Imbalance', figure: 'compare-scaling-figure', chapter: 'mok-comparison', parts: ['compare-scaling-legend','compare-scaling-view'], setup: '#compare-scaling-config' },
@@ -50,7 +50,7 @@
     { id: 'results-skew', title: 'Standalone Performance Under Routing Imbalance', figure: 'results-skew-figure', controller: 'skew', chapter: 'results', range: [0,0], parts: ['skew-deck-view'], report: 'skew', setup: '#skew-config' },
     { id: 'results-width', title: 'Standalone Performance vs Expert Width', figure: 'results-width-figure', controller: 'width', chapter: 'results', range: [0,0], parts: ['width-deck-view'], report: 'width', setup: '#width-config' },
     { id: 'public-api', title: 'Public API', kind: 'code', chapter: 'start', builds: ['#api-steps [data-api-step="0"]','#api-steps [data-api-step="1"]','#api-steps [data-api-step="2"]'] },
-    { id: 'reading', title: 'Code, Documentation, and Resources', kind: 'resources', chapter: 'start' }
+    { id: 'reading', title: 'Resources', kind: 'resources', chapter: 'start' }
   ];
 
   const sceneAliases = {'comparison-inference':'comparison-scaling','comparison-training':'comparison-scaling','comparison-graphs':'comparison-scaling',configuration:'public-api','expert-call':'public-api',assignments:'routing','expert-rows':'routing','return-slots':'routing','results-memory':'layer-packing','expert-math':'moe','dynamic-recompute':'layer-packing',offsets:'layer-packing','gather-tiles':'gpu-tile','tensor-cores':'gpu-tile','warp-groups':'mega-pipeline','chunk-readiness':'mega-pipeline'};
@@ -105,6 +105,7 @@
   }
   function captionNode(scene) {
     if(scene.kind==='code')return source('#api-caption');
+    if(scene.capabilitySteps)return figures[scene.figure].querySelector('#capability-slide-caption');
     if(scene.comparisonSteps)return figures[scene.figure].querySelector('.comparison-step-caption');
     if(scene.id==='quantization')return figures[scene.figure].querySelector('#quant-detail small');
     if (!scene.figure) return null;
@@ -256,6 +257,13 @@
   /** Apply a presentation build through the same controls used by the article. */
   function setBuild(scene, position) {
     const steps=slideSteps(scene);build=steps.includes(position)?position:steps.at(-1);
+    if(scene.capabilitySteps){
+      const figure=figures[scene.figure],supported=build===1;
+      for(const id of ['capability-table','capability-notes'])figure.querySelector('#'+id).classList.toggle('deck-part',!supported);
+      original.support.classList.toggle('deck-part',supported);
+      app.phaseCaption('capability-slide-caption',[supported?'Dist-MoE Supported Modes':'OSS Capability Comparison',source(supported?'#supported-modes-summary':'#motivation-setup').textContent]);
+      return;
+    }
     source(scene.builds[build]).click();
   }
   function part(figure, id) {
@@ -288,7 +296,7 @@
       build=savedBuild;
       inputs.forEach(({n,value,checked})=>{n.value=value;if(n.type==='checkbox')n.checked=checked;});
       buttons.forEach(({n,value})=>n.setAttribute('aria-pressed',value));
-      if(scene.comparisonSteps)setBuild(scene,savedBuild);
+      if(scene.comparisonSteps||scene.capabilitySteps)setBuild(scene,savedBuild);
       if(c){c.phase=phase;c.count=count;c.render();}
       else if(scene.figure==='precision-figure')app.renderPrecision();
       else if(scene.figure==='memory-figure')app.renderMemory();
@@ -357,6 +365,12 @@
       const figure = figures[scene.figure];
       const c = app.controllers[scene.controller];
       move(figure, $('deck-visual'));figure.querySelectorAll('svg[id]').forEach(svg=>window.ArticleLayout?.apply(svg,true));
+      if(scene.capabilitySteps){
+        move(original.support,figure);
+        if(!figure.querySelector('#capability-slide-caption')){
+          const caption=document.createElement('div');caption.id='capability-slide-caption';caption.className='phase-caption';caption.hidden=true;figure.append(caption);
+        }
+      }
       if(scene.report)window.ResultsApp.renderPresentation(scene.report);
       const parts = scene.parts || [c?.svg().id];
       parts.filter(Boolean).forEach(id => part(figure, id));
@@ -403,8 +417,12 @@
     } else if (scene.kind === 'orientation') {
       move(original.orientation, $('deck-visual'));
     } else if (scene.kind === 'resources') {
-      const box = document.createElement('div'); box.className = 'deck-static deck-resources';
-      box.append(cleanClone(original.support), cleanClone(original.resources)); $('deck-visual').append(box);
+      const links=document.createElement('nav');links.className='deck-resource-links';links.setAttribute('aria-label','Project resources');
+      const repository=document.createElement('a');repository.href=original.repository.href;repository.textContent='Dist-MoE Repository ↗';links.append(repository);
+      original.resources.querySelectorAll('a').forEach(sourceLink=>{
+        const link=document.createElement('a');link.href=sourceLink.href;link.textContent=sourceLink.querySelector('b').textContent;links.append(link);
+      });
+      $('deck-visual').append(links);
     } else if (scene.kind === 'code') {
       move(original.code, $('deck-controls-content'));
       const box = document.createElement('div'); box.className = 'deck-code';
@@ -486,7 +504,7 @@
     if(scene.id==='results-metrics')return 'Extra padding/replay FLOPs are not separately instrumented. All routed-operation costs remain in measured iteration time; effective HBM bandwidth is a model.';
     if(scene.chapter==='results')return window.ResultsApp.scope(scene.controller,app.controllers[scene.controller].phase);
     if(scene.chapter==='mok-comparison')return window.ComparisonApp.scope(scene.controller || scene.id.replace('comparison-','compare-'));
-    if(scene.id==='capabilities')return source('#capability-scope').textContent;
+    if(scene.id==='capabilities')return build===1?'Supported modes in the public API · NVFP4 uses prepared expert weights.':source('#capability-scope').textContent.split('. ')[0]+'.';
     if(scene.id==='routing')return 'Two ranks, four tokens; output components are illustrative before BF16 rounding.';
     const text=f.querySelector('figcaption').textContent;
     let sentences;
@@ -535,7 +553,7 @@
     let takeaway=topic?cleanClone(topic):dynamic?firstSentenceFragment(caption,scene.controller==='slots'||scene.chapter==='mok-comparison'?3:2):summary?cleanClone(summary):null;
     if(scene.id==='layer-packing'&&topic){takeaway=document.createDocumentFragment();takeaway.append(firstSentenceFragment(caption.querySelector('.decision-step-summary'),1),document.createTextNode(' '),firstSentenceFragment(topic,1));}
     if(scene.report){takeaway=document.createDocumentFragment();takeaway.append(document.createTextNode(window.ResultsApp.presentationSummary(scene.report)));}
-    if(scene.kind==='cover')takeaway=null;
+    if(scene.kind==='cover'||scene.kind==='resources')takeaway=null;
     $('deck-step-heading').textContent=steps.length>1 ? caption?.querySelector('strong')?.textContent.replace(/\.$/,'')||'' : '';
     $('deck-summary').replaceChildren(...(takeaway?[...takeaway.childNodes]:[]));
     $('deck-scope').textContent=scopeFor(scene);

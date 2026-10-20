@@ -28,7 +28,9 @@ and benchmark reports; the website does not run those kernels.
    has no execution step; full-program expansion must not hide other sections.
 6. **Presentation.** Check all scenes in both directions. Summaries follow the
    selected step; focus windows and SVG placement stay fixed within a scene.
-   Inspect actual text glyphs as well as container bounds.
+   Inspect actual text glyphs as well as container bounds. Verify that slide 4
+   restores the supported-modes table to the article and that the final slide
+   contains resource links with no table, summary, or footer.
 7. **PDF.** Check the selected scene/step sequence, fixed 16:9 pages, counter and
    author/copyright metadata, local SVG definitions, and rendered changed pages.
    Every selected step is exported once.
@@ -56,6 +58,6 @@ packing fixtures, including forward/backward offsets and LIFO rewinds. The
 logical API previews have been checked against the public planner and its
 exact diagnostic text. UI and presentation checks cover desktop, laptop,
 tablet, and phone sizes, with rendered inspection of changed figures and PDF pages.
-The default Mega/BF16 deck contains 27 scenes and 73 steps; selected Staged or
+The default Mega/BF16 deck contains 27 scenes and 74 steps; selected Staged or
 planning-only modes change the step count. These counts are checked from the
 actual scene sequence rather than from retired slide descriptions.

@@ -2,6 +2,7 @@
 
 A static educational article, browser slide deck, and stepped PDF view. They share
 one set of explanations, diagrams, controls, examples, and measurements.
+Article headings name each topic, with blue subtitles carrying its takeaway.
 
 ## Preview
 
@@ -40,7 +41,7 @@ kernel handoffs, pipeline liveness, hardware performance, and the public API.
 | Metrics, 08–10 | How are rates constructed, and how do hardware, imbalance, and width affect them? |
 | API | How do configuration, plan inspection, and execution connect? |
 
-The default deck has 27 slides and 73 printed steps. The Staged kernel view adds
+The default deck has 27 slides and 74 printed steps. The Staged kernel view adds
 two steps. The planning-only API example omits execution. Presentation titles name the topic
 independently of article headings; summaries use shared prose, live captions, or
 the measured cases. Previous slide anchors redirect to their current scenes.
@@ -59,6 +60,9 @@ PDF export keeps figure settings and fixed diagram framing. In the browser print
 dialog, enable background graphics and disable headers/footers. Figures advance
 by user input; dots illustrate the active handoff. Reduced-motion settings suppress
 fades and dot motion. Authors and the Meta copyright are shared by both views.
+
+Slide 4 steps through OSS capabilities and the shared supported-modes table.
+The final slide contains resource links, with its summary and footer omitted.
 
 Slides 7 and 8 have separate EP16 inference and EP64 training steps, with both
 precisions visible and chart/table pairs arranged side by side. Standalone results

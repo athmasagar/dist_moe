@@ -121,6 +121,10 @@ individual-stage release, the whole-trace peak, and final completion. The next
 slide selects 2F0, 2B0, 0F3 to show a physical slot’s acquisition, release, and
 next owner. Both views use the same schedule and source-derived lifetime rules.
 
+Article headings pair topic names with blue interpretation subtitles. Slide 4
+borrows the supported-modes table from the API section for its second step and
+restores it afterward. The last slide contains only resource links.
+
 ## Standalone measurements
 
 The authors supplied `report_isolated_v6/report.html`, 63 result summaries,

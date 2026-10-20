@@ -122,15 +122,6 @@ body.presentation-mode{overflow:hidden;height:100vh}
 .deck-code pre{margin:0;overflow:hidden;font:30px/1.4 ui-monospace,Menlo,monospace}
 .deck-code code{font:inherit;display:block;background:none;padding:0;color:#d7e3f4}
 .deck-code-line{display:block;white-space:pre}
-.deck-resources .support-table{max-width:none;padding:0;margin:0 0 50px}
-.deck-resources table{font-size:28px;line-height:1.5;min-width:0}
-.deck-resources th{font-size:24px}
-.deck-resources td,.deck-resources th{padding:13px 25px 13px 0}
-.deck-resources .source-grid{max-width:none;gap:30px 70px;margin:0}
-.deck-resources .source-grid a{border:0;border-left:2px solid var(--line);border-radius:0;background:none;padding:0 0 0 24px}
-.deck-resources .source-grid small{font-size:20px}
-.deck-resources .source-grid b{font-size:30px;margin:10px 0}
-.deck-resources .source-grid span{font-size:23px;line-height:1.4}
 @media(max-width:1050px){
   .deck-shortcuts{display:none}
   .deck-toolbar{gap:9px;padding:7px 10px}
@@ -230,3 +221,15 @@ html:fullscreen .deck-drawer{top:0;bottom:0}
 .deck-step-heading:empty{display:none}
 .deck-repository{color:var(--blue);font-size:22px;text-decoration:none;margin-left:auto;margin-right:28px}
 .deck-repository[hidden]{display:none}
+
+/* Supported modes use the same live table as the article's API section. */
+.deck-visual .support-table.deck-part{display:flex;flex:1;align-items:center;justify-content:center;width:100%;max-width:none;margin:0;padding:0;overflow:visible}
+.deck-visual .support-table table{width:100%;min-width:0;font-size:28px;line-height:1.4;table-layout:fixed}
+.deck-visual .support-table caption{display:none}
+.deck-visual .support-table :is(th,td){font-size:28px;white-space:normal;padding:20px 25px;text-align:left;vertical-align:middle}
+.deck-visual .support-table th{font-size:24px;text-transform:none;letter-spacing:0;color:var(--muted)}
+/* The final slide contains resource links only. */
+.deck-resource-links{display:grid;align-content:center;justify-items:start;gap:30px;width:100%;padding:0;max-width:1480px}
+.deck-resource-links a{font-size:36px;line-height:1.35;font-weight:500;color:var(--blue);text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:7px}
+.deck-canvas[data-kind=resources] :is(.deck-slide-footer,.deck-summary,.deck-scope,.deck-setup,.deck-step-heading){display:none}
+.deck-canvas[data-kind=resources] .deck-slide-header>span{display:none}

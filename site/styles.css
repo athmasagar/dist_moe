@@ -614,3 +614,20 @@ body:not(.presentation-mode) #content .fusion-visual.article-layout-mobile :is(.
   .api-examples .api-console{padding:10px!important}
   .api-examples .api-code-panel code{font-size:12px}
 }
+
+/* Article titles name the topic; blue subtitles explain the takeaway. */
+#content h2{font-size:30px;line-height:1.25;margin-bottom:14px}
+.section-subtitle{font-size:20px;font-weight:550;line-height:1.45;color:var(--blue);margin:-3px 0 24px;max-width:980px}
+#content section>h3,#content .measured-comparison>h3,#content .kernel-subsection>h3{font-size:22px;line-height:1.35}
+.figure-top{align-items:flex-start}
+.figure-top>div{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 13px;align-items:start;min-width:0}
+.figure-top .fig-number{padding-top:4px}
+.figure-top h3{font-size:18px;line-height:1.35}
+.figure-subtitle{grid-column:2;font-size:15px;font-weight:500;line-height:1.45;color:var(--blue);margin:0;max-width:none}
+.support-table caption{text-align:left;font-size:18px;font-weight:600;padding:0 0 12px;color:var(--ink)}
+@media(max-width:650px){
+  #content h2{font-size:26px}
+  .section-subtitle{font-size:18px}
+  .figure-top h3{font-size:17px}
+  .figure-subtitle{font-size:14px}
+}
