@@ -50,26 +50,63 @@ window.Views = (() => {
     s+=t(16,431,'The caller supplies routing. Dist-MoE executes the selected experts and their distributed dispatch/combine.','small muted');return finish(s);
   }
 
-  function overview(p){start('overview');let s='';
-    for(let peer=0;peer<2;peer++){const y=40+peer*290;s+=r(12,y,205,265,'panel')+t(27,y+26,`Peer GPU ${peer+1}`,'bold large')+t(27,y+46,'token owner · device HBM','small muted');s+=card(28,y+60,172,82,'Dispatch buffer','BF16 x (peer HBM)',p<=1?'blue-fill':'box')+grid(41,y+120,144,18,1,8,'blue');s+=card(28,y+162,172,62,'Combine buffer','BF16 routes (peer HBM)',p>=7?'green-fill':'box');s+=t(28,y+246,p>=8?'output [T,D] → local HBM':'publish → GPU barrier','small '+(p===0?'purple-text':'muted'));}
-    s+=r(305,40,720,625,'panel')+t(324,68,'Current GPU · expert owner','large bold')+r(324,82,680,283,'green-fill','stroke-opacity=".5"')+t(342,108,'LOCAL HBM · weights + activation-buffer views','small green-text');
-    s+=card(345,130,194,78,'x_gathered','BF16 [R, D]',p===1||p===2?'blue-fill':'box')+t(358,194,'base + o_xg','mono muted');
-    s+=card(780,130,204,78,'h1 · gate / up','BF16 [R, 2F]',p===4||p===5?'green-fill':'box')+t(794,194,'base + o_h1','mono muted');
-    s+=card(345,262,194,77,p>=6?'W2 weights':'W13 weights','caller-owned local HBM','box');
-    s+=card(560,262,188,77,'h2','BF16 [R, F]',p===5||p===6?'green-fill':'box')+t(573,326,'base + o_h2','mono muted');
-    s+=r(324,384,680,258,'orange-fill','stroke-opacity=".4"')+t(342,410,'CTA · compute pipeline','small orange-text');
-    s+=card(780,425,204,63,'SwiGLU registers','FP32 nonlinear arithmetic',p===5?'orange-fill':'box');
-    s+=card(345,515,185,105,'TMA → SMEM',p>=6?'A = h2 · B = W2':'A = x · B = W13',p===2||p===6?'blue-fill':'box');s+=grid(360,573,72,29,2,6,'blue')+grid(444,573,68,29,2,6,'green');
-    s+=card(570,515,184,105,'Tensor cores',p>=6?'W2 · FP32 TMEM':'W13 · FP32 TMEM',p===3||p===6?'orange-fill':'box')+grid(585,573,152,29,2,8,'orange');
-    s+=card(790,515,194,105,'Epilogue','TMEM → registers → SMEM',p===4||p===7?'green-fill':'box')+t(805,599,'convert result → BF16','small');
-    s+=wire('M200,132 C256,132 257,167 345,167','blue',p===1,true,true,'source row [D] · BF16',{x:230,y:80,lines:['x [D]','BF16'],point:[259,149]})+wire('M200,422 C263,422 267,178 345,178','blue',p===1,true,true,'source row [D] · BF16',{x:215,y:244,lines:['x [D]','BF16'],point:[278,264]});
-    s+=wire('M440,208 L440,210 L330,210 L330,492 L410,492 L410,515','blue',p===2,true,true,'activation A tile [B_M,B_K] · BF16',{x:350,y:214,lines:['A [B_M,B_K]','BF16 → SMEM'],point:[330,236]})+wire('M539,300 L548,300 L548,501 L490,501 L490,515','green',p===2||p===6,true,true,'weight B tile [B_K,B_N] · BF16',{x:350,y:430,lines:['B [B_K,B_N]','BF16 → SMEM'],point:[548,452]});
-    s+=wire('M530,555 L570,555','orange',p===3||p===6,true,true,'A/B tiles from SMEM → MMA',{x:568,y:450,lines:['A/B operand tiles','SMEM → MMA'],point:[550,555]})+wire('M754,555 L790,555','orange',p===4||p===7,true,true,'C accumulator [B_M,B_N] · FP32',{x:588,y:433,lines:['C [B_M,B_N]','FP32'],point:[772,555]});
-    s+=wire('M886,515 L886,505 L997,505 L997,218 L886,218 L886,208','green',p===4,true,true,'h1 output tile · BF16',{x:784,y:262,lines:['h1 [B_M,B_N]','BF16 → HBM'],point:[997,284]})+wire('M926,208 L926,425','orange',p===5,true,true,'h1 gate/up values [2F] · BF16',{x:760,y:245,lines:['h1 [2F] · BF16','→ SwiGLU'],point:[926,267]})+wire('M780,455 C749,455 659,419 659,339','green',p===5,true,true,'h2 activation values [F] · BF16',{x:700,y:355,lines:['h2 [F] · BF16','→ local HBM'],point:[659,386]});
-    s+=wire('M610,339 C610,478 430,450 430,515','blue',p===6,true,true,'h2 activation A tile · BF16',{x:628,y:368,lines:['h2 A tile · BF16','→ SMEM'],point:[610,390]});
-    s+=wire('M790,598 L774,598 L774,652 L244,652 L244,237 L200,237','blue',p===7,true,true,'expert result row [D] · BF16',{x:171,y:305,lines:['h3[D]','BF16'],point:[244,327]})+wire('M790,606 L782,606 L782,660 L276,660 L276,527 L200,527','blue',p===7,true,true,'expert result row [D] · BF16',{x:281,y:575,lines:['h3[D]','BF16'],point:[276,597]});
-    s+=t(258,24,'NVLink','small blue-text','middle')+t(258,42,'fabric','small muted','middle');
-    s+=t(324,693,'Source publication and final peer stores are ordered by GPU symmetric-memory barriers.','small muted');return finish(s);
+  /** Op-level projections retain the same sequence and buffers at every size. */
+  function overview(p,layout='article'){
+    start('overview');const wide=layout==='deck',mobile=layout==='mobile',replay=p===3,forward=p===1||replay,cx=mobile?16:342,fx=cx+16,bx=wide?fx+666:fx,by=wide?177:mobile?511:411,b13=by+144;
+    let s='';const cell=(x,y,w,h,title,lines,color,active,attrs='')=>'<g class="overview-cell" '+attrs+'>'+r(x,y,w,h,active?color+'-fill':'box')+t(x+12,y+23,title,'bold')+lines.map((line,i)=>t(x+12,y+44+i*18,line,'small muted')).join('')+'</g>';
+    const peers=[];
+    for(let peer=0;peer<2;peer++){
+      const x=mobile?32+330*peer:16,y=mobile?835:34+(wide?271:335)*peer,w=mobile?284:214,dy=wide?57:61,cy=wide?115:132,oy=wide?178:211,bw=w-30;
+      peers.push({x,y,dx:x+14+ bw,dispatch:y+dy+(wide?25:27),combine:y+cy+(wide?25:31)});
+      s+='<g class="overview-peer" data-peer="'+peer+'">'+r(x,y,w,wide?256:302,'panel')+t(x+14,y+27,`Peer GPU ${peer+1}`,'large bold')+t(x+14,y+46,'token owner · device HBM','small muted');
+      s+=cell(x+14,y+dy,bw,wide?50:54,'Dispatch buffer',[p>=6?'BF16 grad_x routes':'BF16 x'],p>=6?'green':'blue',p===0||forward||p>=6,'data-overview-buffer="dispatch"');
+      s+=cell(x+14,y+cy,bw,wide?50:62,'Combine buffer',[p===0?'BF16 route capacity':p>=4?'BF16 grad_h3':'BF16 h3 routes'],'green',forward||p===2||p===4||p===5,'data-overview-buffer="combine"');
+      const owner=[['Publish x + IDs',['Source x → dispatch']],['Buffers ready',['h3 arrives in combine']],['scale_and_sum',['h3 + scores → y']],['Replay saved x',['x → dispatch if needed']],['broadcast_and_scale',['grad_y + scores','grad_h3 + score grads']],['Gradients published',['grad_h3 → expert GPUs']],['Receive gradients',['Routes → dispatch']],['reduce_from_topk',['Input routes → grad_x']]][p];
+      s+=cell(x+14,y+oy,bw,72,owner[0],owner[1],p>=3?'purple':'green',[0,2,3,4,7].includes(p),'data-overview-owner-op="true"');
+      const bottom=y+cy+(wide?50:62),start=y+oy;
+      if(p===2||p===4)s+=wire(p===2?`M${x+w/2},${bottom} L${x+w/2},${start}`:`M${x+w/2},${start} L${x+w/2},${bottom}`,'purple',true,false);
+      if(p===7)s+=wire(`M${x+14},${y+dy+25} L${x+8},${y+dy+25} L${x+8},${y+oy+35} L${x+14},${y+oy+35}`,'green',true,false);
+      s+='</g>';
+    }
+    s+='<g class="overview-current">'+r(cx,34,wide?1348:682,wide?534:mobile?754:654,'panel')+t(fx,61,'Current GPU · expert owner','large bold');
+    s+=cell(fx,85,wide?1316:650,50,p>=3?'Backward plan + optional replay':'Routing + device plan',[p>=3?'get_backward_plan':'dist_dispatch_routing + get_forward_plan'],'purple',p===0||p===3,'data-overview-region="plan"');
+    s+=t(fx,157,'Prepared W13 and W2 weights · local HBM','small muted');
+    s+='<g data-overview-op="forward">'+r(fx,177,650,mobile?264:164,forward?'orange-fill':'box',replay?'stroke-dasharray="5 4"':'')+t(fx+14,202,replay?'Mega forward · conditional replay':'Mega forward · one fused op','bold')+t(fx+14,227,'fprop_swiglu_fwd_dispatch_combine','mono small');
+    const values=[['x_gathered',['gathered rows','MXFP8 bundles'],'blue','x'],['h1',['BF16 gate / up'],'green','h1'],['h2',['MXFP8 bundles'],'purple','h2'],['h3',['BF16 routes','→ peer combine'],'green','h3']],xs=mobile?[14,344,14,344]:[14,178,328,496],ws=mobile?[276,276,276,276]:[136,122,140,140];
+    values.forEach(([name,lines,color,key],i)=>s+=cell(fx+xs[i],254+(mobile&&i>1?90:0),ws[i],72,name,lines,color,forward,'data-overview-value="'+key+'"'));
+    if(mobile){
+      s+=wire(`M${fx+290},290 L${fx+344},290`,'orange',forward,false)+wire(`M${fx+620},290 L${fx+640},290 L${fx+640},335 L${fx+14},335 L${fx+14},380`,'orange',forward,false)+wire(`M${fx+290},380 L${fx+344},380`,'orange',forward,false);
+      s+=t(fx+317,245,'W13','small orange-text','middle')+t(fx+500,335,'SwiGLU','small orange-text','middle')+t(fx+317,335,'W2','small orange-text','middle');
+    }else{
+      s+=wire(`M${fx+150},290 L${fx+178},290`,'orange',forward,false)+wire(`M${fx+300},290 L${fx+328},290`,'orange',forward,false)+wire(`M${fx+468},290 L${fx+496},290`,'orange',forward,false);
+      s+=t(fx+164,245,'W13','small orange-text','middle')+t(fx+314,245,'SwiGLU','small orange-text','middle')+t(fx+482,245,'W2','small orange-text','middle');
+    }
+    s+='</g>'+cell(fx,mobile?463:363,650,40,'Saved activations / replay scratch',[],'purple',p===3,'data-overview-region="state"');
+    const backwardOp=(y,key,title,code,inputs,outputs,active)=>'<g data-overview-op="'+key+'">'+r(bx,y,650,111,active?'orange-fill':'box')+t(bx+14,y+25,title,'bold')+t(bx+14,y+48,code,'mono small')+cell(bx+14,y+53,279,38,inputs,[],'blue',active,'data-overview-io="input"')+cell(bx+360,y+53,276,38,outputs,[],'green',active,'data-overview-io="output"')+wire(`M${bx+293},${y+72} L${bx+360},${y+72}`,'orange',active,false)+'</g>';
+    s+=backwardOp(by,'w2-backward','Mega W2 backward · DGRAD + WGRAD','dgrad_wgrad_dispatch','grad_h3 + h2 col + W2','grad_h2 + grad_w2',p===5);
+    s+=backwardOp(b13,'w13-backward','Mega W13 backward · SwiGLU + DGRAD / WGRAD','dgrad_wgrad_swiglu_bwd_combine','grad_h2 + h1 + x col + W13','grad_x routes + grad_w13',p===6);
+    s+=t(bx+327,b13+(mobile?105:51),mobile?'grad_h1':'via grad_h1','small orange-text','middle')+'</g>';
+    const tx=mobile?fx+620:fx+636,ty=mobile?380:290,rx=wide?1684:mobile?684:1018;
+    const transfer=(key,path,color,active,payload,label)=>'<g data-overview-route="'+key+'">'+wire(path,color,active,true,true,payload,label)+'</g>';
+    peers.forEach((peer,i)=>{
+      const side=mobile?(i?684:16):(i?330:268),start=mobile?(i?peer.dx:peer.x+14):peer.dx,base=mobile?20+340*i:235+(i?10:0);
+      const tag=(kind,lines,point,y)=>mobile?{x:base+(kind==='h3'?170:0),y:798,lines:[lines.join(' · ')],point}:{x:kind==='ids'?242:base,y:y-(wide&&i?64:0),lines,point:wide&&i?[point[0],point[1]-64]:point};
+      const inputPath=mobile?i?`M${start},${peer.dispatch} L684,${peer.dispatch} L684,168 L24,168 L24,305 L${fx+14},305`:`M${start},${peer.dispatch} L16,${peer.dispatch} L16,287 L${fx+14},287`:`M${start},${peer.dispatch} L${side},${peer.dispatch} L${side},${i?305:287} L${fx+14},${i?305:287}`;
+      s+=transfer('x-'+i,inputPath,'blue',forward,'x · BF16',tag('x',['x','BF16'],[side,mobile?810:i?436:249],i?412:224));
+      const hside=mobile?(i?684:330):(i?306:288),outY=mobile?810:350+i*7;
+      s+=transfer('h3-'+i,`M${tx},${ty+i*18} L${rx-i*8},${ty+i*18} L${rx-i*8},${outY} L${hside},${outY} L${hside},${peer.combine} L${peer.dx},${peer.combine}`,'green',forward,'h3 routes · BF16',tag('h3',['h3','BF16'],[hside,mobile?810:i?520:314],i?494:286));
+      const gy=by+69+i*10,gpath=mobile?i?`M${peer.dx},${peer.combine} L684,${peer.combine} L684,635 L24,635 L24,${gy} L${bx+14},${gy}`:`M${peer.x+14},${peer.combine} L16,${peer.combine} L16,${gy} L${bx+14},${gy}`:wide?`M${peer.dx},${peer.combine} L${330-i*12},${peer.combine} L${330-i*12},145 L1016,145 L1016,${gy} L${bx+14},${gy}`:`M${peer.dx},${peer.combine} L${312+i*18},${peer.combine} L${312+i*18},${gy} L${bx+14},${gy}`;
+      s+=transfer('grad_h3-'+i,gpath,'blue',p===5,'grad_h3 · BF16',tag('grad_h3',['grad_h3','BF16'],[mobile?(i?684:16):312+i*18,mobile?810:i?518:372],i?535:344));
+      const xs=mobile?(i?684:330):252+i*15,xy=mobile?810:wide?452+i*7:677+i*8;
+      s+=transfer('grad_x-'+i,`M${bx+636},${b13+72+i*13} L${rx-i*8},${b13+72+i*13} L${rx-i*8},${xy} L${xs},${xy} L${xs},${peer.dispatch} L${peer.dx},${peer.dispatch}`,'green',p===6,'Input-gradient routes · BF16',tag('grad_x',['grad_x','routes'],[xs,mobile?810:i?610:122],i?584:88));
+      const idsPath=mobile?inputPath:wide?`M${peer.dx},${peer.dispatch} L${286+i*46},${peer.dispatch} L${286+i*46},${110+i*10} L${fx},${110+i*10}`:`M${peer.dx},${peer.dispatch} L${286+i*46},${peer.dispatch} L${286+i*46},${110+i*10} L${fx},${110+i*10}`;
+      s+=transfer('ids-'+i,idsPath,'purple',p===0,'Expert IDs + row counts',tag('ids',['route IDs','counts'],[side,mobile?810:i?435:122],i?412:140));
+    });
+    const localY=by+124;
+    s+=transfer('grad_h2',`M${bx+498},${by+91} L${bx+498},${localY} L${bx-8},${localY} L${bx-8},${b13+72} L${bx+14},${b13+72}`,'orange',p===6,'grad_h2 · BF16',{x:bx+187,y:localY-12,lines:['grad_h2 · BF16'],point:[bx+292,localY]});
+    s+=t(mobile?350:285,mobile?785:27,'NVLink','small blue-text','middle');
+    s+=t(fx,mobile?1180:wide?591:702,mobile?'x/h2: MXFP8 row/column bundles · h1: BF16':'x/h2: MXFP8 row/column bundles · h1: BF16 · weight gradients: BF16 or FP32','small muted','start','data-overview-note="true"');if(mobile)s+=t(fx,1208,'Weight gradients: BF16 or FP32','small muted');
+    return finish(s);
   }
   const tokenPhases=['Peer mappings','Publish','Exchange IDs','Build pointers','Gather','Scatter','Reduce'];
   /** Follow publication, local metadata construction, and pointer-driven payload movement. */

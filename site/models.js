@@ -157,6 +157,16 @@ window.Moe = (() => {
   function fp8Value(code) {const sign=code&128?-1:1,u=code&127,e=u>>3,m=u&7;if(e===15&&m===7)return NaN;return sign*(e===0?m*2**-9:(1+m/8)*2**(e-7));}
   function fp8Byte(value) {const sign=value<0||Object.is(value,-0)?128:0,v=Math.abs(value);let best=0,error=Infinity;for(let b=0;b<=126;b++){const e=Math.abs(fp8Value(b)-v);if(e<error||(e===error&&b%2===0)){best=b;error=e;}}return best|sign;}
   function quantBlock(outlier=false) {const seed=[-13.25,-7.5,-3.5625,-1.3125,-.234375,0,.005859375,.0009765625,2.75,3.625,6.75,9.5,11.25,13.5,15.75,17.25];const x=[...seed,...seed.map(v=>v*.75)];if(outlier)x[31]=512;const amax=Math.max(...x.map(Math.abs)),exponent=Math.ceil(Math.log2(amax/448)),scale=2**exponent,scaleByte=exponent+127;const bytes=x.map(v=>fp8Byte(v/scale)),q=bytes.map(fp8Value),decoded=q.map(v=>v*scale);return {x,amax,scale,scaleByte,bytes,q,decoded};}
+  const overviewSteps=[
+    {direction:'forward',title:'Publish inputs, route tokens, and plan storage',summary:'Each token owner publishes BF16 x and expert IDs in symmetric HBM. Routing builds gather/scatter pointers; get_forward_plan selects saved-state and scratch views.'},
+    {direction:'forward',title:'Run the fused MXFP8 Mega forward op',summary:'fprop_swiglu_fwd_dispatch_combine gathers and quantizes x, computes W13, SwiGLU, and W2, then scatters BF16 h3 to peer combine buffers. Gathered x and h2 use MXFP8 bundles; h1 is BF16.'},
+    {direction:'forward',title:'Reduce expert outputs on each token owner',summary:'After the combine barrier, scale_and_sum weights the h3 routes by their router scores and produces local y.'},
+    {direction:'backward',title:'Select saved state or replay into scratch',summary:'get_backward_plan selects retained intermediates or conditional replay. When replay is needed, saved source x is republished and the same Mega forward op regenerates the missing state into scratch.'},
+    {direction:'backward',title:'Publish route-output gradients',summary:'broadcast_and_scale uses grad_y, router scores, and h3 to form grad_h3 and grad_topk_scores. BF16 grad_h3 is published in peer combine HBM before the backward gather.'},
+    {direction:'backward',title:'Run the fused W2 DGRAD/WGRAD op',summary:'dgrad_wgrad_dispatch gathers grad_h3 and reads the saved or regenerated h2 column bundle and W2. It produces BF16 grad_h2 and local grad_w2.'},
+    {direction:'backward',title:'Run fused SwiGLU and W13 backward',summary:'dgrad_wgrad_swiglu_bwd_combine reads grad_h2, h1, x column bundles, and W13. It computes SwiGLU backward and W13 DGRAD/WGRAD, stores local grad_w13, and scatters BF16 input-gradient routes to peer dispatch HBM.'},
+    {direction:'backward',title:'Reduce input-gradient routes on each owner',summary:'After the dispatch barrier, reduce_from_topk combines the peer-written routes into local BF16 grad_x. Weight gradients remain with the expert owner.'}
+  ];
   // Teaching snapshots of two launches, not a trace of individual MMA instructions.
   const fusionBackward={
     roles:{epilogue:[0,1,2,3],mma:4,tma:5,producers:[6,7,8,9,10,11,12,13,14,15]},
@@ -172,5 +182,5 @@ window.Moe = (() => {
       {kind:'reduce',launch:1,title:'Barrier and reduce to grad_x',summary:'The dispatch barrier orders peer stores before top-k reduction returns BF16 grad_x to each token owner.'}
     ]
   };
-  return {align,sum,packing,row,col,capacity,savedParts,scratchParts,forwardScratchParts,memoryBounds,slotFromFactor,factorForSlot,memory,memoryReport,tokenData,routingRows,layout,schedule,lifetimes,intervals,fp8Value,fp8Byte,quantBlock,fusionBackward};
+  return {align,sum,packing,row,col,capacity,savedParts,scratchParts,forwardScratchParts,memoryBounds,slotFromFactor,factorForSlot,memory,memoryReport,tokenData,routingRows,layout,schedule,lifetimes,intervals,fp8Value,fp8Byte,quantBlock,fusionBackward,overviewSteps};
 })();

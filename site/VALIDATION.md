@@ -58,13 +58,13 @@ packing fixtures, including forward/backward offsets and LIFO rewinds. The
 logical API previews have been checked against the public planner and its
 exact diagnostic text. UI and presentation checks cover desktop, laptop,
 tablet, and phone sizes, with rendered inspection of changed figures and PDF pages.
-The default Mega/BF16 deck contains 28 scenes and 83 steps; selected Staged or
+The default Mega/BF16 deck contains 28 scenes and 82 steps; selected Staged or
 planning-only modes change the step count. These counts are checked from the
 actual scene sequence rather than from retired slide descriptions.
 
 The Lightning edition references 16 main scenes in the requested order, preceded
 by the supplied 16:9 SVG. Three compact memory scenes follow backward slide 11,
-giving 20 slides and 57 default steps. Validate tensor strip proportions against
+giving 20 slides and 56 default steps. Validate tensor strip proportions against
 the model, soft versus hard capacity labels, and every saved/recomputed/released packing snapshot. Check
 that returning to the article restores its detailed diagrams. Validate the
 shared scene identities and compare imported step captions/camera windows with
@@ -81,3 +81,8 @@ Compare forward and backward framing as well as each view’s step-to-step
 framing. Both directions use the same responsive layout and renderer helpers
 for scheduled work, operands, and hardware. Validate the selected stream,
 operation, and forward title when switching Staged/Mega.
+
+Validate the overview’s eight-step forward/backward sequence against the public
+MXFP8 execution guide, including conditional replay before gradient publication.
+Check its article, phone, and landscape deck projections; labels and framing
+must fit throughout. Its diagram and captions contain no tile-level details.

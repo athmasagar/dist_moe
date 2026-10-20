@@ -29,7 +29,7 @@ kernel handoffs, pipeline liveness, hardware performance, and the public API.
 | Figure | Question it answers |
 | --- | --- |
 | Setup | What does routing and weighted expert combine compute? |
-| Overview | Where does a row travel through peer HBM, local memory, and tensor cores? |
+| Overview | How do peer buffers, fused expert ops, replay, and reductions connect through forward and backward? |
 | 01 | How do IDs and pointer tables select gather and return addresses? |
 | 02 | How do qdata, scales, and quantization axes determine tensor formats? |
 | 03 | Which simultaneously live tensors determine slot and scratch bytes? |
@@ -41,7 +41,7 @@ kernel handoffs, pipeline liveness, hardware performance, and the public API.
 | Metrics, 08–10 | How are rates constructed, and how do hardware, imbalance, and width affect them? |
 | API | How do configuration, plan inspection, and execution connect? |
 
-The default deck has 28 slides and 83 printed steps. The Staged kernel view adds
+The default deck has 28 slides and 82 printed steps. The Staged kernel view adds
 two steps. The planning-only API example omits execution. Presentation titles name the topic
 independently of article headings; summaries use shared prose, live captions, or
 the measured cases. Previous slide anchors redirect to their current scenes.
@@ -87,10 +87,10 @@ and capacity policies, forward/backward working sets, and all nine packing/recom
 steps. They use compact drawings of the existing byte model and planner snapshots,
 without the detailed equations or offset tables.
 
-Lightning has 20 slides and 57 default steps. Every imported slide retains the
+Lightning has 20 slides and 56 default steps. Every imported slide retains the
 main deck's controls, content, and step sequence. Export PDF keeps `deck=lightning`
 and includes every selected step. The original full deck has 28 slides and
-83 default steps. The article header links to both versions.
+82 default steps. The article header links to both versions.
 
 ## Source layout
 
@@ -141,3 +141,7 @@ regenerated column-activation operands.
 The forward/backward kernel views share pipeline cards, a scheduled-work strip,
 operand recipes, and hardware bands. The presentation titles are MXFP8 Mega
 Forward and MXFP8 Mega Backward; selecting Staged updates the forward title.
+
+The overview follows ordinary MXFP8 Mega training in eight op-level forward
+and backward steps. It shows peer buffers, the fused expert operations,
+logical intermediates, conditional replay, and owner-side reductions.

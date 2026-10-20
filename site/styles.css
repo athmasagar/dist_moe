@@ -199,6 +199,19 @@ dialog .schedule-scroll svg{min-width:2060px}
 body.dialog-open{overflow:hidden}
 .no-script{padding:15px;background:var(--amber-soft);margin:20px}
 .hero-figure{margin-top:30px}
+.diagram-scroll svg.overview-visual{min-width:0;font-size:16px}
+#overview-figure .diagram-scroll:before{display:none}
+.overview-visual .small{font-size:14px}
+.overview-visual .mono{font-size:13px}
+.overview-visual .large{font-size:20px}
+.overview-visual [data-overview-op]>text.bold{font-size:18px}
+.overview-visual:not(.overview-mobile) [data-overview-owner-op]>text.bold{font-size:14px}
+.overview-visual.overview-mobile{font-size:20px}
+.overview-visual.overview-mobile .small{font-size:18px}
+.overview-visual.overview-mobile .mono{font-size:16px}
+.overview-visual.overview-mobile [data-overview-io] text{font-size:18px}
+.overview-visual.overview-mobile .edge-label-text{font-size:14px}
+.overview-visual.overview-mobile [data-overview-op]>text.bold{font-size:20px}
 .phase-tabs button:hover{color:var(--blue)}
 @media(max-width:1430px){
   .margin-note{display:block;float:none;width:auto;margin:12px 0 0;padding:9px 13px;background:var(--raised);border-left:2px solid var(--line);border-radius:0 4px 4px 0}

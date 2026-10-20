@@ -5,7 +5,7 @@ blog informs its visual language; all figures were drawn for this guide.
 
 | Figure | Source | What it depicts |
 | --- | --- | --- |
-| Overview | [BF16 execution](https://github.com/meta-pytorch/dist_moe/blob/main/docs/bf16_execution.md#forward) | Source publication, peer gather into HBM, TMA/SMEM, FP32 TMEM, BF16 h1, FP32 SwiGLU, BF16 h2, W2, peer scatter, and owner reduction. |
+| Overview | [MXFP8 execution](https://github.com/meta-pytorch/dist_moe/blob/main/docs/mxfp8_execution.md) | Eight op-level steps: publication/routing/planning, fused Mega forward, owner reduction, backward planning and optional replay, gradient publication, fused W2 backward, fused W13/SwiGLU backward, and input-gradient reduction. Peer dispatch/combine HBM and logical intermediates connect the ops. |
 | 01 · Routing metadata and symmetric payloads | [BF16 forward](https://github.com/meta-pytorch/dist_moe/blob/main/docs/bf16_execution.md#forward), [routing orchestration](https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/_routing_metadata.py), [routing kernels](https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/kernels/triton/dist_dispatch_routing_kernel.py), and [communication buffers](https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/_buffers.py) | One-time peer-base rendezvous; int32 count in a 128-byte header and int16 IDs; local expert-major forward/backward pointer construction; BF16 source staging, peer gather/scatter, and owner-side reduction. IDs cross ranks; scores remain local. |
 | 02 · MXFP8 quantization | [Quantization implementation](https://github.com/meta-pytorch/dist_moe/blob/main/dist_moe/kernels/triton_quantization/blockscaled_quantize.py) and [MXFP8 design](https://github.com/meta-pytorch/dist_moe/blob/main/docs/mxfp8_kernel_design.md) | Finite example: round-up E8M0 scale for amax/448 and nearest-even E4M3 values. No non-finite or optional half-range specialization is exposed in the example. |
 | 02 · NVFP4 structure | [NVFP4 design](https://github.com/meta-pytorch/dist_moe/blob/main/docs/nvfp4_kernel_design.md) | Two E2M1 values/byte, E4M3 scales per 16 values, FP32 inverse per source row, global weight factors, and aligned packed source stride. Not a numerical quantizer emulator. |
@@ -301,3 +301,16 @@ The aligned forward/backward views share scheduling, operand, and hardware
 renderers. Forward records illustrate configured chunk lead and readiness;
 backward records show the selected weight kernel’s per-expert DGRAD/WGRAD
 ranges. Schematic strips do not imply equal tile counts or measured durations.
+
+## Op-level MXFP8 Mega overview
+
+The overview follows `docs/mxfp8_execution.md` and `dist_moe/_blockscaled.py`:
+publication/routing/forward planning, one fused forward compute call,
+`scale_and_sum`, backward planning with optional forward replay,
+`broadcast_and_scale`, W2 `dgrad_wgrad_dispatch`, W13
+`dgrad_wgrad_swiglu_bwd_combine`, and `reduce_from_topk`. Setup and
+conditional replay each group related operations into one of eight steps.
+The three compute labels omit the common `dist_blockscaled_grouped_gemm_`
+prefix. Gathered x and h2 are logical row/column MXFP8 bundles, h1 is BF16,
+and h3 is scattered into peer combine HBM. The boxes do not imply separate
+dense BF16 x_gathered/h2 allocations.

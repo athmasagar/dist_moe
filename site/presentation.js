@@ -26,7 +26,7 @@
   const mainScenes = [
     { id: 'title', kind: 'cover', chapter: 'content' },
     { id: 'moe', title: 'MoE Overview', figure: 'moe-figure', chapter: 'content', parts: ['moe-svg'] },
-    { id: 'system', title: 'Distributed MoE: End-to-End Execution', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 8], setup: '.diagram-key' },
+    { id: 'system', title: 'Dist-MoE: High-level End-to-End Execution', figure: 'overview-figure', controller: 'overview', chapter: 'content', range: [0, 7], bounds:[0,0,1704,600], setup: '#overview-config' },
     { id: 'capabilities', title: 'MoE Capabilities and Supported Modes', buildTitles: ['Open Source MoE Capability Comparison','Dist-MoE Supported Modes'], capabilitySteps: true, builds: ['capabilities','supported-modes'], figure: 'capability-figure', chapter: 'motivation', parts: ['capability-table', 'capability-notes', 'supported-modes'] },
     { id: 'comparison-policy', title: 'MoK vs Dist-MoE: Imbalanced Multi-Layer Workload', figure: 'compare-policy-figure', chapter: 'mok-comparison', parts: ['compare-policy-view'], setup: '#compare-policy-config' },
     { id: 'comparison-packing', title: 'MoK vs Dist-MoE: Multi-Layer Training Performance', figure: 'compare-packing-figure', chapter: 'mok-comparison', parts: ['compare-packing-legend','compare-packing-view'], setup: '#compare-packing-config' },
@@ -95,6 +95,7 @@
   function restore() {
     observer?.disconnect();
     Object.values(app.controllers).forEach(c => c.stop());
+    const hadOverview=mounted.some(({node})=>node.id==='overview-figure');
     const briefSVGs=mounted.flatMap(({node})=>[...node.querySelectorAll('svg[data-slide-detail="brief"]')]);
     briefSVGs.forEach(svg=>delete svg.dataset.slideDetail);
     app.withoutAnimation(()=>{
@@ -117,6 +118,7 @@
     });
     for (const { node, marker } of mounted.reverse()) marker.replaceWith(node);
     mounted = [];
+    if(hadOverview)app.withoutAnimation(()=>app.controllers.overview.render());
   }
   function sentence(text, count = 2) {
     try { return [...new Intl.Segmenter('en', { granularity: 'sentence' }).segment(text)].slice(0,count).map(s=>s.segment).join('').trim() || text; }
@@ -549,6 +551,7 @@
     if(scene.compact==='tiers')return 'Logical layout · VMM fixes pinned-host backing at setup. Saved activations and separate symmetric communication buffers stay in HBM.';
     if(scene.compact==='working-set')return 'BF16 example · bar widths follow the shared byte model. Scratch is sized per call, not multiplied by the layer count.';
     if(scene.compact==='packing')return 'BF16 · one inspected GPU · both EP ranks agree on each save/replay decision · no host scratch in this example.';
+    if(scene.id==='system')return 'MXFP8 Mega training · tensor boxes show op values, not separate allocations. The three fused compute labels omit the common dist_blockscaled_grouped_gemm_ prefix.';
     if(scene.report)return window.ResultsApp.presentationScope(scene.report);
     if(scene.id==='results-metrics')return 'Extra padding/replay FLOPs are not separately instrumented. All routed-operation costs remain in measured iteration time; effective HBM bandwidth is a model.';
     if(scene.chapter==='results')return window.ResultsApp.scope(scene.controller,app.controllers[scene.controller].phase);
@@ -694,6 +697,7 @@
     shell.remove(); shell = null; canvas = null;
     document.body.classList.remove('presentation-mode');app.renderExpertMath();
     article.classList.remove('deck-source');article.querySelectorAll('svg[id]').forEach(svg=>window.ArticleLayout?.apply(svg)); article.inert = false; article.removeAttribute('aria-hidden');
+    app.withoutAnimation(()=>app.controllers.overview.render());
     setURL(false);
     requestAnimationFrame(() => { $('' + chapter)?.scrollIntoView({ behavior: 'instant', block: 'start' }); (savedFocus || $('present-link')).focus(); });
   }
