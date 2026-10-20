@@ -106,20 +106,113 @@ window.Views = (() => {
     s+='</g><g class="routing-note">'+t(16,723,step===6?'The two displayed components illustrate the sum before BF16 rounding.':'T = 2 · K = 2 · D = F = 256 · R = 4 · one row is 512 B · peer transfers use NVLink','small muted')+'</g>';
     return finish(s);
   }
-  function consumption(c,plan){start('consumption');const total=plan.virtual,act=plan.activation,host=plan.hostScratch,hot=plan.deviceScratch,scale=1008/total;let s=t(16,22,c.vmm?`VMM on: one GPU virtual range · ${host?'HBM + pinned host backing':'device HBM backing'}`:'VMM off: one GPU allocation · device HBM only','bold')+t(1024,45,`Combined allocation: ${bytes(total)}`,'small muted','end');
+  function consumption(c,plan,brief=false){if(brief)return briefMemory(c,plan);start('consumption');const total=plan.virtual,act=plan.activation,host=plan.hostScratch,hot=plan.deviceScratch,scale=1008/total;let s=t(16,22,c.vmm?`VMM on: one GPU virtual range · ${host?'HBM + pinned host backing':'device HBM backing'}`:'VMM off: one GPU allocation · device HBM only','bold')+t(1024,45,`Combined allocation: ${bytes(total)}`,'small muted','end');
     const regions=[{name:'Activation slots',value:act,color:'green',location:'Device HBM',detail:`${c.N} × ${bytes(plan.slot)} per slot`},{name:'Host overflow scratch',value:host,color:'purple',location:c.vmm?'Pinned host physical pages':'VMM disabled',detail:'Scratch beyond the hot device tier'},{name:'Hot shared scratch',value:hot,color:'amber',location:'Device HBM',detail:'Reused across sequential local calls'}];
     let x=16;for(const region of regions){const width=region.value*scale;if(width>0)s+=`<g><title>${esc(region.name+': '+num(region.value)+' bytes')}</title>`+r(x,65,width,42,`${region.color}-fill`,'rx="0"')+(width>180?t(x+width/2,92,region.name,'small bold','middle'):'')+'</g>';x+=width;}
     s+=r(16,65,1008,42,'','fill="none" stroke="var(--line)"')+t(16,127,'saved slots grow →','small green-text')+t(1024,127,'← scratch grows from the high end','small amber-text','end');
     regions.forEach((region,i)=>{const xx=16+i*344;s+=r(xx,153,320,103,`${region.color}-fill`)+t(xx+13,177,region.name,'bold')+t(xx+13,201,bytes(region.value),'large bold')+t(xx+13,224,region.location,'small')+t(xx+13,244,region.detail,'tiny muted');});
     s+=t(16,280,'Segment widths are proportions of the current combined allocation; the byte totals remain explicit.','small muted');return finish(s);
   }
-  function calculations(c,plan,view){start('memory');const saved=view==='saved',forward=view==='forward',rows=saved?plan.rb:view==='total'?plan.rt:plan.rd,parts=saved?plan.savedParts:forward?Moe.forwardScratchParts(c,rows):view==='device'?plan.deviceParts:plan.totalParts,total=Moe.sum(parts);let s=t(16,22,saved?'Saved state for one layer':forward?'Forward scratch · training with eligible state omitted':'Backward scratch · recompute peak','bold');
+  function calculations(c,plan,view,brief=false){if(brief)return briefWorkingSet(c,plan,view);start('memory');const saved=view==='saved',forward=view==='forward',rows=saved?plan.rb:view==='total'?plan.rt:plan.rd,parts=saved?plan.savedParts:forward?Moe.forwardScratchParts(c,rows):view==='device'?plan.deviceParts:plan.totalParts,total=Moe.sum(parts);let s=t(16,22,saved?'Saved state for one layer':forward?'Forward scratch · training with eligible state omitted':'Backward scratch · recompute peak','bold');
     s+=r(16,40,1008,47,'blue-fill')+t(30,69,`R = ${num(rows)} · D = ${num(c.D)} · F = ${num(c.F)} · T = ${num(c.T)} · K = ${c.K}`,'mono');
     const columns=parts.length<=4?parts.length:4,w=(1008-(columns-1)*16)/columns,h=108;
     parts.forEach((p,i)=>{const x=16+(i%columns)*(w+16),y=110+Math.floor(i/columns)*124;const color=p.dtype==='BF16'?'blue':p.dtype.includes('E8M0')?'purple':'green';const limit=Math.floor((w-24)/7.4);let formula;if(p.name==='Shared row-operand scratch'||p.name==='Forward row operands')formula=forward?[c.pipeline==='mega'?'row x + row h2':'max(row x, row h2)']:c.pipeline==='mega'?['max(row x + row h2,','row grad_h1)']:['max(row x, row h2,','row grad_h1)'];else formula=p.formula.length>limit?[p.formula.slice(0,limit),p.formula.slice(limit)]:[p.formula];s+=r(x,y,w,h,`${color}-fill`)+t(x+12,y+23,p.name,'small bold')+formula.map((f,j)=>t(x+12,y+45+j*16,f,'tiny mono')).join('')+t(x+12,y+85,bytes(p.bytes),'large bold');});
     const yy=parts.length>4?357:250;s+=r(16,yy-7,1008,37,'amber-fill')+t(30,yy+17,saved?`Σ tensor bytes = ${num(total)} B per layer × ${c.L} layers = ${bytes(total*c.L)} balanced full-save`:`Σ live regions = ${num(total)} B = ${bytes(total)} ${forward?'forward':view==='device'?'backward':'total'} scratch`,'small bold');if(!saved&&c.precision==='bf16'&&c.D<=c.F)s+=t(16,316,forward?'h3 goes to symmetric combine HBM; source x is retained in the activation slot.':'h2’s last read finishes before grad_h1 reuses its region; count the larger extent once.','small muted')+t(16,351,forward?'Forward: 2R(D + 3F), with align128 applied to each region.':'Backward: 2R(D + 5F), with align128 applied to each region.','mono')+t(16,378,'Same received-row bound R in both views · sequential layers share this scratch.','small muted');return {svg:finish(s),parts,rows,total};
   }
-  function packing(plan,phase) {
+  /** Short-talk views use the same byte plans and snapshots as the detailed figures. */
+  function briefMemory(c,plan) {
+    start('consumption');let s='<g class="memory-brief">';
+    s+=t(16,27,'ONE GPU VIRTUAL ADDRESS RANGE','bold')+t(1024,27,'Physical backing is fixed at setup','small muted','end');
+    const regions=[['Saved activations',plan.activation,'green'],['VMM host scratch',plan.hostScratch,'purple'],['Hot device scratch',plan.deviceScratch,'amber']];
+    let x=16;
+    for(const [name,value,color] of regions){const w=1008*value/plan.virtual,label=color==='green'?'Activations · HBM':color==='purple'?'Host':'Scratch · HBM';s+=`<g data-memory-region="${name}" data-bytes="${value}">`+r(x,53,w,65,`${color}-fill`,'rx="0"')+(w>label.length*10?t(x+w/2,92,label,'small bold','middle'):'')+`<title>${esc(name)}</title></g>`;x+=w;}
+    s+=t(16,143,'Saved state grows →','small green-text')+t(1024,143,'← scratch grows','small amber-text','end');
+    [['Activation slots','Device HBM','green'],['Overflow scratch','Pinned host · VMM','purple'],['Shared scratch','Device HBM','amber']].forEach(([name,where,color],i)=>{
+      const xx=16+i*344;s+=r(xx,170,12,12,`${color}-fill`)+t(xx+22,182,name,'bold')+t(xx+22,209,where,'small muted');
+    });
+    s+=l(16,231,1024,231);
+    s+=t(16,264,'ACTIVATIONS · SOFT BUDGET','bold green-text');
+    const mandatory=Math.min(390,390*plan.minimum/plan.slot);
+    s+=r(16,288,390,54,'green-fill')+r(16,288,mandatory,54,'blue-fill','rx="0"');
+    s+=t(16,368,'Inputs needed for replay','small blue-text')+t(16,395,'Optional-state capacity','small green-text');
+    const factor=c.activation_slot_capacity_factor;
+    s+=t(16,432,factor==null?'Exact byte budget per slot':`Slot factor ${factor} scales optional saved bytes`,'small bold');
+    s+=t(16,459,'Relative to balanced routing, above the input minimum','small muted');
+    s+=t(16,486,'Less space selects recompute, without spilling to host','small');
+    s+=t(466,264,'SCRATCH · HARD EXECUTION BOUND','bold amber-text');
+    const width=558,hot=width*plan.deviceFactor/plan.totalFactor;
+    s+=r(466,288,hot,54,'amber-fill','rx="0"');
+    if(plan.hostScratch)s+=r(466+hot,288,width-hot,54,'purple-fill','rx="0"');
+    s+=t(466,367,`Device factor ${plan.deviceFactor}× · hot HBM capacity`,'small amber-text');
+    s+=t(466,394,c.vmm?`VMM total factor ${plan.totalFactor}× · HBM + host capacity`:'No VMM · all scratch stays in HBM','small purple-text');
+    s+=t(466,432,'Factors bound received rows relative to balanced routing','small');
+    s+=t(466,459,'Past the device bound: slower host access with VMM','small');
+    s+=t(466,486,'Past the total bound: execution error','small bold');
+    return finish(s+'</g>');
+  }
+
+  function briefWorkingSet(c,plan,view) {
+    start('memory');const forward=view==='forward',parts=forward?Moe.forwardScratchParts(c,plan.rd):plan.deviceParts,total=Moe.sum(parts),saved=Moe.savedParts(c,plan.rd);
+    let s='<g class="memory-brief">';
+    const short=name=>({'x_gathered':'xg','Replayed x_gathered':'xg','Replayed h1':'replay h1','grad_h1 / h2 reuse':'grad_h1 / h2','grad_h3 gathered':'grad_h3'}[name]||name);
+    const strip=(items,y,capacity,color)=>{
+      s+=`<g data-working-set="${color==='green'?'saved':'scratch'}" data-capacity-bytes="${capacity}">`;
+      let x=16;for(const item of items){const w=1008*item.bytes/capacity;s+=`<g data-working-tensor="${esc(item.name)}" data-bytes="${item.bytes}">`+r(x,y,w,72,`${color}-fill`,'rx="0"')+t(x+w/2,y+43,short(item.name),'small bold','middle')+'</g>';x+=w;}
+      if(x<1024)s+=r(x,y,1024-x,72,'box','rx="0" stroke-dasharray="5 4"')+t((x+1024)/2,y+43,'Reserved for backward','small muted','middle');
+      s+='</g>';
+    };
+    s+=t(16,26,`SCRATCH CAPACITY FACTOR ${plan.deviceFactor}×`,'bold amber-text')+t(1024,26,'Same receive bound for both passes','small muted','end');
+    const balancedWidth=1008*plan.balanced/plan.rd;
+    s+=r(16,51,1008,40,'amber-fill')+r(16,51,balancedWidth,40,'blue-fill','rx="0"');
+    s+=t(16,118,'1× balanced received rows','small blue-text')+t(1024,118,`${plan.deviceFactor}× device capacity for imbalance`,'small amber-text','end');
+    s+=t(16,159,'IF STATE FITS · SAVED UNTIL BACKWARD','bold green-text');
+    strip(saved,183,Moe.sum(saved),'green');
+    s+=t(16,282,'xg = x_gathered · h1 is gate/up state · h3 is routed output','small muted');
+    s+=t(16,326,forward?'FORWARD SCRATCH · WHEN ELIGIBLE STATE IS OMITTED':'BACKWARD SCRATCH · REPLAY + GRADIENTS','bold amber-text');
+    strip(parts,349,plan.deviceScratch,'amber');
+    s+=t(16,451,forward?'Keep source x for replay; xg, h1, and h2 are temporary.':'grad_h1 reuses h2 storage after its readers finish.','small');
+    s+=l(16,473,1024,473)+t(16,509,'Saved state accumulates across layers','bold green-text')+t(1024,509,'One scratch region covers the peak call','bold amber-text','end');
+    return {svg:finish(s+'</g>'),parts,rows:plan.rd,total};
+  }
+
+  function briefPacking(plan,phase) {
+    start('packing');const snap=plan.snapshots[phase],a=snap.record,scale=1008/plan.slotBytes,colors=['blue','green','purple','orange'];
+    let s='<g class="memory-brief">';
+    plan.records.forEach((rec,i)=>{
+      const x=16+i*256,live=snap.live.includes(rec),pending=phase===0||snap.kind==='forward'&&i>a.layer;
+      s+=r(x,16,240,91,a===rec?`${colors[i]}-fill`:'box')+t(x+12,43,`L${i} · ${rec.rows[plan.rank]} received rows`,'bold');
+      s+=t(x+12,74,pending?'Not run yet':live?rec.recompute?'Save input x only':'Save intermediates':'Released','small');
+    });
+    s+=t(16,145,'ONE SHARED ACTIVATION SLOT · DEVICE HBM','bold green-text')+t(1024,145,`${bytes(plan.slotBytes)} budget`,'small muted','end');
+    s+=r(16,165,1008,83,'panel');
+    for(const rec of snap.live){
+      const x=16+(rec.base-plan.start)*scale,w=(rec.end-rec.base)*scale;
+      s+=`<g data-packed-layer="${rec.layer}" data-bytes="${rec.end-rec.base}" data-recompute="${rec.recompute}">`+r(x,165,w,83,`${colors[rec.layer]}-fill`,'rx="0"')+t(x+w/2,199,`L${rec.layer}`,'bold','middle');
+      if(w>110)s+=t(x+w/2,229,rec.recompute?'x only':'xg · h1 · h3','small','middle');
+      s+='</g>';
+    }
+    const used=snap.cursor-plan.start,reserve=snap.kind==='forward'?a.reserve:0;
+    if(reserve)s+=r(16+used*scale,165,reserve*scale,83,'','fill="none" stroke="var(--amber)" stroke-dasharray="5 4"');
+    if(snap.kind==='backward')s+=r(16+(a.base-plan.start)*scale,165,(a.end-a.base)*scale,83,'','fill="none" stroke="var(--line)" stroke-dasharray="5 4"');
+    const cursor=16+used*scale;s+=l(cursor,159,cursor,253,'green','stroke-width="2.5"');
+    s+=t(16,281,'Colored: retained state','small')+t(336,281,'Amber dash: future inputs','small amber-text')+t(1024,281,'Gray dash: just released','small muted','end');
+    s+=t(16,329,'SHARED SCRATCH · TEMPORARY WORKSPACE FOR THIS CALL','bold amber-text');
+    s+=r(16,351,1008,70,'panel');
+    const temporary=!a?[]:snap.kind==='forward'?a.forwardScratch:a.backwardScratch;
+    temporary.forEach(item=>{
+      const x=16+(item.offset-2*plan.slotBytes)*1008/plan.scratch,w=item.bytes*1008/plan.scratch;
+      const label=item.name.includes('→')?'h2 / grad_h1':item.name.replace('Replayed ','').replace('x_gathered','xg');
+      s+=`<g data-scratch-tensor="${esc(item.name)}" data-bytes="${item.bytes}">`+r(x,351,w,70,'amber-fill','rx="0"')+t(x+w/2,393,label,'small','middle')+'</g>';
+    });
+    s+=t(16,453,'xg = x_gathered · h2 is temporary even when the layer is saved','small muted');
+    s+=l(16,477,1024,477);
+    const explain=!a?['One budget covers all four layers.','Reserve enough room for every input needed to replay.']:snap.kind==='forward'?a.recompute?['This layer’s full state does not fit.','Keep x in the slot; use scratch for its intermediates.']:['This layer’s state fits, including room for future inputs.','Keep its state until backward; scratch is reused by the next call.']:a.recompute?['Rebuild intermediates from saved x in the same scratch region.','Compute gradients, then release this layer’s saved input.']:['Read the saved intermediates and compute gradients.','Release this layer; earlier layers remain until their backward.'];
+    s+=t(16,514,explain[0],'bold')+t(16,547,explain[1],'small');
+    return finish(s+'</g>');
+  }
+
+  function packing(plan,phase,brief=false) {
+    if(brief)return briefPacking(plan,phase);
     start('packing');const snap=plan.snapshots[phase],a=snap.record,scale=1008/plan.slotBytes;
     const colors=['blue','green','purple','orange'];let s='';
     s+=t(16,23,'FOUR MoE LAYERS · SAME SLOT OWNER','small bold')+t(1024,23,phase===0?'Before forward':`${snap.kind==='forward'?'After forward':'After backward'} L${a.layer}`,'bold','end');

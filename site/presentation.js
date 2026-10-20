@@ -53,9 +53,14 @@
     { id: 'reading', title: 'Resources', kind: 'resources', chapter: 'start' }
   ];
 
-  // Lightning references the main scenes directly; only its title artwork differs.
+  // Imported slides reference main scenes; short-talk memory views share their models.
   const lightningOrder=['moe','capabilities','comparison-policy','comparison-packing','comparison-scaling','comparison-width','public-api','system','mega-pipeline','results-metrics','results-inference','results-training','results-skew','results-width','reading'];
   const lightningScenes=[{id:'lightning-title',kind:'artwork-cover',chapter:'content',title:'Dist-MoE · PyTorch Conference NA 2026',alt:'Dist-MoE: Fused Comm-Compute Kernels and Activation Packing for Speed-of-Light MoEs. Shikai Li and Sanket Purandare, Meta. PyTorch Conference North America 2026.',asset:'assets/lightning-title.svg'},...lightningOrder.map(id=>mainScenes.find(scene=>scene.id===id))];
+  lightningScenes.splice(10,0,
+    {id:'lightning-memory',title:'Activation, Scratch, and VMM',figure:'memory-figure',chapter:'memory',parts:['consumption-svg'],compact:'tiers',bounds:[0,0,1040,510],memoryExample:{slotFactor:.35,deviceFactor:1.5,totalFactor:2},preset:'#memory-precision [data-precision="bf16"]',subtitle:'Saved-state capacity selects replay; scratch capacity bounds execution',summary:'The activation-slot factor controls optional saved bytes across layers. Scratch factors independently reserve capacity for per-call routing imbalance.'},
+    {...mainScenes.find(scene=>scene.id==='memory-costs'),id:'lightning-working-set',title:'Forward and Backward Memory',compact:'working-set',bounds:[0,0,1040,525],preset:'#memory-precision [data-precision="bf16"]',setup:null},
+    {...mainScenes.find(scene=>scene.id==='layer-packing'),id:'lightning-packing',compact:'packing',bounds:[0,0,1040,565],setup:null}
+  );
   const decks={main:{id:'main',name:'Full Presentation',scenes:mainScenes},lightning:{id:'lightning',name:'Lightning',scenes:lightningScenes}};
   const deck=decks[new URLSearchParams(location.search).get('deck')]||decks.main;
   const scenes=deck.scenes;
@@ -89,6 +94,12 @@
   function restore() {
     observer?.disconnect();
     Object.values(app.controllers).forEach(c => c.stop());
+    const briefSVGs=mounted.flatMap(({node})=>[...node.querySelectorAll('svg[data-slide-detail="brief"]')]);
+    briefSVGs.forEach(svg=>delete svg.dataset.slideDetail);
+    app.withoutAnimation(()=>{
+      if(briefSVGs.some(svg=>svg.id==='memory-svg'||svg.id==='consumption-svg'))app.renderMemory();
+      if(briefSVGs.some(svg=>svg.id==='packing-svg'))app.controllers.packing.render();
+    });
     mounted.forEach(({ node }) => {
       node.querySelectorAll?.('svg[id]').forEach(svg => {
         app.finishTransition(svg);
@@ -116,7 +127,7 @@
     if(scene.comparisonSteps)return figures[scene.figure].querySelector('.comparison-step-caption');
     if(scene.id==='quantization')return figures[scene.figure].querySelector('#quant-detail small');
     if (!scene.figure) return null;
-    if(scene.id==='memory-costs')return figures[scene.figure].querySelector('#memory-cost-caption');
+    if(scene.id==='memory-costs'||scene.compact==='working-set')return figures[scene.figure].querySelector('#memory-cost-caption');
     if(scene.id==='allocation')return figures[scene.figure].querySelector('#memory-caption');
     return figures[scene.figure].querySelector('.phase-caption');
   }
@@ -389,6 +400,7 @@
       const parts = scene.parts || [c?.svg().id];
       parts.filter(Boolean).forEach(id => part(figure, id));
       const controls = [...figure.children].filter(node => {
+        if(scene.compact)return false;
         if (scene.report) return false;
         if (!node.matches('.figure-controls,.phase-tabs,.config-fold,.slot-budget-panel,.calculation-details')) return false;
         if (['packing-display','slots-display','retention-display','slot-plan-details'].includes(node.id)) return false;
@@ -401,6 +413,18 @@
       });
       controls.forEach(n => move(n, $('deck-controls-content')));
       figure.querySelectorAll('svg[id]').forEach(svg => { if (!savedCamera.has(svg)) savedCamera.set(svg, svg.getAttribute('viewBox')); });
+      if(scene.compact){
+        const id=scene.compact==='tiers'?'consumption-svg':scene.compact==='working-set'?'memory-svg':'packing-svg';
+        figure.querySelector('#'+id).dataset.slideDetail='brief';
+        if(scene.memoryExample){
+          const example=scene.memoryExample;
+          $('vmm-enabled').checked=true;
+          $('config-device-factor').value=example.deviceFactor;$('config-total-factor').value=example.totalFactor;
+          app.state.memorySlotPolicy='factor';app.state.memorySlotFactor=example.slotFactor;
+          source('#memory-slot-policy').querySelectorAll('button').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.policy==='factor')));
+        }
+        if(scene.compact!=='packing')app.renderMemory();
+      }
       if(scene.slotDisplay)document.querySelector(`#slots-display [data-view="${scene.slotDisplay}"]`).click();
       if(scene.display)document.querySelector(`#packing-display [data-view="${scene.display}"]`).click();
       if (scene.prepare) document.querySelector(`#retention-display [data-view="${scene.prepare}"]`).click();
@@ -517,6 +541,9 @@
   }
   function scopeFor(scene){
     const f=figures[scene.figure];if(!f)return '';
+    if(scene.compact==='tiers')return 'Logical layout · VMM fixes pinned-host backing at setup. Saved activations and separate symmetric communication buffers stay in HBM.';
+    if(scene.compact==='working-set')return 'BF16 example · bar widths follow the shared byte model. Scratch is sized per call, not multiplied by the layer count.';
+    if(scene.compact==='packing')return 'BF16 · one inspected GPU · both EP ranks agree on each save/replay decision · no host scratch in this example.';
     if(scene.report)return window.ResultsApp.presentationScope(scene.report);
     if(scene.id==='results-metrics')return 'Extra padding/replay FLOPs are not separately instrumented. All routed-operation costs remain in measured iteration time; effective HBM bandwidth is a model.';
     if(scene.chapter==='results')return window.ResultsApp.scope(scene.controller,app.controllers[scene.controller].phase);
@@ -566,12 +593,13 @@
     }
     const caption=captionNode(scene),summary=source(`[data-slide-summary="${scene.id}"]`);
     const dynamic=caption&&scene.id!=='lifetimes'&&scene.id!=='precision';
-    const topic=scene.controller==='packing'?caption?.querySelector(scene.id==='layer-packing'?'.packing-step-summary':'.decision-step-summary'):null;
+    const topic=scene.controller==='packing'?caption?.querySelector(scene.id==='layer-packing'||scene.compact==='packing'?'.packing-step-summary':'.decision-step-summary'):null;
     let takeaway=topic?cleanClone(topic):dynamic?firstSentenceFragment(caption,scene.controller==='slots'||scene.chapter==='mok-comparison'?3:2):summary?cleanClone(summary):null;
     if(scene.id==='layer-packing'&&topic){takeaway=document.createDocumentFragment();takeaway.append(firstSentenceFragment(caption.querySelector('.decision-step-summary'),1),document.createTextNode(' '),firstSentenceFragment(topic,1));}
     if(scene.report){takeaway=document.createDocumentFragment();takeaway.append(document.createTextNode(window.ResultsApp.presentationSummary(scene.report)));}
+    if(scene.summary){takeaway=document.createDocumentFragment();takeaway.append(document.createTextNode(scene.summary));}
     if(scene.kind==='cover'||scene.kind==='artwork-cover'||scene.kind==='resources'||scene.report)takeaway=null;
-    $('deck-step-heading').textContent=scene.report ? window.ResultsApp.presentationSubtitle(scene.report) : steps.length>1 ? caption?.querySelector('strong')?.textContent.replace(/\.$/,'')||'' : '';
+    $('deck-step-heading').textContent=scene.subtitle|| (scene.report ? window.ResultsApp.presentationSubtitle(scene.report) : steps.length>1 ? caption?.querySelector('strong')?.textContent.replace(/\.$/,'')||'' : '');
     $('deck-summary').replaceChildren(...(takeaway?[...takeaway.childNodes]:[]));
     $('deck-scope').textContent=scopeFor(scene);
     if (scene.kind === 'code') updateCode(scene);

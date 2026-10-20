@@ -92,9 +92,10 @@
     try{c=config();const bounds=M.memoryBounds(c);if(rebase&&state.memorySlotPolicy==='bytes'&&state.memorySlotBytes<bounds.minimum){state.memorySlotBytes=bounds.minimum;c=config();}plan=M.memory(c);}
     catch(error){$('memory-status').hidden=false;$('memory-status').textContent=error.message+' The plot retains the last valid configuration until this is corrected.';return false;}
     currentMemoryConfig=c;currentMemoryPlan=plan;syncSlotControls(c,plan);
-    const calc=V.calculations(c,plan,state.calculation);
+    const brief=$('memory-svg').dataset.slideDetail==='brief';
+    const calc=V.calculations(c,plan,state.calculation,brief);
     const costCaption=state.calculation==='saved'?['Saved-state reference',`At balanced R = ${V.num(calc.rows)}, saved state costs ${V.bytes(calc.total)} per layer.`]:state.calculation==='forward'?['Forward scratch',`Omitting eligible state needs ${V.bytes(calc.total)} scratch at R = ${V.num(calc.rows)}.`]:['Backward scratch',`Recompute and gradients need ${V.bytes(calc.total)} shared scratch at R = ${V.num(calc.rows)}.`];
-    phaseCaption('memory-cost-caption',costCaption);
+    phaseCaption('memory-cost-caption',brief?state.calculation==='forward'?['Forward: produce state and temporary operands','A layer can retain its eligible state or keep only its input for replay. Scratch covers the temporary working set.']:['Backward: replay, compute gradients, release','Reserve scratch for the backward recompute peak. Every sequential layer uses this same workspace.']:costCaption);
     const policy=c.activation_slot_bytes!=null?`exact ${V.num(c.activation_slot_bytes)} B`:`activation factor ${c.activation_slot_capacity_factor}`;
     const shape=`T=${V.num(c.T)} · D=${V.num(c.D)} · F=${V.num(c.F)} · K=${c.K} · E=${c.E} · EP=${c.EP} · ${c.L} layers/slot · ${c.N} slots · ${c.precision==='bf16'?'BF16':'MXFP8 '+c.pipeline}`;
     $('memory-shape').textContent=shape;
@@ -106,7 +107,7 @@
     examples.forEach(button=>button.setAttribute('aria-pressed',String(button===example)));
     const description=example?document.querySelector(`#memory-example-descriptions [data-example="${example.dataset.memoryExample}"]`).textContent:'The activation policy fixes saved-state capacity independently of scratch. Actual received rows and remaining-input reserves determine which layers keep eligible state.';
     phaseCaption('memory-caption',[example?example.textContent.replace(/^\d+ · /,''):'Current capacity policies',description]);
-    renderSVG('consumption-svg',V.consumption(c,plan),!liveMemoryInput);renderSVG('memory-svg',calc.svg,!liveMemoryInput);
+    renderSVG('consumption-svg',V.consumption(c,plan,$('consumption-svg').dataset.slideDetail==='brief'),!liveMemoryInput);renderSVG('memory-svg',calc.svg,!liveMemoryInput);
     const factor=state.calculation==='saved'?1:state.calculation==='total'?plan.totalFactor:plan.deviceFactor;
     const raw=Math.min(Math.floor(c.T*c.K*factor+.5),c.T*c.EP*Math.min(c.K,c.E/c.EP));
     renderHTML('calculation-table',`<thead><tr><th>Quantity / tensor</th><th>Calculation</th><th>Bytes or rows</th></tr></thead><tbody><tr><td>Balanced rows</td><td class="mono">T × K = ${c.T} × ${c.K}</td><td class="numeric">${V.num(plan.balanced)} rows</td></tr><tr><td>Topology limit</td><td class="mono">T × EP × min(K,E/EP)</td><td class="numeric">${V.num(c.T*c.EP*Math.min(c.K,c.E/c.EP))} rows</td></tr><tr><td>R for this reference</td><td class="mono">${c.precision==='bf16'?`bounded round(T × K × ${factor})`:`floor((${raw} + ${c.E/c.EP} × 127) / 128) × 128`}</td><td class="numeric">${V.num(calc.rows)} rows</td></tr>${calc.parts.map(p=>`<tr><td>${V.esc(p.name)}</td><td class="mono">${V.esc(p.formula)}</td><td class="numeric">${V.num(p.bytes)}<span class="bar" style="width:${Math.max(.5,p.bytes/calc.total*100)}%"></span></td></tr>`).join('')}<tr><td><strong>Reference sum ${state.calculation==='saved'?'per layer':'at this scratch peak'}</strong></td><td>${state.calculation==='saved'?`${c.L} × this sum defines balanced full-save`:'Scratch is shared across sequential local calls'}</td><td class="numeric"><strong>${V.num(calc.total)} B</strong></td></tr></tbody>`);
@@ -138,12 +139,22 @@
   });
   function packingCaption(phase) {
     const plan=M.packing(state.packingBudget,state.packingRank),snap=plan.snapshots[phase],rec=snap.record;
+    if($('packing-svg').dataset.slideDetail==='brief'){
+      if(!rec)return ['Four layers share one activation slot','Layer sizes follow their received rows. Unused room can serve later layers.'];
+      if(snap.kind==='backward')return [`Backward L${rec.layer}: ${rec.recompute?'replay, consume, release':'consume and release'}`,rec.recompute?'Rebuild from saved x in scratch, compute gradients, then release the input.':'Read saved state, compute gradients, then release this layer’s region.'];
+      return [`Forward L${rec.layer}: ${rec.recompute?'save x for recompute':'keep eligible state'}`,rec.recompute?'Full state does not fit, so the layer keeps its input and recomputes during backward.':'The planner keeps this layer’s state and protects the inputs of all remaining layers.'];
+    }
     if(!rec)return ['Multiple layers use one slot',`${plan.depth} replay inputs need at least ${V.num(plan.minimum)} bytes per slot. The look-ahead reserve protects these future inputs; it is not an allocated tensor.`];
     if(snap.kind==='backward')return [`Backward L${rec.layer}: ${rec.recompute?'replay, consume, release':'consume and release'}`,`${rec.recompute?'This layer saved only x, so device-predicated replay rebuilds its expert intermediates in scratch.':'This layer reads retained x_gathered, h1 and h3; SwiGLU reconstructs h2.'} The saved forward record supplies its slot ID and tensor offsets.`];
     return [`Forward L${rec.layer}: ${rec.recompute?'save x for recompute':'keep eligible state'}`,`The worst rank’s candidate state plus ${plan.depth-rec.layer-1} remaining input${plan.depth-rec.layer-1===1?'':'s'} is ${V.num(rec.test)} B ${rec.recompute?'>':'≤'} the ${V.num(plan.slotBytes)} B capacity. ${rec.recompute?'Both ranks save only source x; expert intermediates use scratch.':'Both ranks retain their own x_gathered/h1/h3 extents; h2 uses scratch.'}`];
   }
   function packingTakeaway(plan,phase){
     const snap=plan.snapshots[phase],rec=snap.record;
+    if($('packing-svg').dataset.slideDetail==='brief'){
+      if(!rec)return 'One slot packs variable-size layer states; one scratch region serves each call.';
+      if(snap.kind==='forward')return rec.recompute?`L${rec.layer} keeps only x. Its expert intermediates use scratch and will be rebuilt during backward.`:rec.layer===0?'L0 starts the packed slot. Space for the remaining replay inputs stays protected.':`L${rec.layer} packs its state alongside ${snap.live.length-1} earlier layer${snap.live.length===2?'':'s'}. Space for remaining replay inputs stays protected.`;
+      return snap.live.length?`Backward L${rec.layer} releases its saved region; ${snap.live.length} earlier layer${snap.live.length===1?' remains':'s remain'} saved.`:`Backward L${rec.layer} frees the slot for a later owner. Scratch has been reused throughout.`;
+    }
     if(!rec)return `Two independent saved-state slots share one scratch suffix. This owner’s slot 1 starts at offset ${V.hex(plan.start)}; each layer appends its retained values there.`;
     if(snap.kind==='forward')return `L${rec.layer} appends ${V.num(rec.end-rec.base)} B of ${rec.recompute?'source x':'x_gathered, h1, and h3'} at offset ${V.hex(rec.base)}. ${snap.live.length} layer${snap.live.length===1?'':'s'} now share slot 1; buffer_offsets[1] advances to ${V.hex(snap.cursor)}. Temporary operands use shared scratch.`;
     return `Backward L${rec.layer} releases [${V.hex(rec.base)}, ${V.hex(rec.end)}) after its final readers finish. It restores buffer_offsets[1] to ${V.hex(snap.cursor)}. ${snap.live.length?`${snap.live.length} earlier layer${snap.live.length===1?' remains':'s remain'} saved in the slot.`:'The slot is now free for a later owner.'}`;
@@ -151,7 +162,7 @@
   controllers.packing=new Controller('packing',9,p=>{
     const plan=M.packing(state.packingBudget,state.packingRank);state.packingBudget=plan.slotBytes;
     $('packing-memory-view').hidden=state.packingDisplay!=='packing';$('packing-decision-view').hidden=state.packingDisplay!=='decision';
-    renderSVG('packing-svg',V.packing(plan,p),state.packingDisplay==='packing');renderSVG('lookahead-svg',V.lookahead(plan,p),state.packingDisplay==='decision');const pair=packingCaption(p);
+    renderSVG('packing-svg',V.packing(plan,p,$('packing-svg').dataset.slideDetail==='brief'),state.packingDisplay==='packing');renderSVG('lookahead-svg',V.lookahead(plan,p),state.packingDisplay==='decision');const pair=packingCaption(p);
     renderHTML('packing-caption',`<strong>${V.mathHTML(pair[0])}.</strong> <span class="packing-step-summary" ${state.packingDisplay==='packing'?'':'hidden'}>${V.mathHTML(packingTakeaway(plan,p))}</span> <span class="decision-step-summary" ${state.packingDisplay==='decision'?'':'hidden'}>${V.mathHTML(pair[1])}</span>`);
     $('packing-capacity').textContent=`${V.bytes(plan.slotBytes)} · ${V.num(plan.slotBytes)} B`;
     $('packing-budget').value=plan.slotBytes;

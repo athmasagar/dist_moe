@@ -78,10 +78,15 @@ for every measured width; training HBM is not assumed to increase monotonically.
 
 Open the [Lightning deck](http://127.0.0.1:8000/?view=slides&deck=lightning), or choose
 Lightning in the presentation selector. The conference title uses the supplied
-SVG unchanged. Its remaining slides reference the main scene objects in this order:
+SVG unchanged. Imported slides reference the main scene objects in this order:
 2, 4, 5, 6, 7, 8, 26, 3, 18, 21, 22, 23, 24, 25, 27.
 
-Lightning has 16 slides and 36 default steps. Every imported slide retains the
+After Lightning slide 10, three short-talk memory slides explain physical backing
+and capacity policies, forward/backward working sets, and all nine packing/recompute
+steps. They use compact drawings of the existing byte model and planner snapshots,
+without the detailed equations or offset tables.
+
+Lightning has 19 slides and 48 default steps. Every imported slide retains the
 main deck's controls, content, and step sequence. Export PDF keeps `deck=lightning`
 and includes every selected step. The original full deck stays at 27 slides and
 74 default steps. The article header links to both versions.

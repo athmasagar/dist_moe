@@ -268,3 +268,9 @@ in the requested order and uses the user-supplied conference SVG as its complete
 title slide. `assets/lightning-title.svg` is bundled byte-for-byte from the supplied
 file. It is self-contained and contains no external resource references. All
 imported diagrams, models, measurements, and controls remain shared.
+
+The three Lightning memory slides use the same `Moe.memory`, saved/scratch tensor
+parts, and `Moe.packing` snapshots as the detailed figures. Brief renderers change
+labels and composition only. The working-set comparison uses the same received-row
+bound for saved-state, forward scratch, and backward scratch. Returning to the
+article restores the detailed renderers.

@@ -63,7 +63,11 @@ planning-only modes change the step count. These counts are checked from the
 actual scene sequence rather than from retired slide descriptions.
 
 The Lightning edition references 15 main scenes in the requested order, preceded
-by the supplied 16:9 SVG. Its 16 slides contain 36 default steps. Validate the
+by the supplied 16:9 SVG. Three compact memory scenes follow Lightning slide 10,
+giving 19 slides and 48 default steps. Validate tensor strip proportions against
+the model, soft versus
+hard capacity labels, and every saved/recomputed/released packing snapshot. Check
+that returning to the article restores its detailed diagrams. Validate the
 shared scene identities and compare imported step captions/camera windows with
 the full deck. PDF export must retain the edition parameter and render the
 original title artwork without added headers or footers.
