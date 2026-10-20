@@ -234,6 +234,26 @@ inference weights contain FPROP qdata and scales only; DGRAD fields are absent.
 Dynamic BF16 weights are also accepted and quantized for the call. Supplying
 tensors that require gradients to an inference context is rejected.
 
+Inference preparation defaults to 1x32 blocks: each row has its own scale per
+32 columns. Pass `weight_block_size="32x32"` to preserve training's canonical
+32x32 tile quantization while still omitting DGRAD operands:
+
+```python
+prepared_w13 = dist_moe.prepare_block_scaled_weight(
+    w13_EFD, policy, inference=True, weight_block_size="32x32",
+    fuse_swiglu=policy.pipeline == "mega",
+)
+prepared_w2 = dist_moe.prepare_block_scaled_weight(
+    w2_EDF, policy, inference=True, weight_block_size="32x32",
+)
+```
+
+Quantization grain and fused row order are independent. Both grains produce
+the same FPROP tensor shapes and blocked scale layout; no weight conversion is
+needed during inference execution. The explicit option is MXFP8 inference-only;
+unspecified training preparation continues to use 32x32 tiles. Matching weight
+quantization alone does not guarantee whole-model trainer/generator parity.
+
 Supported Mega inference can use `prepare_block_scaled_weight(..., inference=True,
 fuse_swiglu=True)` for W13. This quantizes canonical BF16 weights before
 interleaving their qdata and natural scale rows in groups of eight. W2 remains

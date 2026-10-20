@@ -4118,6 +4118,7 @@ def prepare_block_scaled_weight(
     *,
     inference: bool = False,
     fuse_swiglu: bool = False,
+    weight_block_size: Literal["1x32", "32x32"] | None = None,
     out: PreparedWeight | None = None,
 ) -> PreparedWeight:
     """Prepare caller-owned block-scaled FPROP and DGRAD operands.
@@ -4129,13 +4130,23 @@ def prepare_block_scaled_weight(
             orientations. NVFP4 preparation requires an even K.
         config: Block-scaled execution policy.
         inference: Whether to prepare FPROP-only inference operands. MXFP8
-            training requires both FPROP and DGRAD scale orientations.
+            training requires both FPROP and DGRAD scale orientations. By
+            default, training quantizes 32x32 tiles and inference quantizes
+            1x32 row blocks.
         fuse_swiglu: Prepare W13 for fused inference SwiGLU by interleaving
             quantized gate/up rows and their scales in groups of eight.
             Requires ``inference=True``, ``config.pipeline="mega"`` and W13
             shape ``[E, 2F, D]``. Do not enable this for W2. The logical source
             weight remains unchanged; the result cannot be used for training
             backward or the staged pipeline.
+        weight_block_size: Optional MXFP8 inference quantization grain:
+            ``"1x32"`` shares a scale across 32 columns of one row;
+            ``"32x32"`` shares a scale across a canonical 32x32 weight tile,
+            matching training preparation. None preserves the mode default.
+            Both use the identical FPROP operand layout and support fused
+            inference SwiGLU. Quantization happens before any gate/up row
+            interleaving; execution performs no additional weight conversion.
+            Explicit block sizes require MXFP8 and ``inference=True``.
         out: Optional MXFP8 training storage to refill for the same logical
             weight, shape, format, and device. Refill preserves the identical
             storage tensors and returns a prepared wrapper associated with
@@ -4151,5 +4162,10 @@ def prepare_block_scaled_weight(
     from ._blockscaled import _prepare_blockscaled_weight as prepare
 
     return prepare(
-        weight, config, inference=inference, fuse_swiglu=fuse_swiglu, out=out
+        weight,
+        config,
+        inference=inference,
+        fuse_swiglu=fuse_swiglu,
+        weight_block_size=weight_block_size,
+        out=out,
     )

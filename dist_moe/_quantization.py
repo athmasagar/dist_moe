@@ -79,7 +79,8 @@ def quantize_for_format(
     Args:
         x: BF16/FP16/FP32 source, or an int64 row-pointer table.
         format: Target block-scaled operand format.
-        layout: Scale-factor layout. DistMoE requires CUBLAS-blocked scales.
+        layout: CUBLAS-blocked kernel scales, or natural scale rows for weight
+            preparation that rearranges rows before blocking the scales.
         block_size: Row, column, both-axis, or two-dimensional block mode.
         gather_output_shape: Logical source shape for pointer-table input.
         gather_dtype: Logical source dtype for pointer-table input.
@@ -91,8 +92,10 @@ def quantize_for_format(
     Raises:
         ValueError: If a gather request or layout is invalid.
     """
-    if layout != ScaleFactorLayout.CUBLAS_BLOCKED:
-        raise ValueError("DistMoE quantization requires CUBLAS_BLOCKED scales")
+    if layout not in (ScaleFactorLayout.CUBLAS_BLOCKED, ScaleFactorLayout.NATURAL):
+        raise ValueError(
+            "DistMoE quantization requires CUBLAS_BLOCKED or NATURAL scales"
+        )
     _, _, vector_size = block_scaled_format_constants(format)
     half_range_scale = resolve_half_range_scale(format, None)
     axis_mask, scale_reduction, row_fast_path = _axis_plan(block_size, vector_size)

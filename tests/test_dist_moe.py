@@ -791,18 +791,21 @@ class DistMoeConfigTest(unittest.TestCase):
         W13 retains its layout identity without changing the operand shapes.
         """
         cases = (
-            (dist_moe.BlockScaledFormat.MXFP8_E4M3, False, False),
-            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True, False),
-            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True, True),
-            (dist_moe.BlockScaledFormat.NVFP4, True, False),
-            (dist_moe.BlockScaledFormat.NVFP4, True, True),
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, False, False, None),
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True, False, None),
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True, True, None),
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True, False, "32x32"),
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True, True, "32x32"),
+            (dist_moe.BlockScaledFormat.NVFP4, True, False, None),
+            (dist_moe.BlockScaledFormat.NVFP4, True, True, None),
         )
-        for block_format, inference, fuse_swiglu in cases:
+        for block_format, inference, fuse_swiglu, weight_block_size in cases:
             with (
                 self.subTest(
                     format=block_format,
                     inference=inference,
                     fuse_swiglu=fuse_swiglu,
+                    weight_block_size=weight_block_size,
                 ),
                 FakeTensorMode(),
             ):
@@ -815,6 +818,7 @@ class DistMoeConfigTest(unittest.TestCase):
                     ),
                     inference=inference,
                     fuse_swiglu=fuse_swiglu,
+                    weight_block_size=weight_block_size,
                 )
 
                 self.assertIs(prepared.source, weight)
@@ -844,6 +848,25 @@ class DistMoeConfigTest(unittest.TestCase):
                     assert prepared.dgrad_scale is not None
                     self.assertEqual(prepared.dgrad_scale.shape, (512, 4))
                     self.assertIs(prepared.dgrad_scale.dtype, torch.float8_e8m0fnu)
+
+        for block_format, inference, block_size, message in (
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True, "16x32", "must be"),
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, False, "32x32", "only supported"),
+            (dist_moe.BlockScaledFormat.NVFP4, True, "32x32", "only supported"),
+        ):
+            with (
+                self.subTest(
+                    format=block_format, inference=inference, block_size=block_size
+                ),
+                FakeTensorMode(),
+                self.assertRaisesRegex(ValueError, message),
+            ):
+                dist_moe.prepare_block_scaled_weight(
+                    torch.empty(2, 128, 256, dtype=torch.bfloat16, device="cuda"),
+                    dist_moe.BlockScaledConfig(format=block_format),
+                    inference=inference,
+                    weight_block_size=block_size,
+                )
 
         for inference in (False, True):
             for shape in ((2, 64, 128), (2, 128, 64)):
@@ -1943,6 +1966,84 @@ class DistMoeKernelTest(unittest.TestCase):
                 torch.equal(actual.view(torch.uint8), expected.view(torch.uint8))
             )
 
+    def test_mxfp8_inference_32x32_preserves_training_weights(self) -> None:
+        """Keep canonical training quantization, including interleaved scale rows.
+
+        Independent byte-view permutations check G8 row order and the blocked
+        scale layout. Nonuniform gate/up magnitudes expose quantize-after-
+        interleave errors; traced preparation must preserve the same payload.
+        """
+        policy = dist_moe.BlockScaledConfig(pipeline="mega")
+        for rows, cols in ((128, 128), (512, 256)):
+            torch.manual_seed(43)
+            weight_ENK = torch.randn(2, rows, cols, dtype=torch.bfloat16, device="cuda")
+            weight_ENK[:, : rows // 2].mul_(0.2)
+            weight_ENK[:, rows // 2 :].mul_(0.01)
+            training = dist_moe.prepare_block_scaled_weight(weight_ENK, policy)
+            for fuse_swiglu in (False, True):
+                with self.subTest(rows=rows, cols=cols, fuse_swiglu=fuse_swiglu):
+                    prepare = partial(
+                        dist_moe.prepare_block_scaled_weight,
+                        config=policy,
+                        inference=True,
+                        fuse_swiglu=fuse_swiglu,
+                        weight_block_size="32x32",
+                    )
+                    actual = prepare(weight_ENK)
+                    expected_q_ENK = training.fprop_data.view(torch.uint8)
+                    expected_scale_ENB = (
+                        training.fprop_scale.view(torch.uint8)
+                        .view(2, rows // 128, cols // 128, 32, 4, 4)
+                        .permute(0, 1, 4, 3, 2, 5)
+                        .reshape(2, rows, cols // 32)
+                    )
+                    if fuse_swiglu:
+                        canonical_rows_N = (
+                            torch.arange(rows, device="cuda")
+                            .view(2, -1, 8)
+                            .transpose(0, 1)
+                            .reshape(-1)
+                        )
+                        expected_q_ENK = expected_q_ENK.index_select(
+                            1, canonical_rows_N
+                        )
+                        expected_scale_ENB = expected_scale_ENB.index_select(
+                            1, canonical_rows_N
+                        )
+                    actual_scale_ENB = (
+                        actual.fprop_scale.view(torch.uint8)
+                        .view(2, rows // 128, cols // 128, 32, 4, 4)
+                        .permute(0, 1, 4, 3, 2, 5)
+                        .reshape(2, rows, cols // 32)
+                    )
+                    self.assertTrue(
+                        torch.equal(actual.fprop_data.view(torch.uint8), expected_q_ENK)
+                    )
+                    self.assertTrue(torch.equal(actual_scale_ENB, expected_scale_ENB))
+                    self.assertIsNone(actual.dgrad_data)
+                    self.assertIsNone(actual.dgrad_scale)
+                    traced = make_fx(
+                        partial(
+                            blockscaled_impl._prepare_mxfp8_weight_op,
+                            inference=True,
+                            fuse_swiglu=fuse_swiglu,
+                            use_2d_quantization=True,
+                        )
+                    )(weight_ENK)
+                    self.assertEqual(
+                        sum(
+                            node.target
+                            == torch.ops.dist_moe.prepare_mxfp8_weight.default
+                            for node in traced.graph.nodes
+                        ),
+                        1,
+                    )
+                    self.assertTrue(
+                        torch.equal(
+                            traced(weight_ENK)[0].view(torch.uint8), expected_q_ENK
+                        )
+                    )
+
     def test_publication_helpers_preserve_payloads_and_saved_dispatch(self) -> None:
         """Publish both peer payloads and save the published dispatch conditionally."""
         x = torch.randn(8, 128, dtype=torch.bfloat16, device="cuda")
@@ -2736,10 +2837,11 @@ class DistMoeKernelTest(unittest.TestCase):
                 """Fail before a storage-free source can enter a data operation."""
                 raise RuntimeError(f"storage-free logical weight entered {func}")
 
-        for block_format, inference in (
-            (dist_moe.BlockScaledFormat.MXFP8_E4M3, False),
-            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True),
-            (dist_moe.BlockScaledFormat.NVFP4, True),
+        for block_format, inference, weight_block_size in (
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, False, None),
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True, None),
+            (dist_moe.BlockScaledFormat.MXFP8_E4M3, True, "32x32"),
+            (dist_moe.BlockScaledFormat.NVFP4, True, None),
         ):
             for pipeline in ("staged", "mega"):
                 policy = dist_moe.BlockScaledConfig(
@@ -2751,7 +2853,10 @@ class DistMoeKernelTest(unittest.TestCase):
                     num_experts=64 if pipeline == "staged" else 4,
                 )
                 prepared_w2 = dist_moe.prepare_block_scaled_weight(
-                    w2_EDF, policy, inference=inference
+                    w2_EDF,
+                    policy,
+                    inference=inference,
+                    weight_block_size=weight_block_size,
                 )
                 activation_buffer = context.activation_buffer
                 assert activation_buffer is not None
@@ -2769,12 +2874,14 @@ class DistMoeKernelTest(unittest.TestCase):
                         pipeline=pipeline,
                         inference=inference,
                         fuse_swiglu=fuse_swiglu,
+                        weight_block_size=weight_block_size,
                     ):
                         prepared_w13 = dist_moe.prepare_block_scaled_weight(
                             w13_EFD,
                             policy,
                             inference=inference,
                             fuse_swiglu=fuse_swiglu,
+                            weight_block_size=weight_block_size,
                         )
                         reference_run = partial(
                             dist_moe.routed_experts,
@@ -4495,6 +4602,9 @@ class DistMoeTwoRankTest(unittest.TestCase):
         max_num_tokens: int | None = None,
         padding_rank: int | None = None,
         wgrad_dtype: torch.dtype | None = torch.float32,
+        inference: bool = False,
+        fuse_swiglu: bool = False,
+        weight_block_size: Literal["1x32", "32x32"] | None = None,
     ) -> None:
         """Run one precision through real peer dispatch and combine paths.
 
@@ -4516,6 +4626,9 @@ class DistMoeTwoRankTest(unittest.TestCase):
             padding_rank: Optional rank whose every route is inactive.
             wgrad_dtype: Explicit WGRAD output dtype, or the logical-weight
                 dtype when omitted by the public configuration.
+            inference: Whether to exercise forward-only MXFP8 execution.
+            fuse_swiglu: Whether to interleave prepared inference W13.
+            weight_block_size: Optional MXFP8 inference quantization grain.
         """
         rank = dist.get_rank()
         device = torch.device("cuda", rank)
@@ -4523,7 +4636,7 @@ class DistMoeTwoRankTest(unittest.TestCase):
         num_tokens, hidden_dim, intermediate_dim = 128, 1024, 1024
         num_experts, top_k = 4, 2
         num_local_experts = num_experts // self.world_size
-        inference = (
+        inference = inference or (
             block_scaled is not None
             and block_scaled.format is dist_moe.BlockScaledFormat.NVFP4
         )
@@ -4637,10 +4750,17 @@ class DistMoeTwoRankTest(unittest.TestCase):
             if prepared_weights:
                 assert block_scaled is not None
                 call_w13 = dist_moe.prepare_block_scaled_weight(
-                    w13, block_scaled, inference=inference
+                    w13,
+                    block_scaled,
+                    inference=inference,
+                    fuse_swiglu=fuse_swiglu,
+                    weight_block_size=weight_block_size,
                 )
                 call_w2 = dist_moe.prepare_block_scaled_weight(
-                    w2, block_scaled, inference=inference
+                    w2,
+                    block_scaled,
+                    inference=inference,
+                    weight_block_size=weight_block_size,
                 )
             with torch.no_grad() if inference else torch.enable_grad():
                 actual = dist_moe.routed_experts(
@@ -4925,6 +5045,22 @@ class DistMoeTwoRankTest(unittest.TestCase):
                     flattened_weights=True,
                     accumulate_execution=True,
                     parameter_grad_dtype=grad_dtype,
+                )
+
+    @with_comms
+    def test_mxfp8_32x32_inference_exercises_peer_paths(self) -> None:
+        """Check rank-local 32x32 operands over real dispatch and combine.
+
+        Staged inference and fused Mega inference use the existing global
+        PyTorch reference and tolerances; every token visits both EP ranks.
+        """
+        for pipeline in ("staged", "mega"):
+            with self.subTest(pipeline=pipeline):
+                self._run_two_rank_numerics(
+                    dist_moe.BlockScaledConfig(pipeline=pipeline),
+                    inference=True,
+                    fuse_swiglu=pipeline == "mega",
+                    weight_block_size="32x32",
                 )
 
     @with_comms

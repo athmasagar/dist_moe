@@ -530,13 +530,22 @@ prepared_w13 = dist_moe.prepare_block_scaled_weight(
     policy,
     inference=True,
     fuse_swiglu=True,
+    weight_block_size="32x32",
 )
 prepared_w2 = dist_moe.prepare_block_scaled_weight(
     w2_EDF,
     policy,
     inference=True,
+    weight_block_size="32x32",
 )
 ```
+
+For MXFP8, `weight_block_size="32x32"` preserves training's quantized weight
+values while retaining only forward operands. It works with either pipeline;
+fused SwiGLU additionally requires Mega. Unspecified preparation keeps 32x32
+training and 1x32 inference defaults. Explicit `"1x32"` selects the inference
+default, with an independent scale per row and 32 columns. This option applies
+only to MXFP8 inference; NVFP4 uses its own preparation policy.
 
 `fuse_swiglu=True` is a Mega-inference W13 option. Preparation quantizes the
 canonical gate/up weights first, then places quantized rows and their scales

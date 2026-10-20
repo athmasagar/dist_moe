@@ -12,7 +12,7 @@ import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, Callable, Literal, TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -807,7 +807,8 @@ def _prepare_blockscaled_weight_impl(
     Args:
         w: Grouped native expert weight.
         cfg: Active block-scaled format.
-        use_row_1d_quantization: Whether only the inference orientation is needed.
+        use_row_1d_quantization: Use 1x32 rowwise quantization instead of the
+            training-compatible 32x32 tile quantization.
         fuse_swiglu: Interleave W13 quantized rows and natural scales for the
             fused inference kernel; never transpose the BF16 source.
 
@@ -823,17 +824,25 @@ def _prepare_blockscaled_weight_impl(
             "with a per-expert global scale"
         )
     _, _, sf_vec_size = block_scaled_format_constants(cfg.format)
-    if use_row_1d_quantization:
+    if use_row_1d_quantization or fuse_swiglu:
         if fuse_swiglu:
-            from .formats import resolve_half_range_scale
             from .kernels.scale_factor_layout import natural_to_cublas_blocked
 
-            w_q_rowmajor, w_scale_rowmajor = quantize_block_scaled(
+            quantized = quantize_for_format(
                 w,
-                format=cfg.format,
+                cfg.format,
+                block_size=(
+                    (1 if use_row_1d_quantization else sf_vec_size, sf_vec_size),
+                ),
                 layout=ScaleFactorLayout.NATURAL,
-                half_range_scale=resolve_half_range_scale(cfg.format, None),
             )
+            if use_row_1d_quantization:
+                w_q_rowmajor, w_scale_rowmajor = quantized
+            else:
+                _, (w_q_rowmajor, w_scale_rowmajor) = quantized
+            assert isinstance(w_q_rowmajor, torch.Tensor)
+            assert isinstance(w_scale_rowmajor, torch.Tensor)
+            # Quantize canonical rows first: G8 interleaving changes 32-row tiles.
             w_q_rowmajor = _interleave_w13_rows(w_q_rowmajor)
             w_scale_ENB = w_scale_rowmajor.view(*w.shape[:2], -1)
             w_scale_ENB = _interleave_w13_rows(w_scale_ENB)
@@ -2875,6 +2884,7 @@ def _prepare_mxfp8_weight_op(
     weight: torch.Tensor,
     inference: bool = False,
     fuse_swiglu: bool = False,
+    use_2d_quantization: bool = False,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -2886,6 +2896,7 @@ def _prepare_mxfp8_weight_op(
         weight: Grouped BF16 expert weight.
         inference: Prepare only the forward quantization orientation.
         fuse_swiglu: Interleave inference W13 rows after quantization.
+        use_2d_quantization: Preserve training's 32x32 quantization for inference.
 
     Returns:
         Qdata, FPROP scales, and DGRAD scales (empty for inference).
@@ -2900,7 +2911,10 @@ def _prepare_mxfp8_weight_op(
         mega=False,
     )
     prepared = _prepare_blockscaled_weight_impl(
-        weight, cfg, use_row_1d_quantization=inference, fuse_swiglu=fuse_swiglu
+        weight,
+        cfg,
+        use_row_1d_quantization=inference and not use_2d_quantization,
+        fuse_swiglu=fuse_swiglu,
     )
     if prepared.w_q_dgrad is not prepared.w_q_fprop:
         raise RuntimeError("MXFP8 FPROP and DGRAD must share qdata storage")
@@ -2918,6 +2932,7 @@ def _prepare_mxfp8_weight_fake(
     weight: torch.Tensor,
     inference: bool = False,
     fuse_swiglu: bool = False,
+    use_2d_quantization: bool = False,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -2929,6 +2944,7 @@ def _prepare_mxfp8_weight_fake(
         weight: Fake grouped BF16 expert weight.
         inference: Whether backward scale storage is absent.
         fuse_swiglu: Whether W13 rows have interleaved inference order.
+        use_2d_quantization: Quantization grain; operand shapes are unchanged.
 
     Returns:
         Fake shared qdata, FPROP scales, and DGRAD scales.
@@ -2968,6 +2984,7 @@ def _prepare_blockscaled_weight(  # noqa: C901 -- preparation modes share one ow
     *,
     inference: bool = False,
     fuse_swiglu: bool = False,
+    weight_block_size: Literal["1x32", "32x32"] | None = None,
     out: PreparedWeight | None = None,
 ) -> PreparedWeight:
     """Prepare caller-owned FPROP and DGRAD operands for async DistMoE.
@@ -2978,6 +2995,8 @@ def _prepare_blockscaled_weight(  # noqa: C901 -- preparation modes share one ow
         inference: Whether the prepared result may omit DGRAD operands.
         fuse_swiglu: Prepare interleaved W13 qdata/scales for Mega inference
             only. W2 and training retain their canonical row order.
+        weight_block_size: Optional MXFP8 inference quantization grain. None
+            preserves 1x32 inference and 32x32 training defaults.
         out: Optional MXFP8 training storage to refill for the same shape and
             format. Refill is unavailable for inference and NVFP4.
 
@@ -2991,6 +3010,11 @@ def _prepare_blockscaled_weight(  # noqa: C901 -- preparation modes share one ow
     from ._execution import PreparedWeight
 
     kernel_format = _kernel_block_scaled_format(config.format)
+    if weight_block_size is not None:
+        if weight_block_size not in ("1x32", "32x32"):
+            raise ValueError("weight_block_size must be '1x32' or '32x32'")
+        if not inference or kernel_format != BlockScaledFormat.MXFP8_E4M3:
+            raise ValueError("weight_block_size is only supported for MXFP8 inference")
     if weight.ndim != 3 or weight.dtype != torch.bfloat16:
         raise ValueError("weight must be grouped BF16 with shape [E, N, K]")
     if not weight.is_cuda or not weight.is_contiguous():
@@ -3040,7 +3064,10 @@ def _prepare_blockscaled_weight(  # noqa: C901 -- preparation modes share one ow
     if kernel_format is BlockScaledFormat.MXFP8_E4M3:
         with torch.no_grad():
             qdata, scale_fprop, scale_dgrad = _prepare_mxfp8_weight_op(
-                weight, inference=inference, fuse_swiglu=fuse_swiglu
+                weight,
+                inference=inference,
+                fuse_swiglu=fuse_swiglu,
+                use_2d_quantization=weight_block_size == "32x32",
             )
         return PreparedWeight._create(
             source=weight,
