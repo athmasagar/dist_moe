@@ -2,8 +2,10 @@
 #    uv pip compile .github/requirements/ci-cpu.in --python-platform x86_64-manylinux_2_28 --python-version 3.12 -o .github/requirements/ci-cpu.txt
 build==1.6.1
     # via -r .github/requirements/ci-cpu.in
-certifi==2026.7.22
-    # via requests
+certifi==2026.10.19
+    # via
+    #   -r .github/requirements/ci-cpu.in
+    #   requests
 cffi==2.1.1
     # via cryptography
 cfgv==3.5.0
@@ -57,6 +59,7 @@ packaging==26.3
     #   build
     #   pytest
     #   twine
+    #   virtualenv
     #   wheel
 platformdirs==4.11.12
     # via virtualenv
@@ -104,9 +107,11 @@ urllib3==2.8.0
     #   id
     #   requests
     #   twine
-uv==0.11.15
+uv==0.13.5
     # via -r .github/requirements/ci-cpu.in
-virtualenv==21.11.0
-    # via pre-commit
+virtualenv==21.14.13
+    # via
+    #   -r .github/requirements/ci-cpu.in
+    #   pre-commit
 wheel==0.48.0
     # via -r .github/requirements/ci-cpu.in
