@@ -220,7 +220,7 @@ it does not allocate or retain a second weight or activation layout. Both
 `h1` and `h2` are written to the existing planner destinations. Their
 `int64[1]` byte offsets are read on device, not copied to the host.
 
-Forward fusion is selected only when clip counters are absent and the
+Forward fusion is selected only for plain or clamped SwiGLU, when clip counters are absent and the
 resolved preset passes the native geometry check: `F` is divisible by 32,
 the preset is non-swapped, its epilogue subtile is 64 columns, and its M tile
 contains 128 rows per CTA MMA atom. Both default training presets meet this
@@ -248,6 +248,26 @@ evaluates `min(g, limit) * sigmoid(alpha * min(g, limit)) *
 (clamp(u, -limit, limit) + 1)`. `swiglu_alpha` and `swiglu_limit` are static
 context values used identically in forward, backward, and conditional forward
 recomputation.
+
+With `dist_moe.Config(activation="situ_glu")`, the kernel evaluates bounded
+SiTU-GLU as `(situ_glu_beta * tanh(g / situ_glu_beta) * sigmoid(g)) *
+(situ_glu_linear_beta * tanh(u / situ_glu_linear_beta))`. `situ_glu_beta` and
+`situ_glu_linear_beta` are static context values used identically in forward,
+backward, and conditional forward recomputation. This variant is currently
+available only for BF16 execution and retains the standalone forward and
+backward activation kernels; native fused SwiGLU epilogues do not implement
+SiTU-GLU. The shared launchers use the dedicated
+[`situ_glu.py`](../dist_moe/kernels/triton/situ_glu.py) arithmetic helpers
+without changing tiling, pointer chasing, or gradient-store order.
+
+Both tanhs use precise CUDA math. For `situ_glu_beta=4.0`, forward and backward
+reuse `t = tanh(g / 4)` via `sigmoid(g) = 0.5 + t / (1 + t * t)` instead of
+evaluating a separate exponential. This identity is exact in real arithmetic,
+not bitwise identical to an independent FP32 sigmoid. Other positive bounds
+retain the independent precise sigmoid. The public BF16 configuration does
+not expose a `fast_math` switch; the private activation wrapper's switch only
+affects the independent sigmoid, never the SiTU-GLU tanhs. Ignored SiTU-GLU
+bounds are canonicalized before launch for plain and clamped SwiGLU.
 
 ### 6. W2 plus combine
 

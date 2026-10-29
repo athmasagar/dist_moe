@@ -67,6 +67,8 @@ from .formats import (
     _NVFP4_HIDDEN_DIM_MAX,
     _NVFP4_INTERMEDIATE_DIM_MAX,
     block_scaled_format_constants,
+    SITU_GLU_GATE_BETA_DEFAULT,
+    SITU_GLU_UP_BETA_DEFAULT,
     SWIGLU_CLAMP_ALPHA_DEFAULT,
     SWIGLU_CLAMP_LIMIT_DEFAULT,
 )
@@ -368,11 +370,20 @@ class Config:
             WGRAD presets. During inference it leaves kernel selection to the
             shape-aware launcher.
         block_scaled: Optional MXFP8/NVFP4 compute policy. ``None`` selects BF16.
-        activation: SwiGLU variant. ``"swiglu_clamped"`` selects
+        activation: Gated activation. ``"swiglu_clamped"`` selects
             ``min(gate, limit) * sigmoid(alpha * min(gate, limit)) *
-            (clamp(up, -limit, limit) + 1)``.
+            (clamp(up, -limit, limit) + 1)``. ``"situ_glu"`` selects
+            ``situ_glu_beta * tanh(gate / situ_glu_beta) * sigmoid(gate) *
+            situ_glu_linear_beta * tanh(up / situ_glu_linear_beta)`` and is BF16-only.
         swiglu_alpha: Sigmoid multiplier for clamped SwiGLU.
         swiglu_limit: Gate and up-projection bound for clamped SwiGLU.
+        situ_glu_beta: Gate tanh bound for SiTU-GLU. BF16 uses precise tanhs;
+            the default bound of four reuses the gate tanh to evaluate sigmoid
+            in FP32, with normal rounding rather than bitwise sigmoid parity.
+            Other bounds use an independent precise sigmoid. Ignored by other
+            activations and canonicalized at kernel launch.
+        situ_glu_linear_beta: Up-projection tanh bound for SiTU-GLU. Ignored by
+            other activations and canonicalized at kernel launch.
         wgrad_dtype: Optional explicit BF16 or FP32 weight-gradient output
             dtype. ``None`` uses each parameter's non-``None`` ``grad_dtype``
             for direct in-place accumulation, then existing gradient storage or
@@ -398,11 +409,13 @@ class Config:
     num_sms: int | None = None
     bf16_grouped_gemm_preset: Bf16GroupedGemmPreset | None = None
     block_scaled: BlockScaledConfig | None = None
-    activation: Literal["swiglu", "swiglu_clamped"] = "swiglu"
+    activation: Literal["swiglu", "swiglu_clamped", "situ_glu"] = "swiglu"
     swiglu_alpha: float = SWIGLU_CLAMP_ALPHA_DEFAULT
     swiglu_limit: float = SWIGLU_CLAMP_LIMIT_DEFAULT
     wgrad_dtype: torch.dtype | None = None
     inference: bool = False
+    situ_glu_beta: float = SITU_GLU_GATE_BETA_DEFAULT
+    situ_glu_linear_beta: float = SITU_GLU_UP_BETA_DEFAULT
 
     def __post_init__(self) -> None:  # noqa: C901
         """Validate static execution parameters.
@@ -496,9 +509,9 @@ class Config:
                 "wgrad_dtype must be None, torch.bfloat16, or torch.float32, got "
                 f"{self.wgrad_dtype}"
             )
-        if self.activation not in ("swiglu", "swiglu_clamped"):
+        if self.activation not in ("swiglu", "swiglu_clamped", "situ_glu"):
             raise ValueError(
-                "activation must be 'swiglu' or 'swiglu_clamped', got "
+                "activation must be 'swiglu', 'swiglu_clamped', or 'situ_glu', got "
                 f"{self.activation!r}"
             )
         if self.activation == "swiglu_clamped" and (
@@ -510,6 +523,17 @@ class Config:
             raise ValueError(
                 "clamped SwiGLU requires finite positive swiglu_alpha and swiglu_limit"
             )
+        if self.activation == "situ_glu" and (
+            not math.isfinite(self.situ_glu_beta)
+            or not math.isfinite(self.situ_glu_linear_beta)
+            or self.situ_glu_beta <= 0
+            or self.situ_glu_linear_beta <= 0
+        ):
+            raise ValueError(
+                "SiTU-GLU requires finite positive situ_glu_beta and situ_glu_linear_beta"
+            )
+        if self.activation == "situ_glu" and self.block_scaled is not None:
+            raise ValueError("SiTU-GLU currently supports BF16 execution only")
         if self.block_scaled is not None:
             _validate_block_scaled_config(self)
 
@@ -2051,7 +2075,8 @@ class _Bf16Autograd(torch.autograd.Function):
             combine_fprop=True,
         )
         fused_swiglu_forward = (
-            options.swiglu_clip_stats_out_3 is None
+            config.activation in ("swiglu", "swiglu_clamped")
+            and options.swiglu_clip_stats_out_3 is None
             and fprop_config is not None
             and _native_swiglu_fwd_config_is_compatible(fprop_config, w2_EDF.shape[2])
         )
@@ -2093,7 +2118,8 @@ class _Bf16Autograd(torch.autograd.Function):
                 swiglu_limit=config.swiglu_limit,
             )
             # Clip observation and unsupported explicit presets retain the
-            # standalone activation; eligible dispatch emits both H1 and H2.
+            # standalone activation; the native epilogue does not implement
+            # SiTU-GLU. Eligible dispatch emits both H1 and H2.
             if not fused_swiglu_forward:
                 swiglu_fwd(
                     x=forward_plan.h1_offset,
@@ -2101,6 +2127,9 @@ class _Bf16Autograd(torch.autograd.Function):
                     clamped=config.activation == "swiglu_clamped",
                     alpha=config.swiglu_alpha,
                     limit=config.swiglu_limit,
+                    situ_glu=config.activation == "situ_glu",
+                    situ_glu_gate_beta=config.situ_glu_beta,
+                    situ_glu_up_beta=config.situ_glu_linear_beta,
                     activation_buffer=activation_buffer.buffer,
                     num_recv_tokens=num_recv_rows_1,
                     feature_dim=w2_EDF.shape[2],
@@ -2379,6 +2408,9 @@ class _Bf16Autograd(torch.autograd.Function):
                 clamped=config.activation == "swiglu_clamped",
                 alpha=config.swiglu_alpha,
                 limit=config.swiglu_limit,
+                situ_glu=config.activation == "situ_glu",
+                situ_glu_gate_beta=config.situ_glu_beta,
+                situ_glu_up_beta=config.situ_glu_linear_beta,
                 activation_buffer=activation_buffer.buffer,
                 num_recv_tokens=num_recv_rows_1,
                 feature_dim=w2_EDF.shape[2],
@@ -2492,7 +2524,10 @@ class _Bf16Autograd(torch.autograd.Function):
             _initialize_fake_peer_scatter_output(buffers.dispatch)
             # W2 WGRAD has consumed H2 before its scratch may be reused for
             # grad_H1. Fusion writes grad_H1 into that same planned destination.
-            if w2_EDF.shape[2] % native_swiglu_bwd_col_multiple() == 0:
+            if (
+                config.activation in ("swiglu", "swiglu_clamped")
+                and w2_EDF.shape[2] % native_swiglu_bwd_col_multiple() == 0
+            ):
                 grad_x_TKD, _ = dist_grouped_gemm_dgrad_swiglu_bwd_combine(
                     grad_h2=backward_plan.grad_h2_offset,
                     h1=backward_plan.h1_offset,
@@ -2517,6 +2552,9 @@ class _Bf16Autograd(torch.autograd.Function):
                     clamped=config.activation == "swiglu_clamped",
                     alpha=config.swiglu_alpha,
                     limit=config.swiglu_limit,
+                    situ_glu=config.activation == "situ_glu",
+                    situ_glu_gate_beta=config.situ_glu_beta,
+                    situ_glu_up_beta=config.situ_glu_linear_beta,
                     activation_buffer=activation_buffer.buffer,
                     num_recv_tokens=num_recv_rows_1,
                     feature_dim=w2_EDF.shape[2],

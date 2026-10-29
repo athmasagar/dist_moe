@@ -251,6 +251,7 @@ class StaticPackageBoundaryTest(unittest.TestCase):
             _PROJECT_ROOT / "dist_moe",
             _PROJECT_ROOT / "docs",
             _PROJECT_ROOT / "examples",
+            _PROJECT_ROOT / "benchmarks",
         )
         violations: list[str] = []
         for root in roots:
@@ -473,6 +474,7 @@ class DistributionArtifactTest(unittest.TestCase):
                 ".pre-commit-config.yaml",
                 "AGENTS.md",
                 "CONTRIBUTING.md",
+                "benchmarks",
                 "examples",
                 "LICENSE",
                 "LICENSES",

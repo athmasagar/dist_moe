@@ -52,7 +52,12 @@ from dist_moe._triton_ops import (
     copy_dispatch_to_activation,
     copy_routing_and_dispatch,
 )
-from dist_moe.formats import BlockScaledFormat as _KernelBlockScaledFormat
+from dist_moe.formats import (
+    BlockScaledFormat as _KernelBlockScaledFormat,
+    canonical_situ_glu,
+    SITU_GLU_GATE_BETA_DEFAULT,
+    SITU_GLU_UP_BETA_DEFAULT,
+)
 from dist_moe.kernels import (
     config as grouped_gemm_config_impl,
     dist_grouped_gemm as dist_grouped_gemm_impl,
@@ -60,6 +65,7 @@ from dist_moe.kernels import (
     grouped_gemm_kernel as grouped_gemm_kernel_impl,
     mega_blockscaled_grouped_gemm as mega_impl,
 )
+from dist_moe.kernels.triton import swiglu as swiglu_impl
 from torch._higher_order_ops.effects import has_effects
 from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.distributed.device_mesh import init_device_mesh
@@ -187,6 +193,9 @@ def _reference_moe(
     clamped: bool = False,
     swiglu_alpha: float = 1.702,
     swiglu_limit: float = 7.0,
+    situ_glu: bool = False,
+    situ_glu_beta: float = 4.0,
+    situ_glu_linear_beta: float = 25.0,
 ) -> torch.Tensor:
     """Evaluate a small routed MoE with ordinary PyTorch operations.
 
@@ -200,6 +209,9 @@ def _reference_moe(
         clamped: Whether to apply the clamped SwiGLU formula.
         swiglu_alpha: Sigmoid multiplier for clamped SwiGLU.
         swiglu_limit: Preactivation bound for clamped SwiGLU.
+        situ_glu: Whether to apply the SiTU-GLU formula.
+        situ_glu_beta: Gate tanh bound for SiTU-GLU.
+        situ_glu_linear_beta: Up-projection tanh bound for SiTU-GLU.
 
     Returns:
         Reference output with shape ``[T, D]``.
@@ -229,6 +241,16 @@ def _reference_moe(
                 h2 = (
                     gate_f32 * torch.sigmoid(swiglu_alpha * gate_f32) * (up_f32 + 1.0)
                 ).to(x.dtype)
+            elif situ_glu:
+                gate_f32 = (
+                    situ_glu_beta
+                    * torch.tanh(gate_f32 / situ_glu_beta)
+                    * torch.sigmoid(gate_f32)
+                )
+                up_f32 = situ_glu_linear_beta * torch.tanh(
+                    up_f32 / situ_glu_linear_beta
+                )
+                h2 = (gate_f32 * up_f32).to(x.dtype)
             else:
                 h2 = (gate_f32 * torch.sigmoid(gate_f32) * up_f32).to(x.dtype)
             token_outputs.append(F.linear(h2, w2[expert]))
@@ -334,6 +356,83 @@ def _blockscaled_tolerance(
 
 class DistMoeConfigTest(unittest.TestCase):
     """CPU validation tests for the public configuration surface."""
+
+    def test_situ_glu_defaults_match_public_fields(self) -> None:
+        """Gate and up defaults match the public SiTU-GLU configuration fields."""
+        self.assertEqual(SITU_GLU_GATE_BETA_DEFAULT, 4.0)
+        self.assertEqual(SITU_GLU_UP_BETA_DEFAULT, 25.0)
+        config = dist_moe.Config(
+            max_num_local_input_tokens=8,
+            hidden_dim=128,
+            intermediate_dim=128,
+            top_k=1,
+            num_experts=2,
+            max_moe_layers_per_activation_slot=1,
+            activation="situ_glu",
+        )
+        self.assertEqual(config.situ_glu_beta, SITU_GLU_GATE_BETA_DEFAULT)
+        self.assertEqual(config.situ_glu_linear_beta, SITU_GLU_UP_BETA_DEFAULT)
+
+    def test_situ_glu_specialization_ignores_inactive_bounds(self) -> None:
+        """Inactive bounds cannot multiply forward/backward launch keys."""
+        self.assertEqual(canonical_situ_glu(False, 3.5, 20.0), (False, 4.0, 25.0))
+        self.assertEqual(canonical_situ_glu(True, 3.5, 20.0), (True, 3.5, 20.0))
+        for mode in ("separate", "chunked", "activation_buffer"):
+            for clamped, situ_glu in ((False, False), (True, False), (False, True)):
+                with (
+                    self.subTest(mode=mode, clamped=clamped, situ_glu=situ_glu),
+                    FakeTensorMode(),
+                    mock.patch.object(
+                        swiglu_impl, "num_sms_per_device", return_value=8
+                    ),
+                    mock.patch.object(
+                        swiglu_impl, "is_blackwell_gpu", return_value=True
+                    ),
+                    mock.patch.object(swiglu_impl, "_triton_swiglu_fwd") as forward,
+                    mock.patch.object(swiglu_impl, "_triton_swiglu_bwd") as backward,
+                ):
+                    x_TD = torch.empty((4, 128), dtype=torch.bfloat16, device="cuda")
+                    y_TD = torch.empty_like(x_TD)
+                    dz_TD = torch.empty_like(x_TD)
+                    activation = {
+                        "clamped": clamped,
+                        "situ_glu": situ_glu,
+                        "situ_glu_gate_beta": 3.5,
+                        "situ_glu_up_beta": 20.0,
+                    }
+                    if mode == "activation_buffer":
+                        offset_1 = torch.empty((1,), dtype=torch.int64, device="cuda")
+                        count_1 = torch.empty((1,), dtype=torch.int32, device="cuda")
+                        storage = torch.empty((8192,), dtype=torch.uint8, device="cuda")
+                        common = {
+                            "activation_buffer": storage,
+                            "num_recv_tokens": count_1,
+                            "feature_dim": 128,
+                            "dtype": torch.bfloat16,
+                            **activation,
+                        }
+                        swiglu_impl.swiglu_fwd(offset_1, z=offset_1, **common)
+                        swiglu_impl.swiglu_bwd(
+                            offset_1, offset_1, dxy=offset_1, **common
+                        )
+                    elif mode == "chunked":
+                        xy_T2D = torch.cat((x_TD, y_TD), dim=1)
+                        swiglu_impl.swiglu_fwd(xy_T2D, **activation)
+                        swiglu_impl.swiglu_bwd(dz_TD, xy_T2D, **activation)
+                    else:
+                        swiglu_impl.swiglu_fwd(x_TD, y_TD, **activation)
+                        swiglu_impl.swiglu_bwd(dz_TD, x_TD, y_TD, **activation)
+                    expected = (3.5, 20.0) if situ_glu else (4.0, 25.0)
+                    for kernel in (forward, backward):
+                        launch = kernel.__getitem__.return_value
+                        launch.assert_called_once()
+                        self.assertEqual(launch.call_args.kwargs["SITU_GLU"], situ_glu)
+                        self.assertEqual(
+                            launch.call_args.kwargs["SITU_GLU_GATE_BETA"], expected[0]
+                        )
+                        self.assertEqual(
+                            launch.call_args.kwargs["SITU_GLU_UP_BETA"], expected[1]
+                        )
 
     def test_resource_owner_types_are_factory_only(self) -> None:
         """Factory-owned resource types reject incomplete construction."""
@@ -783,6 +882,42 @@ class DistMoeConfigTest(unittest.TestCase):
                         activation="swiglu_clamped",
                         **{field: value},
                     )
+
+    def test_rejects_invalid_situ_glu_parameters(self) -> None:
+        """SiTU-GLU requires finite positive static bounds."""
+        for field in ("situ_glu_beta", "situ_glu_linear_beta"):
+            for value in (0.0, float("nan"), float("inf")):
+                with (
+                    self.subTest(field=field, value=value),
+                    self.assertRaisesRegex(
+                        ValueError,
+                        "finite positive",
+                    ),
+                ):
+                    dist_moe.Config(
+                        max_num_local_input_tokens=4,
+                        hidden_dim=128,
+                        intermediate_dim=128,
+                        top_k=2,
+                        num_experts=4,
+                        max_moe_layers_per_activation_slot=1,
+                        activation="situ_glu",
+                        **{field: value},
+                    )
+
+    def test_rejects_blockscaled_situ_glu(self) -> None:
+        """SiTU-GLU remains unavailable for block-scaled execution."""
+        with self.assertRaisesRegex(ValueError, "BF16 execution only"):
+            dist_moe.Config(
+                max_num_local_input_tokens=4,
+                hidden_dim=128,
+                intermediate_dim=128,
+                top_k=2,
+                num_experts=4,
+                max_moe_layers_per_activation_slot=1,
+                activation="situ_glu",
+                block_scaled=dist_moe.BlockScaledConfig(),
+            )
 
     def test_mxfp8_weight_preparation_supports_fake_tensor_tracing(self) -> None:
         """Fake preparation preserves exact packed shapes and backward ownership.
@@ -2177,11 +2312,16 @@ class DistMoeKernelTest(unittest.TestCase):
         *,
         num_experts: int = 4,
         top_k: int = 2,
+        num_tokens: int = 8,
+        hidden_dim: int = 256,
+        intermediate_dim: int = 256,
         max_moe_layers_per_activation_slot: int = 1,
         num_activation_slots: int = 1,
-        activation: Literal["swiglu", "swiglu_clamped"] = "swiglu",
+        activation: Literal["swiglu", "swiglu_clamped", "situ_glu"] = "swiglu",
         swiglu_alpha: float = 1.702,
         swiglu_limit: float = 7.0,
+        situ_glu_beta: float = 4.0,
+        situ_glu_linear_beta: float = 25.0,
         inference: bool = True,
         block_scaled: dist_moe.BlockScaledConfig | None = None,
     ) -> tuple:
@@ -2190,11 +2330,16 @@ class DistMoeKernelTest(unittest.TestCase):
         Args:
             num_experts: Number of global experts.
             top_k: Number of unique experts selected per token.
+            num_tokens: Number of local input tokens.
+            hidden_dim: Expert input and output width.
+            intermediate_dim: Expert hidden width.
             max_moe_layers_per_activation_slot: Sequential MoE layers sharing one slot.
             num_activation_slots: Number of independent activation slots.
             activation: SwiGLU variant used by the expert MLP.
             swiglu_alpha: Sigmoid multiplier for clamped SwiGLU.
             swiglu_limit: Preactivation bound for clamped SwiGLU.
+            situ_glu_beta: Gate tanh bound for SiTU-GLU.
+            situ_glu_linear_beta: Up-projection tanh bound for SiTU-GLU.
             inference: Whether to create a scratch-only inference context.
             block_scaled: Optional block-scaled execution policy.
 
@@ -2210,7 +2355,6 @@ class DistMoeKernelTest(unittest.TestCase):
                 world_size=1,
             )
         torch.manual_seed(43)
-        num_tokens, hidden_dim, intermediate_dim = 8, 256, 256
         ids_a = (
             torch.arange(num_tokens, device="cuda")[:, None] * top_k
             + torch.arange(top_k, device="cuda")[None, :]
@@ -2259,6 +2403,8 @@ class DistMoeKernelTest(unittest.TestCase):
                 activation=activation,
                 swiglu_alpha=swiglu_alpha,
                 swiglu_limit=swiglu_limit,
+                situ_glu_beta=situ_glu_beta,
+                situ_glu_linear_beta=situ_glu_linear_beta,
                 inference=inference,
             ),
         )
@@ -2646,7 +2792,8 @@ class DistMoeKernelTest(unittest.TestCase):
             return run
 
         policies = (
-            ("bf16", None, False, None),
+            ("bf16", None, False, None, "swiglu"),
+            ("bf16_situ_glu", None, False, None, "situ_glu"),
             (
                 "mxfp8_staged",
                 dist_moe.BlockScaledConfig(
@@ -2655,6 +2802,7 @@ class DistMoeKernelTest(unittest.TestCase):
                 ),
                 False,
                 None,
+                "swiglu",
             ),
             (
                 "mxfp8_mega",
@@ -2664,9 +2812,10 @@ class DistMoeKernelTest(unittest.TestCase):
                 ),
                 False,
                 None,
+                "swiglu",
             ),
-            ("bf16_accumulate_bf16", None, True, torch.bfloat16),
-            ("bf16_accumulate_fp32", None, True, torch.float32),
+            ("bf16_accumulate_bf16", None, True, torch.bfloat16, "swiglu"),
+            ("bf16_accumulate_fp32", None, True, torch.float32, "swiglu"),
             (
                 "mxfp8_staged_accumulate_bf16",
                 dist_moe.BlockScaledConfig(
@@ -2675,6 +2824,7 @@ class DistMoeKernelTest(unittest.TestCase):
                 ),
                 True,
                 torch.bfloat16,
+                "swiglu",
             ),
             (
                 "mxfp8_staged_accumulate_fp32",
@@ -2684,13 +2834,15 @@ class DistMoeKernelTest(unittest.TestCase):
                 ),
                 True,
                 torch.float32,
+                "swiglu",
             ),
         )
-        for name, policy, inplace_wgrad_accum, grad_dtype in policies:
+        for name, policy, inplace_wgrad_accum, grad_dtype, activation in policies:
             with self.subTest(mode=name):
                 context, case_a, case_b, w13_EFD, w2_EDF = self._create_case(
                     inference=False,
                     block_scaled=policy,
+                    activation=activation,
                 )
                 w13_EFD.requires_grad_()
                 w2_EDF.requires_grad_()
@@ -3174,10 +3326,16 @@ class DistMoeKernelTest(unittest.TestCase):
 
             return run
 
-        for inference in (False, True):
-            with self.subTest(inference=inference):
+        for inference, activation in (
+            (False, "swiglu"),
+            (True, "swiglu"),
+            (False, "situ_glu"),
+            (True, "situ_glu"),
+        ):
+            with self.subTest(inference=inference, activation=activation):
                 context, case_a, case_b, w13, w2 = self._create_case(
-                    inference=inference
+                    inference=inference,
+                    activation=activation,
                 )
                 if not inference:
                     for tensor in (case_a[0], case_a[2], w13, w2):
@@ -3461,24 +3619,36 @@ class DistMoeKernelTest(unittest.TestCase):
         )
 
     def test_sac_preserves_forward_activation_slot(self) -> None:
-        """SAC backward consumes the slot selected by the original forward."""
+        """Cached SAC state preserves exact gradients and the original slot.
+
+        Recompute selects a different live slot; planner reset assertions prove
+        that backward still consumes the slot owned by the cached forward.
+        """
         cases = (
-            ("bf16", None, torch.ops.dist_moe.bf16_forward.default),
+            ("bf16", None, torch.ops.dist_moe.bf16_forward.default, "swiglu"),
             (
-                "mxfp8",
+                "bf16_situ_glu",
+                None,
+                torch.ops.dist_moe.bf16_forward.default,
+                "situ_glu",
+            ),
+            (
+                "mxfp8_staged",
                 dist_moe.BlockScaledConfig(
                     format=dist_moe.BlockScaledFormat.MXFP8_E4M3,
                     pipeline="staged",
                 ),
                 torch.ops.dist_moe.block_scaled_forward.default,
+                "swiglu",
             ),
         )
-        for name, block_scaled, forward_op in cases:
+        for name, block_scaled, forward_op, activation in cases:
             with self.subTest(name=name):
                 context, case_a, _, w13, w2 = self._create_case(
                     num_activation_slots=2,
                     inference=False,
                     block_scaled=block_scaled,
+                    activation=activation,
                 )
                 x, ids, scores = case_a
                 base_inputs = (x, scores, w13, w2)
@@ -4415,6 +4585,230 @@ class DistMoeKernelTest(unittest.TestCase):
                 atol=3e-2,
             )
 
+    def test_situ_glu_default_and_custom_activation_math(self) -> None:
+        """Default reuse and custom gate bounds match across saturation tails."""
+        x_TD = torch.linspace(-80.0, 80.0, 8192, device="cuda").reshape(32, 256)
+        y_TD = torch.linspace(-160.0, 160.0, 8192, device="cuda").reshape(32, 256)
+        for situ_glu_gate_beta, situ_glu_up_beta in ((4.0, 25.0), (3.5, 20.0)):
+            for fast_math in (False, True):
+                with self.subTest(
+                    situ_glu_gate_beta=situ_glu_gate_beta,
+                    situ_glu_up_beta=situ_glu_up_beta,
+                    fast_math=fast_math,
+                ):
+                    reference_x_TD = x_TD.detach().clone().requires_grad_()
+                    reference_y_TD = y_TD.detach().clone().requires_grad_()
+                    expected_TD = (
+                        situ_glu_gate_beta
+                        * torch.tanh(reference_x_TD / situ_glu_gate_beta)
+                        * torch.sigmoid(reference_x_TD)
+                        * situ_glu_up_beta
+                        * torch.tanh(reference_y_TD / situ_glu_up_beta)
+                    )
+                    expected_TD.sum().backward()
+                    actual_TD = swiglu_impl.swiglu_fwd(
+                        x_TD,
+                        y_TD,
+                        situ_glu=True,
+                        situ_glu_gate_beta=situ_glu_gate_beta,
+                        situ_glu_up_beta=situ_glu_up_beta,
+                        fast_math=fast_math,
+                    )
+                    actual_dx_TD, actual_dy_TD = swiglu_impl.swiglu_bwd(
+                        torch.ones_like(actual_TD),
+                        x_TD,
+                        y_TD,
+                        situ_glu=True,
+                        situ_glu_gate_beta=situ_glu_gate_beta,
+                        situ_glu_up_beta=situ_glu_up_beta,
+                        fast_math=fast_math,
+                    )
+                    # The tanh identity rounds in FP32; this small absolute
+                    # budget also covers cancellation at sigmoid's negative tail.
+                    for actual, expected in (
+                        (actual_TD, expected_TD),
+                        (actual_dx_TD, reference_x_TD.grad),
+                        (actual_dy_TD, reference_y_TD.grad),
+                    ):
+                        torch.testing.assert_close(
+                            actual, expected, rtol=1e-5, atol=2e-5
+                        )
+
+    def test_bf16_situ_glu_matches_reference(self) -> None:
+        """SiTU-GLU forward and backward match the FP32 PyTorch formula."""
+        situ_glu_beta = 3.5
+        situ_glu_linear_beta = 20.0
+        context, case_a, _, w13_EFD, w2_EDF = self._create_case(
+            activation="situ_glu",
+            situ_glu_beta=situ_glu_beta,
+            situ_glu_linear_beta=situ_glu_linear_beta,
+            inference=False,
+        )
+        x_TD, topk_expert_ids_TK, topk_scores_TK = case_a
+        inputs = (x_TD, topk_scores_TK, w13_EFD, w2_EDF)
+        for tensor in inputs:
+            tensor.requires_grad_()
+        reference_inputs = tuple(
+            tensor.detach().clone().requires_grad_() for tensor in inputs
+        )
+
+        actual_TD = dist_moe.routed_experts(
+            x_TD,
+            topk_expert_ids_TK,
+            topk_scores_TK,
+            w13_EFD,
+            w2_EDF,
+            context,
+        )
+        expected_TD = _reference_moe(
+            reference_inputs[0],
+            topk_expert_ids_TK,
+            reference_inputs[1],
+            reference_inputs[2],
+            reference_inputs[3],
+            situ_glu=True,
+            situ_glu_beta=situ_glu_beta,
+            situ_glu_linear_beta=situ_glu_linear_beta,
+        )
+        grad_TD = torch.randn_like(actual_TD)
+        actual_TD.backward(grad_TD)
+        expected_TD.backward(grad_TD)
+
+        torch.testing.assert_close(actual_TD, expected_TD, rtol=2e-2, atol=2e-2)
+        for actual, expected in zip(inputs, reference_inputs, strict=True):
+            torch.testing.assert_close(
+                actual.grad,
+                expected.grad,
+                rtol=3e-2,
+                atol=3e-2,
+            )
+
+    def test_bf16_situ_glu_excludes_native_swiglu_fusion(self) -> None:
+        """SiTU-GLU falls back while plain/clamped retain eligible native fusion.
+
+        Real launches prove both dispatch decisions; output and all gradients
+        match the PyTorch formula within the existing BF16 tolerances.
+        """
+        from dist_moe import _triton_ops as triton_ops_impl
+
+        for activation in ("swiglu", "swiglu_clamped", "situ_glu"):
+            with self.subTest(activation=activation):
+                context, case_a, _, w13_EFD, w2_EDF = self._create_case(
+                    activation=activation,
+                    intermediate_dim=512,
+                    inference=False,
+                )
+                x_TD, ids_TK, scores_TK = case_a
+                inputs = (x_TD, scores_TK, w13_EFD, w2_EDF)
+                for tensor in inputs:
+                    tensor.requires_grad_()
+                reference_inputs = tuple(
+                    tensor.detach().clone().requires_grad_() for tensor in inputs
+                )
+                with (
+                    mock.patch.object(
+                        dist_grouped_gemm_impl,
+                        "dist_grouped_gemm_fprop_dispatch",
+                        wraps=dist_grouped_gemm_impl.dist_grouped_gemm_fprop_dispatch,
+                    ) as dispatch,
+                    mock.patch.object(
+                        dist_grouped_gemm_impl,
+                        "dist_grouped_gemm_dgrad_swiglu_bwd_combine",
+                        wraps=dist_grouped_gemm_impl.dist_grouped_gemm_dgrad_swiglu_bwd_combine,
+                    ) as fused_backward,
+                    mock.patch.object(
+                        triton_ops_impl,
+                        "swiglu_fwd",
+                        wraps=triton_ops_impl.swiglu_fwd,
+                    ) as standalone_forward,
+                    mock.patch.object(
+                        triton_ops_impl,
+                        "swiglu_bwd",
+                        wraps=triton_ops_impl.swiglu_bwd,
+                    ) as standalone_backward,
+                ):
+                    actual_TD = dist_moe.routed_experts(
+                        x_TD, ids_TK, scores_TK, w13_EFD, w2_EDF, context
+                    )
+                    if activation == "situ_glu":
+                        self.assertIsNone(dispatch.call_args.kwargs["swiglu_h2"])
+                        standalone_forward.assert_called_once()
+                    else:
+                        self.assertIsNotNone(dispatch.call_args.kwargs["swiglu_h2"])
+                        standalone_forward.assert_not_called()
+                    expected_TD = _reference_moe(
+                        reference_inputs[0],
+                        ids_TK,
+                        reference_inputs[1],
+                        reference_inputs[2],
+                        reference_inputs[3],
+                        clamped=activation == "swiglu_clamped",
+                        situ_glu=activation == "situ_glu",
+                    )
+                    grad_TD = torch.randn_like(actual_TD)
+                    actual_TD.backward(grad_TD)
+                    expected_TD.backward(grad_TD)
+                    if activation == "situ_glu":
+                        fused_backward.assert_not_called()
+                        standalone_backward.assert_called_once()
+                    else:
+                        fused_backward.assert_called_once()
+                        standalone_backward.assert_not_called()
+                torch.testing.assert_close(actual_TD, expected_TD, rtol=2e-2, atol=2e-2)
+                for actual, expected in zip(inputs, reference_inputs, strict=True):
+                    torch.testing.assert_close(
+                        actual.grad, expected.grad, rtol=3e-2, atol=3e-2
+                    )
+                self._assert_planner_reset(context.activation_buffer)
+
+    def test_bf16_situ_glu_runs_released_expert_shape(self) -> None:
+        """Execute one expert with the released 3584-by-3072 model widths."""
+        context, case_a, _, w13_EFD, w2_EDF = self._create_case(
+            num_experts=1,
+            top_k=1,
+            num_tokens=2,
+            hidden_dim=3584,
+            intermediate_dim=3072,
+            activation="situ_glu",
+            inference=False,
+        )
+        x_TD, topk_expert_ids_TK, topk_scores_TK = case_a
+        inputs = (x_TD, topk_scores_TK, w13_EFD, w2_EDF)
+        for tensor in inputs:
+            tensor.requires_grad_()
+        reference_inputs = tuple(
+            tensor.detach().clone().requires_grad_() for tensor in inputs
+        )
+
+        actual_TD = dist_moe.routed_experts(
+            x_TD,
+            topk_expert_ids_TK,
+            topk_scores_TK,
+            w13_EFD,
+            w2_EDF,
+            context,
+        )
+        expected_TD = _reference_moe(
+            reference_inputs[0],
+            topk_expert_ids_TK,
+            reference_inputs[1],
+            reference_inputs[2],
+            reference_inputs[3],
+            situ_glu=True,
+        )
+        grad_TD = torch.randn_like(actual_TD)
+        actual_TD.backward(grad_TD)
+        expected_TD.backward(grad_TD)
+
+        torch.testing.assert_close(actual_TD, expected_TD, rtol=2e-2, atol=2e-2)
+        for actual, expected in zip(inputs, reference_inputs, strict=True):
+            torch.testing.assert_close(
+                actual.grad,
+                expected.grad,
+                rtol=3e-2,
+                atol=3e-2,
+            )
+
     def test_two_saved_layers_match_reference_without_recompute(self) -> None:
         """Each layer retains its own post-combine state for score gradients."""
         context, case_a, case_b, w13_first, w2_first = self._create_case(
@@ -4591,9 +4985,11 @@ class DistMoeTwoRankTest(unittest.TestCase):
         options: dist_moe.ExecutionOptions | None = None,
         prepared_weights: bool = False,
         flattened_weights: bool = False,
-        activation: Literal["swiglu", "swiglu_clamped"] = "swiglu",
+        activation: Literal["swiglu", "swiglu_clamped", "situ_glu"] = "swiglu",
         swiglu_alpha: float = 1.702,
         swiglu_limit: float = 7.0,
+        situ_glu_beta: float = 4.0,
+        situ_glu_linear_beta: float = 25.0,
         reference_output_scale: float = 1.0,
         reference_postprocess_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
         repeat_execution: bool = False,
@@ -4616,6 +5012,8 @@ class DistMoeTwoRankTest(unittest.TestCase):
             activation: SwiGLU variant used by the expert MLP.
             swiglu_alpha: Sigmoid multiplier for clamped SwiGLU.
             swiglu_limit: Preactivation bound for clamped SwiGLU.
+            situ_glu_beta: Gate tanh bound for SiTU-GLU.
+            situ_glu_linear_beta: Up-projection tanh bound for SiTU-GLU.
             reference_output_scale: Factor applied by an expert-output callback.
             reference_postprocess_fn: Optional reference route-wise transform.
             repeat_execution: Whether to repeat training on the same context.
@@ -4725,6 +5123,8 @@ class DistMoeTwoRankTest(unittest.TestCase):
             "activation": activation,
             "swiglu_alpha": swiglu_alpha,
             "swiglu_limit": swiglu_limit,
+            "situ_glu_beta": situ_glu_beta,
+            "situ_glu_linear_beta": situ_glu_linear_beta,
             "wgrad_dtype": None if accumulate_execution else wgrad_dtype,
         }
         if block_scaled is None:
@@ -4792,6 +5192,9 @@ class DistMoeTwoRankTest(unittest.TestCase):
                 clamped=activation == "swiglu_clamped",
                 swiglu_alpha=swiglu_alpha,
                 swiglu_limit=swiglu_limit,
+                situ_glu=activation == "situ_glu",
+                situ_glu_beta=situ_glu_beta,
+                situ_glu_linear_beta=situ_glu_linear_beta,
             )
             reference = reference * reference_output_scale
             if block_scaled is None:
@@ -5003,6 +5406,17 @@ class DistMoeTwoRankTest(unittest.TestCase):
                     block_scaled,
                     padding_rank=1,
                 )
+
+    @with_comms
+    def test_bf16_situ_glu_exercises_peer_paths(self) -> None:
+        """Match SiTU-GLU output and gradients over real peer paths."""
+        self._run_two_rank_numerics(
+            None,
+            activation="situ_glu",
+            situ_glu_beta=4.0,
+            situ_glu_linear_beta=25.0,
+            repeat_execution=True,
+        )
 
     @with_comms
     def test_bf16_clip_statistics_exercise_peer_paths(self) -> None:

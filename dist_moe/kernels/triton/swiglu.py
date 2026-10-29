@@ -47,12 +47,44 @@ from ..._activation_buffer_planner_kernel import (
     MEMORY_ALIGNMENT_TL_CONSTEXPR,
 )
 from ...formats import (
+    canonical_situ_glu,
+    SITU_GLU_GATE_BETA_DEFAULT,
+    SITU_GLU_UP_BETA_DEFAULT,
     SWIGLU_CLAMP_ALPHA_DEFAULT,
     SWIGLU_CLAMP_LIMIT_DEFAULT,
 )
 from .._environment import is_blackwell_gpu, num_sms_per_device
 from .fp_math import sigmoid
 from .repr_utils import make_dtype_repr
+from .situ_glu import _situ_glu_bwd_gate, _situ_glu_bwd_up, _situ_glu_fwd
+
+
+@triton.jit
+def _apply_swiglu_fwd(
+    x,
+    y,
+    FAST_MATH: tl.constexpr,
+    CLAMPED: tl.constexpr,
+    ALPHA: tl.constexpr,
+    LIMIT: tl.constexpr,
+    SITU_GLU: tl.constexpr,
+    SITU_GLU_GATE_BETA: tl.constexpr,
+    SITU_GLU_UP_BETA: tl.constexpr,
+):
+    """Apply the selected SwiGLU-family forward activation in fp32."""
+    if CLAMPED:
+        g = tl.minimum(x, LIMIT)
+        u = tl.minimum(tl.maximum(y, -LIMIT), LIMIT)
+        return g * sigmoid(ALPHA * g, FAST_MATH=FAST_MATH) * (u + 1.0)
+    if SITU_GLU:
+        return _situ_glu_fwd(
+            x,
+            y,
+            SITU_GLU_GATE_BETA=SITU_GLU_GATE_BETA,
+            SITU_GLU_UP_BETA=SITU_GLU_UP_BETA,
+            FAST_MATH=FAST_MATH,
+        )
+    return x * sigmoid(x, FAST_MATH=FAST_MATH) * y
 
 
 @triton.jit(
@@ -92,12 +124,14 @@ def _triton_swiglu_fwd(  # noqa: C901
     CLAMPED: tl.constexpr,
     ALPHA: tl.constexpr,
     LIMIT: tl.constexpr,
+    SITU_GLU: tl.constexpr,
+    SITU_GLU_GATE_BETA: tl.constexpr,
+    SITU_GLU_UP_BETA: tl.constexpr,
 ):
     """Unified Triton kernel for SwiGLU forward pass with persistent kernel design.
 
-    Computes z = x * sigmoid(x) * y element-wise, or the GPT-OSS-style clamped
-    variant z = g * sigmoid(ALPHA * g) * (u + 1) when CLAMPED, where
-    g = min(x, LIMIT) and u = clamp(y, -LIMIT, LIMIT).
+    Computes z = x * sigmoid(x) * y element-wise, the GPT-OSS-style clamped
+    variant when CLAMPED, or bounded SiTU-GLU when SITU_GLU.
     Uses persistent kernel design where each CTA iterates over tiles of
     BLOCK_T rows by all D columns (D_TILES == 1) or by one BLOCK_D column
     block (D_TILES > 1).
@@ -197,13 +231,17 @@ def _triton_swiglu_fwd(  # noqa: C901
                 ptr_y + t[:, None] * stride_y_t + d[None, :], mask=mask, other=0.0
             ).to(tl.float32)
 
-            if CLAMPED:
-                g = tl.minimum(x, LIMIT)
-                u = tl.minimum(tl.maximum(y, -LIMIT), LIMIT)
-                z = g * sigmoid(ALPHA * g, FAST_MATH=FAST_MATH) * (u + 1.0)
-            else:
-                # Compute SwiGLU: x * sigmoid(x) * y
-                z = x * sigmoid(x, FAST_MATH=FAST_MATH) * y
+            z = _apply_swiglu_fwd(
+                x,
+                y,
+                FAST_MATH=FAST_MATH,
+                CLAMPED=CLAMPED,
+                ALPHA=ALPHA,
+                LIMIT=LIMIT,
+                SITU_GLU=SITU_GLU,
+                SITU_GLU_GATE_BETA=SITU_GLU_GATE_BETA,
+                SITU_GLU_UP_BETA=SITU_GLU_UP_BETA,
+            )
 
             # Store result back to HBM
             tl.store(ptr_z + t[:, None] * stride_z_t + d[None, :], z, mask=mask)
@@ -285,6 +323,9 @@ def swiglu_fwd(
     clamped: bool = False,
     alpha: float = SWIGLU_CLAMP_ALPHA_DEFAULT,
     limit: float = SWIGLU_CLAMP_LIMIT_DEFAULT,
+    situ_glu: bool = False,
+    situ_glu_gate_beta: float = SITU_GLU_GATE_BETA_DEFAULT,
+    situ_glu_up_beta: float = SITU_GLU_UP_BETA_DEFAULT,
 ) -> torch.Tensor:
     """
     Fused silu and mul operations.
@@ -312,6 +353,9 @@ def swiglu_fwd(
            cannot be inferred from the offset tensor.
         conditional_execution: Optional device tensor with single integer element.
             If None, ignored. If value is 0, skip kernel execution. If non-zero, execute as usual.
+        fast_math: Whether to approximate the independent sigmoid. SiTU-GLU
+            tanhs remain precise; a gate bound of four reuses the gate tanh
+            regardless of this flag. Public BF16 execution passes ``False``.
         clip_stats_out: Optional float32 device tensor of shape [3] =
             [gate_over_count, up_over_count, total_count]. When provided, the
             kernel fuses a clip-count pass: it is zeroed inside this call and
@@ -321,10 +365,19 @@ def swiglu_fwd(
             leaving behavior and performance unchanged.
         clip_limit: Threshold used by the clip-count pass (strict `>`). Only
             meaningful when clip_stats_out is provided.
+        clamped: Whether to use clamped SwiGLU.
+        alpha: Sigmoid multiplier for clamped SwiGLU.
+        limit: Gate and up-projection bound for clamped SwiGLU.
+        situ_glu: Whether to use bounded SiTU-GLU.
+        situ_glu_gate_beta: Gate tanh bound for SiTU-GLU.
+        situ_glu_up_beta: Up-projection tanh bound for SiTU-GLU.
 
     Returns:
         z: output tensor of shape (T, D), or z (z_offset) when activation_buffer is used.
     """
+    situ_glu, situ_glu_gate_beta, situ_glu_up_beta = canonical_situ_glu(
+        situ_glu, situ_glu_gate_beta, situ_glu_up_beta
+    )
     # Handle chunked mode (y=None) - recursive call for regular mode only
     if y is None and activation_buffer is None:
         D_doubled = x.shape[-1]
@@ -344,6 +397,9 @@ def swiglu_fwd(
             clamped=clamped,
             alpha=alpha,
             limit=limit,
+            situ_glu=situ_glu,
+            situ_glu_gate_beta=situ_glu_gate_beta,
+            situ_glu_up_beta=situ_glu_up_beta,
         )
 
     # Common setup
@@ -431,6 +487,9 @@ def swiglu_fwd(
             CLAMPED=clamped,
             ALPHA=alpha,
             LIMIT=limit,
+            SITU_GLU=situ_glu,
+            SITU_GLU_GATE_BETA=situ_glu_gate_beta,
+            SITU_GLU_UP_BETA=situ_glu_up_beta,
         )
 
         return z_offset
@@ -499,6 +558,9 @@ def swiglu_fwd(
             CLAMPED=clamped,
             ALPHA=alpha,
             LIMIT=limit,
+            SITU_GLU=situ_glu,
+            SITU_GLU_GATE_BETA=situ_glu_gate_beta,
+            SITU_GLU_UP_BETA=situ_glu_up_beta,
         )
 
         return z
@@ -540,6 +602,9 @@ def _triton_swiglu_bwd(
     CLAMPED: tl.constexpr,
     ALPHA: tl.constexpr,
     LIMIT: tl.constexpr,
+    SITU_GLU: tl.constexpr,
+    SITU_GLU_GATE_BETA: tl.constexpr,
+    SITU_GLU_UP_BETA: tl.constexpr,
 ):
     """Unified Triton kernel for SwiGLU backward pass with persistent kernel design.
 
@@ -653,6 +718,18 @@ def _triton_swiglu_bwd(
                 dy = dz * silu
                 dy = tl.where((y > LIMIT) | (y < -LIMIT), 0.0, dy)
                 tl.store(ptr_dy + t[:, None] * stride_dy_t + d[None, :], dy, mask=mask)
+            elif SITU_GLU:
+                dx, gate, tanh_up = _situ_glu_bwd_gate(
+                    x,
+                    y,
+                    dz,
+                    SITU_GLU_GATE_BETA=SITU_GLU_GATE_BETA,
+                    SITU_GLU_UP_BETA=SITU_GLU_UP_BETA,
+                    FAST_MATH=FAST_MATH,
+                )
+                tl.store(ptr_dx + t[:, None] * stride_dx_t + d[None, :], dx, mask=mask)
+                dy = _situ_glu_bwd_up(dz, gate, tanh_up)
+                tl.store(ptr_dy + t[:, None] * stride_dy_t + d[None, :], dy, mask=mask)
             else:
                 # Compute sigmoid(x) once and reuse
                 sigmoid_x = sigmoid(x, FAST_MATH=FAST_MATH)
@@ -682,6 +759,9 @@ def swiglu_bwd(
     clamped: bool = False,
     alpha: float = SWIGLU_CLAMP_ALPHA_DEFAULT,
     limit: float = SWIGLU_CLAMP_LIMIT_DEFAULT,
+    situ_glu: bool = False,
+    situ_glu_gate_beta: float = SITU_GLU_GATE_BETA_DEFAULT,
+    situ_glu_up_beta: float = SITU_GLU_UP_BETA_DEFAULT,
 ) -> Tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
     """
     Fused silu and mul backward operations.
@@ -714,12 +794,24 @@ def swiglu_bwd(
            dimension cannot be inferred from the offset tensor.
         dtype: Data type (torch.float16 or torch.bfloat16). Required when activation_buffer
            is provided since dtype cannot be inferred from offset tensors.
+        fast_math: Whether to approximate the independent sigmoid. SiTU-GLU
+            tanhs remain precise; a gate bound of four reuses the gate tanh
+            regardless of this flag. Public BF16 execution passes ``False``.
+        clamped: Whether to use clamped SwiGLU.
+        alpha: Sigmoid multiplier for clamped SwiGLU.
+        limit: Gate and up-projection bound for clamped SwiGLU.
+        situ_glu: Whether to use bounded SiTU-GLU.
+        situ_glu_gate_beta: Gate tanh bound for SiTU-GLU.
+        situ_glu_up_beta: Up-projection tanh bound for SiTU-GLU.
 
     Returns:
         If y is provided: tuple of (dx, dy)
         If y is None: single tensor dxy of shape (T, 2*D) containing [dx, dy]
         If activation_buffer is used: dxy (dxy_offset)
     """
+    situ_glu, situ_glu_gate_beta, situ_glu_up_beta = canonical_situ_glu(
+        situ_glu, situ_glu_gate_beta, situ_glu_up_beta
+    )
     # Common setup
     BLOCK_D = 2048
     cta_cap = num_sms_per_device() * 32
@@ -806,6 +898,9 @@ def swiglu_bwd(
             CLAMPED=clamped,
             ALPHA=alpha,
             LIMIT=limit,
+            SITU_GLU=situ_glu,
+            SITU_GLU_GATE_BETA=situ_glu_gate_beta,
+            SITU_GLU_UP_BETA=situ_glu_up_beta,
         )
 
         return dxy_offset
@@ -913,6 +1008,9 @@ def swiglu_bwd(
             CLAMPED=clamped,
             ALPHA=alpha,
             LIMIT=limit,
+            SITU_GLU=situ_glu,
+            SITU_GLU_GATE_BETA=situ_glu_gate_beta,
+            SITU_GLU_UP_BETA=situ_glu_up_beta,
         )
 
         # Return based on mode

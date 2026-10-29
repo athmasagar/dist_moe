@@ -37,8 +37,8 @@ All supported modes work with non-strict `make_fx`, CUDA graphs, and optional
 VMM host-backed scratch. Training modes include forward and backward.
 
 The package also supports prepared MXFP8 and NVFP4 weights, device-selected
-activation slots, plain and clamped SwiGLU, fused post-expert RMSNorm, clip
-statistics, and optional in-place accumulation into standard
+activation slots, plain and clamped SwiGLU, BF16 SiTU-GLU, fused post-expert
+RMSNorm, clip statistics, and optional in-place accumulation into standard
 `parameter.grad` buffers.
 
 <details>
@@ -329,6 +329,29 @@ The **staged** pipeline uses separate distributed W13 and SwiGLU/W2 kernels.
 The **Mega** pipeline fuses both projections into a chunked pipeline. They use
 the same public tensor and memory contracts. See
 [MXFP8 execution](docs/mxfp8_execution.md).
+
+### SiTU-GLU
+
+Bounded SiTU-GLU is available for BF16 execution. Apply this fragment before
+calling `dist_moe.create_context()`:
+
+```python
+import dataclasses
+
+config = dataclasses.replace(
+    config,
+    activation="situ_glu",
+    situ_glu_beta=4.0,
+    situ_glu_linear_beta=25.0,
+)
+```
+
+For gate value `g` and up-projection value `u`, the kernel evaluates
+`(situ_glu_beta * tanh(g / situ_glu_beta) * sigmoid(g)) *
+(situ_glu_linear_beta * tanh(u / situ_glu_linear_beta))` in FP32 and writes
+BF16 output. Forward, backward, and conditional forward recomputation use the
+same static bounds.
+Block-scaled SiTU-GLU is not yet supported.
 
 ### NVFP4
 

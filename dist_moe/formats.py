@@ -108,6 +108,12 @@ class BlockScaledProducer(enum.IntEnum):
 SWIGLU_CLAMP_ALPHA_DEFAULT = 1.702
 SWIGLU_CLAMP_LIMIT_DEFAULT = 7.0
 
+# SiTU-GLU defaults. Shared by the public configuration and BF16 activation
+# kernels so forward, backward, and recomputation specialize on identical
+# values.
+SITU_GLU_GATE_BETA_DEFAULT = 4.0
+SITU_GLU_UP_BETA_DEFAULT = 25.0
+
 
 def canonical_swiglu_clamp(
     clamped: bool,
@@ -128,6 +134,27 @@ def canonical_swiglu_clamp(
     if not clamped:
         return False, SWIGLU_CLAMP_ALPHA_DEFAULT, SWIGLU_CLAMP_LIMIT_DEFAULT
     return True, float(alpha), float(limit)
+
+
+def canonical_situ_glu(
+    situ_glu: bool,
+    situ_glu_gate_beta: float,
+    situ_glu_up_beta: float,
+) -> tuple[bool, float, float]:
+    """Return the canonical SiTU-GLU kernel specialization.
+
+    Args:
+        situ_glu: Whether to use bounded SiTU-GLU.
+        situ_glu_gate_beta: Gate tanh bound.
+        situ_glu_up_beta: Up-projection tanh bound.
+
+    Returns:
+        Kernel specialization tuple. Non-SiTU activations use the defaults so
+        ignored caller values do not create additional compilation entries.
+    """
+    if not situ_glu:
+        return False, SITU_GLU_GATE_BETA_DEFAULT, SITU_GLU_UP_BETA_DEFAULT
+    return True, float(situ_glu_gate_beta), float(situ_glu_up_beta)
 
 
 class BlockScaledFormat(enum.StrEnum):
