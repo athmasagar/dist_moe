@@ -20,7 +20,7 @@ def _recorded_prefix(target: Any) -> str | None:
     """Return the prefix ``set_name_prefix`` recorded for this DSL release."""
     if NAME_OPTIONS_ON_FUNCTION:
         options = vars(inspect.unwrap(target)).get(_NAME_OPTIONS_ATTR)
-        return None if options is None else options.name_prefix
+        return getattr(options, "name_prefix", None)
     return getattr(target, "_name_prefix", None)
 
 
@@ -40,7 +40,18 @@ def _materialize_decorated_dsl_object(target: Any) -> Any | None:
 def scoped_kernel_name_prefixes(
     prefixes: tuple[tuple[Any, str], ...],
 ) -> Iterator[None]:
-    """Restore CuTeDSL name prefixes set by ``set_name_prefix`` after use."""
+    """Scope CuTeDSL naming state under one reentrant lock.
+
+    Args:
+        prefixes: Decorated callables and the temporary prefixes to install.
+
+    Yields:
+        Control after every setter succeeds. Nested scopes restore their caller's
+        state; a different prefix installed by the body is retained.
+
+    Raises:
+        RuntimeError: If a setter does not record the requested prefix.
+    """
     with _KERNEL_NAME_PREFIX_LOCK:
         missing = object()
         # fmt: off
@@ -53,6 +64,7 @@ def scoped_kernel_name_prefixes(
         dsl_states: dict[int, tuple[Any, Any]] = {}
         option_states: dict[int, tuple[Any, Any]] = {}
         installed_prefixes: set[str] = set()
+        entered_scope = False
 
         for target, _prefix, dsl in resolved_prefixes:
             target_states.setdefault(
@@ -82,22 +94,37 @@ def scoped_kernel_name_prefixes(
                         "set_name_prefix() did not record the prefix"
                     )
                     # fmt: on
+            entered_scope = True
             yield
         finally:
             for decorated, previous_options in option_states.values():
-                if previous_options is missing:
-                    vars(decorated).pop(_NAME_OPTIONS_ATTR, None)
-                else:
-                    setattr(decorated, _NAME_OPTIONS_ATTR, previous_options)
+                current_options = vars(decorated).get(_NAME_OPTIONS_ATTR)
+                if (
+                    not entered_scope
+                    or getattr(current_options, "name_prefix", None)
+                    in installed_prefixes
+                ):
+                    if previous_options is missing:
+                        vars(decorated).pop(_NAME_OPTIONS_ATTR, None)
+                    else:
+                        setattr(decorated, _NAME_OPTIONS_ATTR, previous_options)
             for target, previous_prefix in target_states.values():
-                if getattr(target, "_name_prefix", None) in installed_prefixes:
+                if (
+                    not entered_scope
+                    or getattr(target, "_name_prefix", None) in installed_prefixes
+                ):
                     if previous_prefix is missing:
-                        delattr(target, "_name_prefix")
+                        if hasattr(target, "_name_prefix"):
+                            delattr(target, "_name_prefix")
                     else:
                         target._name_prefix = previous_prefix
             for dsl, previous_prefix in dsl_states.values():
-                if getattr(dsl, "_name_prefix", None) in installed_prefixes:
+                if (
+                    not entered_scope
+                    or getattr(dsl, "_name_prefix", None) in installed_prefixes
+                ):
                     if previous_prefix is missing:
-                        delattr(dsl, "_name_prefix")
+                        if hasattr(dsl, "_name_prefix"):
+                            delattr(dsl, "_name_prefix")
                     else:
                         dsl._name_prefix = previous_prefix
